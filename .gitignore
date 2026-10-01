@@ -18,3 +18,4 @@ public/cloudflare-deployment.zip
 bun.lock
 bun.lockb
 .wrangler/
+worker-configuration.d.ts
