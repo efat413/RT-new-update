@@ -16,13 +16,13 @@ export function onAuthUnauthorized(listener: AuthUnauthorizedListener): () => vo
  * Completely purges all legacy browser storage tokens and caches.
  * Ensures the browser CANNOT read or store any authentication tokens.
  */
-export function purgeLegacyTokens(): void {
+export function purgeLegacyTokens(includeUserSession: boolean = false): void {
   if (typeof window === 'undefined') return;
   try {
     const keysToRemove: string[] = [];
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
-      if (k && (k.includes('token') || k.includes('auth'))) {
+      if (k && (k.toLowerCase().includes('token') || (k.toLowerCase().includes('auth') && k !== 'rongdhonu_admin_auth_v1'))) {
         keysToRemove.push(k);
       }
     }
@@ -33,7 +33,7 @@ export function purgeLegacyTokens(): void {
     const sessionKeysToRemove: string[] = [];
     for (let i = 0; i < sessionStorage.length; i++) {
       const k = sessionStorage.key(i);
-      if (k && (k.includes('token') || k.includes('auth'))) {
+      if (k && (k.toLowerCase().includes('token') || k.toLowerCase().includes('auth'))) {
         sessionKeysToRemove.push(k);
       }
     }
@@ -41,9 +41,13 @@ export function purgeLegacyTokens(): void {
       try { sessionStorage.removeItem(k); } catch {}
     });
 
-    localStorage.removeItem('rongdhonu_admin_auth_v1');
-    localStorage.removeItem('rongdhonu_current_user');
     localStorage.removeItem('rongdhonu_current_user_v2');
+    localStorage.removeItem('rongdhonu_super_admin_pwd');
+
+    if (includeUserSession) {
+      localStorage.removeItem('rongdhonu_admin_auth_v1');
+      localStorage.removeItem('rongdhonu_current_user');
+    }
   } catch {}
 }
 
@@ -65,7 +69,7 @@ export function isSessionUnauthorizedError(status: number, errorMsg?: string): b
 }
 
 export function notifyAuthUnauthorized(details: { url: string; error?: string }): void {
-  purgeLegacyTokens();
+  purgeLegacyTokens(true);
 
   // Notify registered listeners (e.g. StoreContext)
   unauthorizedListeners.forEach((listener) => {
@@ -412,7 +416,7 @@ export const authApi = {
    * and clearing in-memory client state.
    */
   async logout(): Promise<void> {
-    purgeLegacyTokens();
+    purgeLegacyTokens(true);
     try {
       await fetch(`${API_BASE}/auth/logout`, {
         method: 'POST',

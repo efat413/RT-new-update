@@ -196,7 +196,15 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   // Settings State
   const [settings, setSettings] = useState<StoreSettings>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEYS.SETTINGS) || localStorage.getItem('rongdhonu_settings');
+      let saved = localStorage.getItem(STORAGE_KEYS.SETTINGS);
+      if (!saved) {
+        const legacy = localStorage.getItem('rongdhonu_settings');
+        if (legacy) {
+          saved = legacy;
+          localStorage.setItem(STORAGE_KEYS.SETTINGS, legacy);
+          localStorage.removeItem('rongdhonu_settings');
+        }
+      }
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed && typeof parsed === 'object') {
@@ -247,8 +255,13 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [categoryPage, setCategoryPage] = useState<number>(1);
   const [categoryTotalPages, setCategoryTotalPages] = useState<number>(1);
   const [categoryTotalProducts, setCategoryTotalProducts] = useState<number>(0);
-  const [categorySortBy, setCategorySortBy] = useState<'featured' | 'price-asc' | 'price-desc' | 'rating'>('featured');
+  const [categorySortBy, setCategorySortByState] = useState<'featured' | 'price-asc' | 'price-desc' | 'rating'>('featured');
   const [isCategoryLoading, setIsCategoryLoading] = useState<boolean>(false);
+
+  const setCategorySortBy = useCallback((newSort: 'featured' | 'price-asc' | 'price-desc' | 'rating') => {
+    setCategorySortByState((prev) => (prev === newSort ? prev : newSort));
+    setCategoryPage((prev) => (prev === 1 ? prev : 1));
+  }, []);
 
   const [isStoreInitializing, setIsStoreInitializing] = useState<boolean>(true);
   const [isStoreError, setIsStoreError] = useState<boolean>(false);
@@ -263,9 +276,22 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     }
   });
 
+  const lastSavedOrdersRef = useRef<string | null>(null);
+
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
+      const serialized = JSON.stringify(orders);
+      if (lastSavedOrdersRef.current === null) {
+        lastSavedOrdersRef.current = serialized;
+        const currentSaved = localStorage.getItem(STORAGE_KEYS.ORDERS);
+        if (currentSaved === serialized) {
+          return;
+        }
+      }
+      if (lastSavedOrdersRef.current !== serialized) {
+        lastSavedOrdersRef.current = serialized;
+        localStorage.setItem(STORAGE_KEYS.ORDERS, serialized);
+      }
     } catch (e) {
       console.error('Failed to save orders to localStorage', e);
     }
@@ -278,7 +304,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [isProductLoading, setIsProductLoading] = useState<boolean>(false);
   const [productNotFound, setProductNotFound] = useState<boolean>(false);
 
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(() => {
+  const [selectedCategory, setSelectedCategoryState] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null;
     try {
       const pathname = window.location.pathname;
@@ -300,7 +326,17 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     return null;
   });
 
-  const [searchQuery, setSearchQuery] = useState<string>('');
+  const setSelectedCategory = useCallback((catId: string | null) => {
+    setSelectedCategoryState((prev) => (prev === catId ? prev : catId));
+    setCategoryPage((prev) => (prev === 1 ? prev : 1));
+  }, []);
+
+  const [searchQuery, setSearchQueryState] = useState<string>('');
+
+  const setSearchQuery = useCallback((query: string) => {
+    setSearchQueryState((prev) => (prev === query ? prev : query));
+    setCategoryPage((prev) => (prev === 1 ? prev : 1));
+  }, []);
   const [quickViewProduct, setQuickViewProduct] = useState<Product | null>(null);
   const [videoModalProduct, setVideoModalProduct] = useState<Product | null>(null);
   const [videoModalMode, setVideoModalMode] = useState<'popup' | 'floating'>('popup');
@@ -341,25 +377,37 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   // Wishlist
   const [wishlist, setWishlist] = useState<string[]>(() => {
     try {
-      const saved = localStorage.getItem('rongdhonu_wishlist') || localStorage.getItem(STORAGE_KEYS.WISHLIST);
+      const saved = localStorage.getItem(STORAGE_KEYS.WISHLIST);
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
     }
   });
 
+  const lastSavedWishlistRef = useRef<string | null>(null);
   const [isWishlistOpen, setIsWishlistOpen] = useState(false);
 
   useEffect(() => {
     try {
-      localStorage.setItem('rongdhonu_wishlist', JSON.stringify(wishlist));
-      localStorage.setItem(STORAGE_KEYS.WISHLIST, JSON.stringify(wishlist));
+      const serialized = JSON.stringify(wishlist);
+      if (lastSavedWishlistRef.current === null) {
+        lastSavedWishlistRef.current = serialized;
+        const currentSaved = localStorage.getItem(STORAGE_KEYS.WISHLIST);
+        if (currentSaved === serialized) {
+          return;
+        }
+      }
+      if (lastSavedWishlistRef.current !== serialized) {
+        lastSavedWishlistRef.current = serialized;
+        localStorage.setItem(STORAGE_KEYS.WISHLIST, serialized);
+      }
     } catch (e) {
       console.error('Error saving wishlist', e);
     }
   }, [wishlist]);
 
   const toggleWishlist = useCallback((productId: string) => {
+    if (!productId) return;
     setWishlist((prev) => {
       const exists = prev.includes(productId);
       const updated = exists ? prev.filter((id) => id !== productId) : [...prev, productId];
@@ -384,7 +432,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   }, [wishlist]);
 
   const clearWishlist = useCallback(() => {
-    setWishlist([]);
+    setWishlist((prev) => (prev.length === 0 ? prev : []));
   }, []);
 
   // User Account Modal
@@ -394,18 +442,29 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   // Coupons
   const [coupons, setCoupons] = useState<Coupon[]>(() => {
     try {
-      const saved = localStorage.getItem('rongdhonu_coupons') || localStorage.getItem(STORAGE_KEYS.COUPONS);
+      const saved = localStorage.getItem(STORAGE_KEYS.COUPONS);
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
     }
   });
 
+  const lastSavedCouponsRef = useRef<string | null>(null);
+
   useEffect(() => {
     try {
       const data = JSON.stringify(coupons);
-      localStorage.setItem('rongdhonu_coupons', data);
-      localStorage.setItem(STORAGE_KEYS.COUPONS, data);
+      if (lastSavedCouponsRef.current === null) {
+        lastSavedCouponsRef.current = data;
+        const currentSaved = localStorage.getItem(STORAGE_KEYS.COUPONS);
+        if (currentSaved === data) {
+          return;
+        }
+      }
+      if (lastSavedCouponsRef.current !== data) {
+        lastSavedCouponsRef.current = data;
+        localStorage.setItem(STORAGE_KEYS.COUPONS, data);
+      }
     } catch (e) {
       console.error('Error saving coupons', e);
     }
@@ -452,18 +511,29 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   // Reviews
   const [reviews, setReviews] = useState<ProductReview[]>(() => {
     try {
-      const saved = localStorage.getItem('rongdhonu_reviews') || localStorage.getItem(STORAGE_KEYS.REVIEWS);
+      const saved = localStorage.getItem(STORAGE_KEYS.REVIEWS);
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
     }
   });
 
+  const lastSavedReviewsRef = useRef<string | null>(null);
+
   useEffect(() => {
     try {
       const data = JSON.stringify(reviews);
-      localStorage.setItem('rongdhonu_reviews', data);
-      localStorage.setItem(STORAGE_KEYS.REVIEWS, data);
+      if (lastSavedReviewsRef.current === null) {
+        lastSavedReviewsRef.current = data;
+        const currentSaved = localStorage.getItem(STORAGE_KEYS.REVIEWS);
+        if (currentSaved === data) {
+          return;
+        }
+      }
+      if (lastSavedReviewsRef.current !== data) {
+        lastSavedReviewsRef.current = data;
+        localStorage.setItem(STORAGE_KEYS.REVIEWS, data);
+      }
     } catch (e) {
       console.error('Error saving reviews', e);
     }
@@ -624,17 +694,33 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       if (homepageRes.success && homepageRes.data) {
         const hpData = homepageRes.data;
         if (Array.isArray(hpData.categories)) {
-          setCategories(hpData.categories);
+          setCategories((prev) => {
+            if (
+              prev.length === hpData.categories.length &&
+              prev.every((c, i) => c.id === hpData.categories[i].id && c.name === hpData.categories[i].name)
+            ) {
+              return prev;
+            }
+            return hpData.categories;
+          });
         }
         if (Array.isArray(hpData.slides)) {
           setSlides(hpData.slides);
         }
         if (hpData.settings) {
-          setSettings(hpData.settings);
+          setSettings((prev) => {
+            const jsonPrev = JSON.stringify(prev);
+            const jsonNext = JSON.stringify(hpData.settings);
+            return jsonPrev === jsonNext ? prev : hpData.settings;
+          });
           try {
             const json = JSON.stringify(sanitizeSettingsForBrowserStorage(hpData.settings));
-            localStorage.setItem(STORAGE_KEYS.SETTINGS, json);
-            localStorage.setItem('rongdhonu_settings', json);
+            if (localStorage.getItem(STORAGE_KEYS.SETTINGS) !== json) {
+              localStorage.setItem(STORAGE_KEYS.SETTINGS, json);
+            }
+            if (localStorage.getItem('rongdhonu_settings')) {
+              localStorage.removeItem('rongdhonu_settings');
+            }
           } catch {}
         }
         if (hpData.categoryProducts) {
@@ -660,17 +746,34 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         let freshCategories: Category[] = [];
         if (catsRes.status === 'fulfilled' && Array.isArray(catsRes.value)) {
           freshCategories = catsRes.value;
-          setCategories(freshCategories);
+          setCategories((prev) => {
+            if (
+              prev.length === freshCategories.length &&
+              prev.every((c, i) => c.id === freshCategories[i].id && c.name === freshCategories[i].name)
+            ) {
+              return prev;
+            }
+            return freshCategories;
+          });
         }
         if (sldsRes.status === 'fulfilled' && Array.isArray(sldsRes.value)) {
           setSlides(sldsRes.value);
         }
         if (sttngsRes.status === 'fulfilled' && sttngsRes.value) {
-          setSettings(sttngsRes.value);
+          const freshSettings = sttngsRes.value;
+          setSettings((prev) => {
+            const jsonPrev = JSON.stringify(prev);
+            const jsonNext = JSON.stringify(freshSettings);
+            return jsonPrev === jsonNext ? prev : freshSettings;
+          });
           try {
-            const json = JSON.stringify(sanitizeSettingsForBrowserStorage(sttngsRes.value));
-            localStorage.setItem(STORAGE_KEYS.SETTINGS, json);
-            localStorage.setItem('rongdhonu_settings', json);
+            const json = JSON.stringify(sanitizeSettingsForBrowserStorage(freshSettings));
+            if (localStorage.getItem(STORAGE_KEYS.SETTINGS) !== json) {
+              localStorage.setItem(STORAGE_KEYS.SETTINGS, json);
+            }
+            if (localStorage.getItem('rongdhonu_settings')) {
+              localStorage.removeItem('rongdhonu_settings');
+            }
           } catch {}
         }
 
@@ -777,9 +880,24 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           setIsCategoryLoading(false);
 
           setProducts((prev) => {
+            let hasNewOrUpdated = false;
             const map = new Map<string, Product>();
-            prev.forEach((p) => map.set(p.id, p));
-            res.products.forEach((p) => map.set(p.id, p));
+            for (const p of prev) {
+              map.set(p.id, p);
+            }
+            for (const p of res.products) {
+              const existing = map.get(p.id);
+              if (
+                !existing ||
+                existing.updatedAt !== p.updatedAt ||
+                existing.price !== p.price ||
+                existing.stock !== p.stock
+              ) {
+                hasNewOrUpdated = true;
+                map.set(p.id, p);
+              }
+            }
+            if (!hasNewOrUpdated) return prev;
             return Array.from(map.values());
           });
         }
@@ -1092,7 +1210,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const clearPixelLogs = useCallback(() => {
     clearStoredPixelLogs();
-    setPixelLogs([]);
+    setPixelLogs((prev) => (prev.length === 0 ? prev : []));
     showNotification('info', 'Logs Cleared', 'In-memory and cached pixel event logs have been cleared.');
   }, [showNotification]);
 

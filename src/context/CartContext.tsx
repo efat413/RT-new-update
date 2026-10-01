@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { CartItem, Product } from '../types';
 import { STORAGE_KEYS } from './storageKeys';
 import { trackSocialEvent } from '../utils/pixelTracking';
@@ -48,11 +48,23 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
   });
 
   const [isCartOpen, setIsCartOpen] = useState<boolean>(false);
+  const lastSavedCartRef = useRef<string | null>(null);
 
-  // Sync cart to localStorage whenever it changes
+  // Sync cart to localStorage whenever it changes (avoid initial mount rewrite and duplicate string writes)
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEYS.CART, JSON.stringify(cart));
+      const serialized = JSON.stringify(cart);
+      if (lastSavedCartRef.current === null) {
+        lastSavedCartRef.current = serialized;
+        const currentSaved = localStorage.getItem(STORAGE_KEYS.CART);
+        if (currentSaved === serialized) {
+          return;
+        }
+      }
+      if (lastSavedCartRef.current !== serialized) {
+        lastSavedCartRef.current = serialized;
+        localStorage.setItem(STORAGE_KEYS.CART, serialized);
+      }
     } catch (e) {
       console.error('Failed to save cart to localStorage', e);
     }
@@ -81,11 +93,15 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
           item.selectedColor === selectedColor
       );
       if (existing) {
+        const nextQty = Math.min(product.stock, existing.quantity + quantity);
+        if (nextQty === existing.quantity) {
+          return prev;
+        }
         return prev.map((item) =>
           item.product.id === product.id &&
           item.selectedSize === selectedSize &&
           item.selectedColor === selectedColor
-            ? { ...item, quantity: Math.min(product.stock, item.quantity + quantity) }
+            ? { ...item, quantity: nextQty }
             : item
         );
       }
@@ -124,28 +140,35 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
     selectedColor?: string
   ) => {
     if (quantity <= 0) {
-      setCart((prev) =>
-        prev.filter((item) => {
+      setCart((prev) => {
+        const next = prev.filter((item) => {
           if (item.product.id !== productId) return true;
           if (selectedSize !== undefined && item.selectedSize !== selectedSize) return true;
           if (selectedColor !== undefined && item.selectedColor !== selectedColor) return true;
           return false;
-        })
-      );
+        });
+        return next.length === prev.length ? prev : next;
+      });
       return;
     }
-    setCart((prev) =>
-      prev.map((item) => {
+    setCart((prev) => {
+      let hasChange = false;
+      const next = prev.map((item) => {
         const matches =
           item.product.id === productId &&
           (selectedSize === undefined || item.selectedSize === selectedSize) &&
           (selectedColor === undefined || item.selectedColor === selectedColor);
         if (matches) {
-          return { ...item, quantity: Math.min(item.product.stock, quantity) };
+          const nextQty = Math.min(item.product.stock, quantity);
+          if (nextQty !== item.quantity) {
+            hasChange = true;
+            return { ...item, quantity: nextQty };
+          }
         }
         return item;
-      })
-    );
+      });
+      return hasChange ? next : prev;
+    });
   }, []);
 
   const removeFromCart = useCallback((
@@ -153,18 +176,19 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
     selectedSize?: string,
     selectedColor?: string
   ) => {
-    setCart((prev) =>
-      prev.filter((item) => {
+    setCart((prev) => {
+      const next = prev.filter((item) => {
         if (item.product.id !== productId) return true;
         if (selectedSize !== undefined && item.selectedSize !== selectedSize) return true;
         if (selectedColor !== undefined && item.selectedColor !== selectedColor) return true;
         return false;
-      })
-    );
+      });
+      return next.length === prev.length ? prev : next;
+    });
   }, []);
 
   const clearCart = useCallback(() => {
-    setCart([]);
+    setCart((prev) => (prev.length === 0 ? prev : []));
   }, []);
 
   const quickBuy = useCallback((

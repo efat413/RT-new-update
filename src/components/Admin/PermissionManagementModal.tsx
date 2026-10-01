@@ -27,6 +27,7 @@ import {
   Info,
 } from 'lucide-react';
 import { useStore } from '../../context/StoreContext';
+import { STORAGE_KEYS } from '../../context/storageKeys';
 import { usersApi } from '../../services/storeApi';
 import {
   PERMISSION_KEYS,
@@ -483,13 +484,15 @@ export const PermissionManagementModal: React.FC<PermissionManagementModalProps>
 
       // Also persist to localStorage for consistent client session data
       try {
-        const savedRaw = localStorage.getItem('rongdhonu_users_v2') || localStorage.getItem('rongdhonu_users');
+        const savedRaw = localStorage.getItem(STORAGE_KEYS.USERS) || localStorage.getItem('rongdhonu_users_v2');
         if (savedRaw) {
           const parsed = JSON.parse(savedRaw);
           if (Array.isArray(parsed)) {
             const nextList = parsed.map((u: any) => (u.id === targetUser.id ? updatedUserAccount : u));
-            localStorage.setItem('rongdhonu_users_v2', JSON.stringify(nextList));
-            localStorage.setItem('rongdhonu_users', JSON.stringify(nextList));
+            localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(nextList));
+            if (localStorage.getItem('rongdhonu_users_v2')) {
+              localStorage.removeItem('rongdhonu_users_v2');
+            }
           }
         }
       } catch {}

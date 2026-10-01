@@ -31,10 +31,15 @@ export const AuthContext = createContext<AuthContextType | undefined>(undefined)
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(() => {
     try {
-      const saved =
-        localStorage.getItem(STORAGE_KEYS.CURRENT_USER) ||
-        localStorage.getItem('rongdhonu_current_user') ||
-        localStorage.getItem('rongdhonu_current_user_v2');
+      let saved = localStorage.getItem(STORAGE_KEYS.CURRENT_USER);
+      if (!saved) {
+        const legacy = localStorage.getItem('rongdhonu_current_user_v2');
+        if (legacy) {
+          saved = legacy;
+          localStorage.setItem(STORAGE_KEYS.CURRENT_USER, legacy);
+          localStorage.removeItem('rongdhonu_current_user_v2');
+        }
+      }
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed && typeof parsed === 'object') return parsed;
@@ -45,13 +50,50 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   });
 
-  const [isAdminLoggedIn, setIsAdminLoggedIn] = useState<boolean>(false);
+  const [isAdminLoggedIn, setIsAdminLoggedIn] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(STORAGE_KEYS.ADMIN_AUTH) === 'true';
+    } catch {
+      return false;
+    }
+  });
   const [isAuthInitializing, setIsAuthInitializing] = useState<boolean>(true);
   const hadActiveSessionRef = useRef<boolean>(false);
   const hasInitializedAuthRef = useRef<boolean>(false);
 
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
   const [authModalMode, setAuthModalMode] = useState<'login' | 'signup' | 'forgot-password'>('login');
+
+  const persistCurrentUserToStorage = (user: UserAccount | null) => {
+    try {
+      if (user) {
+        const json = JSON.stringify(user);
+        if (localStorage.getItem(STORAGE_KEYS.CURRENT_USER) !== json) {
+          localStorage.setItem(STORAGE_KEYS.CURRENT_USER, json);
+        }
+        if (localStorage.getItem('rongdhonu_current_user_v2')) {
+          localStorage.removeItem('rongdhonu_current_user_v2');
+        }
+      } else {
+        localStorage.removeItem(STORAGE_KEYS.CURRENT_USER);
+        if (localStorage.getItem('rongdhonu_current_user_v2')) {
+          localStorage.removeItem('rongdhonu_current_user_v2');
+        }
+      }
+    } catch {}
+  };
+
+  const persistAdminAuthToStorage = (isAdmin: boolean) => {
+    try {
+      if (isAdmin) {
+        if (localStorage.getItem(STORAGE_KEYS.ADMIN_AUTH) !== 'true') {
+          localStorage.setItem(STORAGE_KEYS.ADMIN_AUTH, 'true');
+        }
+      } else {
+        localStorage.removeItem(STORAGE_KEYS.ADMIN_AUTH);
+      }
+    } catch {}
+  };
 
   // Verify server session via /api/auth/me on startup
   useEffect(() => {
@@ -74,25 +116,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               res.user.role === 'sub_admin';
 
             setIsAdminLoggedIn(isPrivileged);
-            try {
-              if (isPrivileged) {
-                localStorage.setItem(STORAGE_KEYS.ADMIN_AUTH, 'true');
-              } else {
-                localStorage.removeItem(STORAGE_KEYS.ADMIN_AUTH);
-              }
-              localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(res.user));
-            } catch {}
+            persistAdminAuthToStorage(isPrivileged);
+            persistCurrentUserToStorage(res.user);
           } else {
             hadActiveSessionRef.current = false;
             setCurrentUser(null);
             setIsAdminLoggedIn(false);
-            try {
-              localStorage.removeItem(STORAGE_KEYS.ADMIN_AUTH);
-              localStorage.removeItem(STORAGE_KEYS.CURRENT_USER);
-              localStorage.removeItem('rongdhonu_current_user');
-              localStorage.removeItem('rongdhonu_current_user_v2');
-              localStorage.setItem('rongdhonu_admin_auth_v1', 'false');
-            } catch {}
+            persistAdminAuthToStorage(false);
+            persistCurrentUserToStorage(null);
           }
         }
       } catch {
@@ -121,13 +152,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       hadActiveSessionRef.current = false;
       setCurrentUser(null);
       setIsAdminLoggedIn(false);
-      try {
-        localStorage.removeItem(STORAGE_KEYS.ADMIN_AUTH);
-        localStorage.removeItem(STORAGE_KEYS.CURRENT_USER);
-        localStorage.removeItem('rongdhonu_current_user');
-        localStorage.removeItem('rongdhonu_current_user_v2');
-        localStorage.setItem('rongdhonu_admin_auth_v1', 'false');
-      } catch {}
+      persistAdminAuthToStorage(false);
+      persistCurrentUserToStorage(null);
     });
 
     return () => {
@@ -156,19 +182,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           apiRes.user.role === 'super_admin' ||
           apiRes.user.role === 'sub_admin';
 
-        if (isPrivileged) {
-          setIsAdminLoggedIn(true);
-          try {
-            localStorage.setItem(STORAGE_KEYS.ADMIN_AUTH, 'true');
-          } catch {}
-        } else {
-          setIsAdminLoggedIn(false);
-        }
-
-        try {
-          localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(apiRes.user));
-          localStorage.setItem('rongdhonu_current_user', JSON.stringify(apiRes.user));
-        } catch {}
+        setIsAdminLoggedIn(isPrivileged);
+        persistAdminAuthToStorage(isPrivileged);
+        persistCurrentUserToStorage(apiRes.user);
 
         return { success: true, user: apiRes.user };
       }
@@ -220,10 +236,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         hadActiveSessionRef.current = true;
         setCurrentUser(regRes.user);
         setIsAdminLoggedIn(false);
-        try {
-          localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(regRes.user));
-          localStorage.setItem('rongdhonu_current_user', JSON.stringify(regRes.user));
-        } catch {}
+        persistAdminAuthToStorage(false);
+        persistCurrentUserToStorage(regRes.user);
         return { success: true, user: regRes.user };
       }
 
@@ -244,15 +258,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     authApi.logout();
     setCurrentUser(null);
     setIsAdminLoggedIn(false);
-    try {
-      localStorage.removeItem('rongdhonu_current_user');
-      localStorage.removeItem('rongdhonu_current_user_v2');
-      localStorage.removeItem(STORAGE_KEYS.CURRENT_USER);
-      localStorage.removeItem(STORAGE_KEYS.ADMIN_AUTH);
-      localStorage.setItem('rongdhonu_admin_auth_v1', 'false');
-    } catch (e) {
-      console.error('Error on logout', e);
-    }
+    persistAdminAuthToStorage(false);
+    persistCurrentUserToStorage(null);
   }, []);
 
   const adminLogin = useCallback(async (usernameOrEmail: string, password: string): Promise<boolean> => {
@@ -264,11 +271,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         res.user.role === 'sub_admin';
       if (isPrivileged) {
         setIsAdminLoggedIn(true);
-        try {
-          localStorage.setItem(STORAGE_KEYS.ADMIN_AUTH, 'true');
-        } catch (e) {
-          console.error(e);
-        }
+        persistAdminAuthToStorage(true);
         return true;
       }
     }
@@ -300,12 +303,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     setCurrentUser(updatedUser);
-    try {
-      localStorage.setItem('rongdhonu_current_user', JSON.stringify(updatedUser));
-      localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(updatedUser));
-    } catch (e) {
-      console.error('Error saving updated current user', e);
-    }
+    persistCurrentUserToStorage(updatedUser);
 
     usersApi.update(currentUser.id, updatedUser).catch(console.error);
 

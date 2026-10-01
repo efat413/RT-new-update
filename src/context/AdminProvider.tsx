@@ -230,12 +230,21 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   // Courier Configs
   const [courierConfigs, setCourierConfigs] = useState<CourierApiConfig[]>(() => {
     try {
-      sanitizeAllBrowserStorage();
-      const saved = localStorage.getItem(STORAGE_KEYS.COURIERS);
+      let saved = localStorage.getItem(STORAGE_KEYS.COURIERS);
+      if (!saved) {
+        const legacy = localStorage.getItem('rongdhonu_couriers');
+        if (legacy) {
+          saved = legacy;
+          localStorage.removeItem('rongdhonu_couriers');
+        }
+      }
       if (saved) {
         const parsed = JSON.parse(saved);
         const sanitized = sanitizeCourierConfigs(Array.isArray(parsed) ? parsed : DEFAULT_COURIER_CONFIGS);
-        localStorage.setItem(STORAGE_KEYS.COURIERS, JSON.stringify(sanitized));
+        const sanitizedJson = JSON.stringify(sanitized);
+        if (sanitizedJson !== saved) {
+          localStorage.setItem(STORAGE_KEYS.COURIERS, sanitizedJson);
+        }
         return sanitized;
       }
       const initialSanitized = sanitizeCourierConfigs(DEFAULT_COURIER_CONFIGS);
@@ -267,7 +276,15 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   // Admin Users
   const [users, setUsers] = useState<UserAccount[]>(() => {
     try {
-      const saved = localStorage.getItem('rongdhonu_users') || localStorage.getItem('rongdhonu_users_v2');
+      let saved = localStorage.getItem(STORAGE_KEYS.USERS);
+      if (!saved) {
+        const legacy = localStorage.getItem('rongdhonu_users_v2');
+        if (legacy) {
+          saved = legacy;
+          localStorage.setItem(STORAGE_KEYS.USERS, legacy);
+          localStorage.removeItem('rongdhonu_users_v2');
+        }
+      }
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) return parsed;
@@ -676,8 +693,12 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setSettings(canonical);
       try {
         const json = JSON.stringify(sanitizeSettingsForBrowserStorage(canonical));
-        localStorage.setItem(STORAGE_KEYS.SETTINGS, json);
-        localStorage.setItem('rongdhonu_settings', json);
+        if (localStorage.getItem(STORAGE_KEYS.SETTINGS) !== json) {
+          localStorage.setItem(STORAGE_KEYS.SETTINGS, json);
+        }
+        if (localStorage.getItem('rongdhonu_settings')) {
+          localStorage.removeItem('rongdhonu_settings');
+        }
       } catch {}
 
       showNotification('success', 'Store Settings Saved! ✅', 'Store preferences saved to Cloudflare D1.', 5000);

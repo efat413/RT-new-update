@@ -114,45 +114,61 @@ export function sanitizeAllBrowserStorage(): void {
 
   for (const storage of storageTargets) {
     try {
-      // 1. Sanitize courier configurations
-      const courierKeys = ['rongdhonu_couriers_v1', 'rongdhonu_couriers'];
-      for (const k of courierKeys) {
-        const raw = storage.getItem(k);
-        if (raw) {
-          try {
-            const parsed = JSON.parse(raw);
-            const sanitized = sanitizeCourierConfigs(Array.isArray(parsed) ? parsed : []);
-            storage.setItem(k, JSON.stringify(sanitized));
-          } catch {
-            storage.removeItem(k);
+      // 1. Sanitize courier configurations & migrate legacy key
+      const rawV1 = storage.getItem('rongdhonu_couriers_v1');
+      const rawLegacyCouriers = storage.getItem('rongdhonu_couriers');
+      const courierSource = rawV1 || rawLegacyCouriers;
+      if (courierSource) {
+        try {
+          const parsed = JSON.parse(courierSource);
+          const sanitized = sanitizeCourierConfigs(Array.isArray(parsed) ? parsed : []);
+          const sanitizedJson = JSON.stringify(sanitized);
+          if (rawV1 !== sanitizedJson) {
+            storage.setItem('rongdhonu_couriers_v1', sanitizedJson);
           }
+          if (rawLegacyCouriers) {
+            storage.removeItem('rongdhonu_couriers');
+          }
+        } catch {
+          storage.removeItem('rongdhonu_couriers_v1');
+          storage.removeItem('rongdhonu_couriers');
         }
       }
 
-      // 2. Sanitize settings
-      const settingsKeys = ['rongdhonu_settings_v1', 'rongdhonu_settings'];
-      for (const k of settingsKeys) {
-        const raw = storage.getItem(k);
-        if (raw) {
-          try {
-            const parsed = JSON.parse(raw);
-            const sanitized = sanitizeSettingsForBrowserStorage(parsed);
-            storage.setItem(k, JSON.stringify(sanitized));
-          } catch {}
-        }
+      // 2. Sanitize settings & migrate legacy key
+      const rawSettingsV1 = storage.getItem('rongdhonu_settings_v1');
+      const rawLegacySettings = storage.getItem('rongdhonu_settings');
+      const settingsSource = rawSettingsV1 || rawLegacySettings;
+      if (settingsSource) {
+        try {
+          const parsed = JSON.parse(settingsSource);
+          const sanitized = sanitizeSettingsForBrowserStorage(parsed);
+          const sanitizedJson = JSON.stringify(sanitized);
+          if (rawSettingsV1 !== sanitizedJson) {
+            storage.setItem('rongdhonu_settings_v1', sanitizedJson);
+          }
+          if (rawLegacySettings) {
+            storage.removeItem('rongdhonu_settings');
+          }
+        } catch {}
       }
 
-      // 3. Sanitize courier webhooks
-      const webhookKeys = ['rongdhonu_courier_webhooks_v1', 'rongdhonu_courier_webhooks'];
-      for (const k of webhookKeys) {
-        const raw = storage.getItem(k);
-        if (raw) {
-          try {
-            const parsed = JSON.parse(raw);
-            const sanitized = sanitizeWebhooksForBrowserStorage(parsed);
-            storage.setItem(k, JSON.stringify(sanitized));
-          } catch {}
-        }
+      // 3. Sanitize courier webhooks & migrate legacy key
+      const rawWebhooks = storage.getItem('rongdhonu_courier_webhooks');
+      const rawLegacyWebhooks = storage.getItem('rongdhonu_courier_webhooks_v1');
+      const webhooksSource = rawWebhooks || rawLegacyWebhooks;
+      if (webhooksSource) {
+        try {
+          const parsed = JSON.parse(webhooksSource);
+          const sanitized = sanitizeWebhooksForBrowserStorage(parsed);
+          const sanitizedJson = JSON.stringify(sanitized);
+          if (rawWebhooks !== sanitizedJson) {
+            storage.setItem('rongdhonu_courier_webhooks', sanitizedJson);
+          }
+          if (rawLegacyWebhooks) {
+            storage.removeItem('rongdhonu_courier_webhooks_v1');
+          }
+        } catch {}
       }
 
       // 4. Purge any orphan storage entries containing credential patterns

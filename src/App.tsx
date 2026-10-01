@@ -283,6 +283,34 @@ const StoreContent: React.FC = () => {
   const [invalidNotice, setInvalidNotice] = useState<string | null>(null);
   const [homeCategoryFilter, setHomeCategoryFilter] = useState<string>('all');
 
+  const filteredHomeCategories = React.useMemo(() => {
+    return homeCategoryFilter === 'all'
+      ? categories
+      : categories.filter((c) => c.id === homeCategoryFilter);
+  }, [homeCategoryFilter, categories]);
+
+  const handleViewAllFeatured = React.useCallback(() => {
+    setSelectedCategory('featured');
+    window.history.pushState({}, '', '/featured');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [setSelectedCategory]);
+
+  const handleViewAllCategory = React.useCallback((category: any) => {
+    setSelectedCategory(category.id);
+    const categoryUrl = `/category/${category.slug || category.id}`;
+    window.history.pushState({}, '', categoryUrl);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [setSelectedCategory]);
+
+  const handleBackToHome = React.useCallback(() => {
+    setSelectedCategory(null);
+    setSearchQuery('');
+    if (window.location.pathname !== '/' || window.location.search) {
+      window.history.pushState({}, '', '/');
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [setSelectedCategory, setSearchQuery]);
+
   React.useEffect(() => {
     if (typeof window === 'undefined') return;
     if (isStoreInitializing) return; // Wait until D1 store data is loaded
@@ -622,14 +650,7 @@ const StoreContent: React.FC = () => {
                     onPageChange={(page) => setCategoryPage(page)}
                     onSortChange={(sort) => setCategorySortBy(sort)}
                     onCategoryChange={(catId) => setSelectedCategory(catId)}
-                    onBackToHome={() => {
-                      setSelectedCategory(null);
-                      setSearchQuery('');
-                      if (window.location.pathname !== '/' || window.location.search) {
-                        window.history.pushState({}, '', '/');
-                      }
-                      window.scrollTo({ top: 0, behavior: 'smooth' });
-                    }}
+                    onBackToHome={handleBackToHome}
                     onShareCategory={copyCategoryLink}
                     siteName={settings?.siteName}
                   />
@@ -643,19 +664,12 @@ const StoreContent: React.FC = () => {
               {homeCategoryFilter === 'all' && featuredProducts && featuredProducts.length > 0 && (
                 <FeaturedProductsCarousel
                   products={featuredProducts}
-                  onViewAll={() => {
-                    setSelectedCategory('featured');
-                    window.history.pushState({}, '', '/featured');
-                    window.scrollTo({ top: 0, behavior: 'smooth' });
-                  }}
+                  onViewAll={handleViewAllFeatured}
                 />
               )}
 
               <div className="space-y-2 sm:space-y-4">
-                {(homeCategoryFilter === 'all'
-                  ? categories
-                  : categories.filter((c) => c.id === homeCategoryFilter)
-                ).map((cat, idx) => {
+                {filteredHomeCategories.map((cat, idx) => {
                   const catProducts =
                     homepageCategoryProducts[cat.id] && homepageCategoryProducts[cat.id].length > 0
                       ? homepageCategoryProducts[cat.id]
@@ -668,12 +682,7 @@ const StoreContent: React.FC = () => {
                       key={cat.id}
                       category={cat}
                       products={catProducts}
-                      onViewAll={(category) => {
-                        setSelectedCategory(category.id);
-                        const categoryUrl = `/category/${category.slug || category.id}`;
-                        window.history.pushState({}, '', categoryUrl);
-                        window.scrollTo({ top: 0, behavior: 'smooth' });
-                      }}
+                      onViewAll={handleViewAllCategory}
                       priorityFirst={idx === 0 || homeCategoryFilter !== 'all'}
                     />
                   );
