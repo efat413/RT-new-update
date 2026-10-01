@@ -1690,6 +1690,28 @@ export const AdminPanel: React.FC = () => {
     setEditTotalAmount(Math.max(0, subtotal + editDeliveryFee - discount));
   };
 
+  const handleUpdateOrderItemSize = (index: number, newSize: string) => {
+    const nextItems = editOrderItems.map((item, i) => {
+      if (i !== index) return item;
+      return {
+        ...item,
+        selectedSize: newSize.trim() || undefined,
+      };
+    });
+    setEditOrderItems(nextItems);
+  };
+
+  const handleUpdateOrderItemColor = (index: number, newColor: string) => {
+    const nextItems = editOrderItems.map((item, i) => {
+      if (i !== index) return item;
+      return {
+        ...item,
+        selectedColor: newColor.trim() || undefined,
+      };
+    });
+    setEditOrderItems(nextItems);
+  };
+
   const handleRemoveOrderItem = (index: number) => {
     if (editOrderItems.length <= 1) {
       showNotification('error', 'Cannot Remove Item', 'An order must contain at least one product.');
@@ -9335,6 +9357,20 @@ export const AdminPanel: React.FC = () => {
                     const orderUnitPrice = Number(item.product?.price || 0);
                     const delta = orderUnitPrice - catalogPrice;
                     const itemTotal = orderUnitPrice * Number(item.quantity || 1);
+                    const availableSizes = Array.from(
+                      new Set([
+                        ...(publishedProd?.sizes || []),
+                        ...(item.product?.sizes || []),
+                        ...(item.selectedSize ? [item.selectedSize] : []),
+                      ].filter(Boolean) as string[])
+                    );
+                    const availableColors = Array.from(
+                      new Set([
+                        ...(publishedProd?.colors || []),
+                        ...(item.product?.colors || []),
+                        ...(item.selectedColor ? [item.selectedColor] : []),
+                      ].filter(Boolean) as string[])
+                    );
 
                     return (
                       <div
@@ -9381,6 +9417,123 @@ export const AdminPanel: React.FC = () => {
                               <Trash2 className="w-4 h-4" />
                             </button>
                           )}
+                        </div>
+
+                        {/* Variant Selection: Color & Size Controls */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2.5 pb-1 border-t border-slate-100">
+                          {/* Color Option Selector */}
+                          <div>
+                            <div className="flex items-center justify-between mb-1">
+                              <label
+                                htmlFor={`order-item-color-select-${idx}`}
+                                className="text-[10px] font-bold uppercase tracking-wider text-slate-600"
+                              >
+                                Product Color
+                              </label>
+                              {item.selectedColor && (
+                                <span className="text-[10px] font-semibold text-rose-600 flex items-center gap-1">
+                                  {(() => {
+                                    const parsed = parseColorOption(item.selectedColor);
+                                    return (
+                                      <>
+                                        <span
+                                          className={`w-2 h-2 rounded-full border shadow-2xs inline-block ${
+                                            parsed.isLight ? 'border-slate-300' : 'border-black/20'
+                                          }`}
+                                          style={{ backgroundColor: parsed.hex }}
+                                        />
+                                        <span className="truncate max-w-[100px]">{parsed.name}</span>
+                                      </>
+                                    );
+                                  })()}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <select
+                                id={`order-item-color-select-${idx}`}
+                                value={item.selectedColor || ''}
+                                onChange={(e) => {
+                                  if (e.target.value === '__custom__') {
+                                    handleUpdateOrderItemColor(idx, item.selectedColor || 'Custom');
+                                  } else {
+                                    handleUpdateOrderItemColor(idx, e.target.value);
+                                  }
+                                }}
+                                className="flex-1 px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-rose-500 focus:bg-white transition-all cursor-pointer"
+                              >
+                                <option value="">-- No Color / None --</option>
+                                {availableColors.map((col) => {
+                                  const parsed = parseColorOption(col);
+                                  return (
+                                    <option key={col} value={col}>
+                                      {parsed.name}
+                                    </option>
+                                  );
+                                })}
+                                <option value="__custom__">Custom / Other Color...</option>
+                              </select>
+                              {(!availableColors.includes(item.selectedColor || '') && Boolean(item.selectedColor)) && (
+                                <input
+                                  type="text"
+                                  value={item.selectedColor || ''}
+                                  onChange={(e) => handleUpdateOrderItemColor(idx, e.target.value)}
+                                  placeholder="Type color"
+                                  className="w-28 px-2 py-1.5 bg-white border border-rose-300 rounded-xl text-xs font-medium text-slate-800 focus:ring-2 focus:ring-rose-500"
+                                  title="Enter custom color name"
+                                />
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Size Option Selector */}
+                          <div>
+                            <div className="flex items-center justify-between mb-1">
+                              <label
+                                htmlFor={`order-item-size-select-${idx}`}
+                                className="text-[10px] font-bold uppercase tracking-wider text-slate-600"
+                              >
+                                Product Size / Option
+                              </label>
+                              {item.selectedSize && (
+                                <span className="text-[10px] font-extrabold text-slate-800 font-mono">
+                                  {item.selectedSize}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <select
+                                id={`order-item-size-select-${idx}`}
+                                value={item.selectedSize || ''}
+                                onChange={(e) => {
+                                  if (e.target.value === '__custom__') {
+                                    handleUpdateOrderItemSize(idx, item.selectedSize || 'Custom');
+                                  } else {
+                                    handleUpdateOrderItemSize(idx, e.target.value);
+                                  }
+                                }}
+                                className="flex-1 px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-rose-500 focus:bg-white transition-all cursor-pointer"
+                              >
+                                <option value="">-- No Size / None --</option>
+                                {availableSizes.map((sz) => (
+                                  <option key={sz} value={sz}>
+                                    {sz}
+                                  </option>
+                                ))}
+                                <option value="__custom__">Custom / Other Size...</option>
+                              </select>
+                              {(!availableSizes.includes(item.selectedSize || '') && Boolean(item.selectedSize)) && (
+                                <input
+                                  type="text"
+                                  value={item.selectedSize || ''}
+                                  onChange={(e) => handleUpdateOrderItemSize(idx, e.target.value)}
+                                  placeholder="Type size"
+                                  className="w-24 px-2 py-1.5 bg-white border border-rose-300 rounded-xl text-xs font-mono font-medium text-slate-800 focus:ring-2 focus:ring-rose-500"
+                                  title="Enter custom size"
+                                />
+                              )}
+                            </div>
+                          </div>
                         </div>
 
                         {/* Interactive Price Adjustment Row */}
