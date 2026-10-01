@@ -479,19 +479,50 @@ export interface TrackEventOptions {
   eventName: 'PageView' | 'ViewContent' | 'AddToCart' | 'InitiateCheckout' | 'Purchase' | 'Search' | 'AddToWishlist' | 'Contact' | string;
   params?: Record<string, any>;
   userData?: TrackingUserData | null;
-  settings: StoreSettings;
+  settings?: StoreSettings;
+}
+
+function getStoredOrFallbackSettings(): StoreSettings {
+  try {
+    const saved = localStorage.getItem('rongdhonu_settings_v1') || localStorage.getItem('rongdhonu_settings');
+    if (saved) return JSON.parse(saved);
+  } catch {}
+  return {
+    siteName: 'Rongdhonu Trade',
+    currencySymbol: '৳',
+    trackingEnabled: true,
+    advancedMatchingEnabled: true,
+    trackingDebugMode: false,
+  } as StoreSettings;
 }
 
 /**
  * Universal Event Dispatcher: Syncs across Meta Pixel, TikTok Pixel, and GTM dataLayer
  * with standardized Bangladeshi Taka currency (BDT) and optional SHA-256 Advanced Matching.
  */
-export function trackSocialEvent({
-  eventName,
-  params = {},
-  userData,
-  settings,
-}: TrackEventOptions): PixelEventLog {
+export function trackSocialEvent(
+  optionsOrEventName: TrackEventOptions | string,
+  maybeParams?: Record<string, any>,
+  maybeUserData?: TrackingUserData | null,
+  maybeSettings?: StoreSettings
+): PixelEventLog {
+  let eventName: string;
+  let params: Record<string, any>;
+  let userData: TrackingUserData | null | undefined;
+  let settings: StoreSettings;
+
+  if (typeof optionsOrEventName === 'string') {
+    eventName = optionsOrEventName;
+    params = maybeParams || {};
+    userData = maybeUserData;
+    settings = maybeSettings || getStoredOrFallbackSettings();
+  } else {
+    eventName = optionsOrEventName.eventName;
+    params = optionsOrEventName.params || {};
+    userData = optionsOrEventName.userData;
+    settings = optionsOrEventName.settings || getStoredOrFallbackSettings();
+  }
+
   const isEnabled = settings.trackingEnabled !== false;
   const isDebug = settings.trackingDebugMode === true;
   const platformsReached: ('meta' | 'tiktok' | 'gtm')[] = [];

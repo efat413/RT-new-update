@@ -140,8 +140,9 @@ import { uploadApi, profitAnalyticsApi } from '../services/storeApi';
 import { orderApi } from '../services/orderApi';
 import { formatWhatsAppLink, normalizeWhatsAppNumber } from '../utils/phone';
 import { copyToClipboardSafe } from '../utils/clipboard';
+import { AdminProvider } from '../context/AdminProvider';
 
-export const AdminPanel: React.FC = () => {
+const AdminPanelContent: React.FC = () => {
   const {
     products,
     categories,
@@ -5989,9 +5990,7 @@ export const AdminPanel: React.FC = () => {
                       <option value="">-- Choose Staff Account --</option>
                       {users
                         .filter(
-                          (u) =>
-                            (u.role === 'admin' || u.role === 'sub_admin') &&
-                            u.role !== 'super_admin'
+                          (u) => u.role === 'admin' || u.role === 'sub_admin'
                         )
                         .map((u) => (
                           <option key={u.id} value={u.id}>
@@ -6506,7 +6505,7 @@ export const AdminPanel: React.FC = () => {
                             <div className="flex items-center gap-1.5 min-w-0 overflow-hidden">
                               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider shrink-0">PW:</span>
                               <code className="font-mono text-xs font-bold text-slate-800 tracking-wider truncate">
-                                {isPwVisible ? (u.password || 'N/A') : '••••••••'}
+                                {isPwVisible ? ((u as any).password || 'N/A') : '••••••••'}
                               </code>
                             </div>
                             <button
@@ -10219,5 +10218,13 @@ export const AdminPanel: React.FC = () => {
         onConfirm={confirmDialog.onConfirm}
       />
     </div>
+  );
+};
+
+export const AdminPanel: React.FC = () => {
+  return (
+    <AdminProvider>
+      <AdminPanelContent />
+    </AdminProvider>
   );
 };

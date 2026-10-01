@@ -1,0 +1,14 @@
+export const STORAGE_KEYS = {
+  ORDERS: 'rongdhonu_orders_v1',
+  SETTINGS: 'rongdhonu_settings_v1',
+  CART: 'rongdhonu_cart_v1',
+  ADMIN_AUTH: 'rongdhonu_admin_auth_v1',
+  COURIERS: 'rongdhonu_couriers_v1',
+  USERS: 'rongdhonu_users',
+  CURRENT_USER: 'rongdhonu_current_user',
+  WISHLIST: 'rongdhonu_wishlist',
+  REVIEWS: 'rongdhonu_reviews',
+  COUPONS: 'rongdhonu_coupons',
+  COURIER_WEBHOOKS: 'rongdhonu_courier_webhooks',
+  COURIER_WEBHOOK_LOGS: 'rongdhonu_courier_webhook_logs',
+};
