@@ -605,9 +605,21 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   }, []);
 
   // Public Homepage Initial Load
-  const refreshAllStoreData = useCallback(async (): Promise<void> => {
+  const hasInitializedStoreRef = useRef<boolean>(false);
+  const isInitializingStoreRef = useRef<boolean>(false);
+
+  const refreshAllStoreData = useCallback(async (force = false): Promise<void> => {
+    // Prevent duplicate API requests during initial React render, re-renders, or concurrent effects
+    if (isInitializingStoreRef.current) {
+      return;
+    }
+    if (hasInitializedStoreRef.current && !force) {
+      return;
+    }
+
+    isInitializingStoreRef.current = true;
     try {
-      const homepageRes = await storeHomepageApi.getHomepage();
+      const homepageRes = await storeHomepageApi.getHomepage({ force });
 
       if (homepageRes.success && homepageRes.data) {
         const hpData = homepageRes.data;
@@ -634,12 +646,15 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         const loadedProducts = hpData.products || [];
         setProducts(loadedProducts);
         setQuickViewProduct((prev) => (prev ? loadedProducts.find((p) => p.id === prev.id) || prev : null));
+        hasInitializedStoreRef.current = true;
         setIsStoreError(false);
       } else {
-        const [catsRes, sldsRes, sttngsRes] = await Promise.allSettled([
-          categoriesApi.getAll(),
-          slidersApi.getAll(),
-          settingsApi.get(),
+        // Optimized Fallback: Parallel requests; avoids 1 separate API request per category
+        const [catsRes, sldsRes, sttngsRes, prodsRes] = await Promise.allSettled([
+          categoriesApi.getAll({ force }),
+          slidersApi.getAll({ force }),
+          settingsApi.get({ force }),
+          productsApi.getAll({ limit: 48 }),
         ]);
 
         let freshCategories: Category[] = [];
@@ -659,23 +674,38 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           } catch {}
         }
 
-        try {
-          const catMap: Record<string, Product[]> = {};
-          const loadedProducts: Product[] = [];
-          await Promise.all(
-            freshCategories.map(async (c) => {
-              try {
-                const catProds = await productsApi.getHomepageCategoryProducts(c.id, 6);
-                catMap[c.id] = catProds;
-                loadedProducts.push(...catProds);
-              } catch {
-                catMap[c.id] = [];
-              }
-            })
-          );
+        const catMap: Record<string, Product[]> = {};
+        let loadedProducts: Product[] = [];
+
+        if (prodsRes.status === 'fulfilled' && Array.isArray(prodsRes.value) && prodsRes.value.length > 0) {
+          loadedProducts = prodsRes.value;
+          for (const c of freshCategories) {
+            catMap[c.id] = loadedProducts.filter((p) => p.categoryId === c.id).slice(0, 6);
+          }
+          const feat = loadedProducts.filter((p) => Boolean(p.featured || (p as any).isFeatured)).slice(0, 8);
+          setFeaturedProducts(feat);
           setHomepageCategoryProducts(catMap);
           setProducts(loadedProducts);
-        } catch {}
+        } else {
+          // Secondary fallback only if bulk product query failed
+          try {
+            await Promise.all(
+              freshCategories.map(async (c) => {
+                try {
+                  const catProds = await productsApi.getHomepageCategoryProducts(c.id, 6);
+                  catMap[c.id] = catProds;
+                  loadedProducts.push(...catProds);
+                } catch {
+                  catMap[c.id] = [];
+                }
+              })
+            );
+            setHomepageCategoryProducts(catMap);
+            setProducts(loadedProducts);
+          } catch {}
+        }
+        hasInitializedStoreRef.current = true;
+        setIsStoreError(false);
       }
     } catch (e) {
       console.error('Failed to load store data from D1:', e);
@@ -699,14 +729,16 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         console.warn('Fallback seed data loading notice:', err);
       }
     } finally {
+      isInitializingStoreRef.current = false;
       setIsStoreInitializing(false);
     }
   }, []);
 
   const retryStoreInit = useCallback(() => {
+    hasInitializedStoreRef.current = false;
     setIsStoreInitializing(true);
     setIsStoreError(false);
-    refreshAllStoreData();
+    refreshAllStoreData(true);
   }, [refreshAllStoreData]);
 
   useEffect(() => {

@@ -45,6 +45,7 @@ import {
   profitAnalyticsApi,
   expensesApi,
   courierWebhooksApi,
+  storeHomepageApi,
 } from '../services/storeApi';
 
 export const SUPER_ADMIN_PERMISSIONS: AdminPermissions = {
@@ -1009,6 +1010,7 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setIsAdminLoggedIn(false);
       setCart([]);
       setCoupons(INITIAL_COUPONS);
+      storeHomepageApi.clearCache();
       try {
         localStorage.removeItem('rongdhonu_products');
         localStorage.removeItem('rongdhonu_slides');

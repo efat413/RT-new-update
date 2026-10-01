@@ -98,8 +98,18 @@ export function removeAuthToken(): void {
 }
 
 let activeMePromise: Promise<{ success: boolean; user?: UserAccount; status?: number; error?: string }> | null = null;
+let cachedMeResult: {
+  data: { success: boolean; user?: UserAccount; status?: number; error?: string };
+  timestamp: number;
+} | null = null;
+
+const ME_CACHE_TTL_MS = 30 * 1000; // 30 seconds safe session cache
 
 export const authApi = {
+  clearCache(): void {
+    cachedMeResult = null;
+  },
+
   /**
    * Logs in a user or admin using email/username and password.
    * Authentication token is securely managed exclusively via HttpOnly cookie.
@@ -109,6 +119,7 @@ export const authApi = {
     usernameOrEmail: string,
     password: string
   ): Promise<{ success: boolean; user?: UserAccount; error?: string }> {
+    cachedMeResult = null;
     try {
       const res = await fetch(`${API_BASE}/auth/login`, {
         method: 'POST',
@@ -150,6 +161,7 @@ export const authApi = {
     password: string;
     phone?: string;
   }): Promise<{ success: boolean; user?: UserAccount; error?: string }> {
+    cachedMeResult = null;
     try {
       const res = await fetch(`${API_BASE}/auth/register`, {
         method: 'POST',
@@ -169,6 +181,11 @@ export const authApi = {
         };
       }
 
+      cachedMeResult = {
+        data: { success: true, status: res.status, user: resData.user },
+        timestamp: Date.now(),
+      };
+
       return {
         success: true,
         user: resData.user,
@@ -185,7 +202,11 @@ export const authApi = {
    * Fetches the current authenticated user from the server using the HttpOnly cookie.
    * Does NOT require or send an Authorization header.
    */
-  async me(): Promise<{ success: boolean; user?: UserAccount; status?: number; error?: string }> {
+  async me(options?: { force?: boolean }): Promise<{ success: boolean; user?: UserAccount; status?: number; error?: string }> {
+    if (!options?.force && cachedMeResult && (Date.now() - cachedMeResult.timestamp < ME_CACHE_TTL_MS)) {
+      return cachedMeResult.data;
+    }
+
     if (activeMePromise) {
       return activeMePromise;
     }
@@ -208,10 +229,14 @@ export const authApi = {
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !data.success) {
           const errorMsg = data.error || `HTTP ${res.status}: Failed to authenticate session`;
-          return { success: false, status: res.status, error: errorMsg };
+          const failResult = { success: false, status: res.status, error: errorMsg };
+          cachedMeResult = { data: failResult, timestamp: Date.now() };
+          return failResult;
         }
 
-        return { success: true, status: res.status, user: data.user };
+        const successResult = { success: true, status: res.status, user: data.user };
+        cachedMeResult = { data: successResult, timestamp: Date.now() };
+        return successResult;
       } catch (err: any) {
         return { success: false, error: err?.message || 'Network error fetching user' };
       } finally {
@@ -230,6 +255,7 @@ export const authApi = {
     newPassword: string,
     oldPassword?: string
   ): Promise<{ success: boolean; error?: string; message?: string }> {
+    cachedMeResult = null;
     try {
       const res = await fetch(`${API_BASE}/auth/change-password`, {
         method: 'POST',

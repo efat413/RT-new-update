@@ -48,12 +48,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState<boolean>(false);
   const [isAuthInitializing, setIsAuthInitializing] = useState<boolean>(true);
   const hadActiveSessionRef = useRef<boolean>(false);
+  const hasInitializedAuthRef = useRef<boolean>(false);
 
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
   const [authModalMode, setAuthModalMode] = useState<'login' | 'signup' | 'forgot-password'>('login');
 
   // Verify server session via /api/auth/me on startup
   useEffect(() => {
+    if (hasInitializedAuthRef.current) return;
+    hasInitializedAuthRef.current = true;
     let isMounted = true;
 
     const initAuth = async () => {

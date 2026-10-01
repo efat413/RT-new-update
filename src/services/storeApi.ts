@@ -101,12 +101,47 @@ let activeHomepagePromise: Promise<{
   error?: string;
 }> | null = null;
 
+let cachedHomepageData: {
+  data: HomepageData;
+  timestamp: number;
+} | null = null;
+
+let cachedCategories: {
+  data: Category[];
+  timestamp: number;
+} | null = null;
+
+let activeCategoriesPromise: Promise<Category[]> | null = null;
+
+let cachedSliders: {
+  data: CarouselSlide[];
+  timestamp: number;
+} | null = null;
+
+let activeSlidersPromise: Promise<CarouselSlide[]> | null = null;
+
+let cachedSettings: {
+  data: StoreSettings;
+  timestamp: number;
+} | null = null;
+
+let activeSettingsPromise: Promise<StoreSettings> | null = null;
+
+const CACHE_TTL_MS = 60 * 1000; // 60s matching Cloudflare edge cache max-age
+
 export const storeHomepageApi = {
-  async getHomepage(): Promise<{
+  async getHomepage(options?: { force?: boolean }): Promise<{
     success: boolean;
     data?: HomepageData;
     error?: string;
   }> {
+    if (!options?.force && cachedHomepageData && (Date.now() - cachedHomepageData.timestamp < CACHE_TTL_MS)) {
+      return {
+        success: true,
+        data: cachedHomepageData.data,
+      };
+    }
+
     if (activeHomepagePromise) {
       return activeHomepagePromise;
     }
@@ -124,16 +159,32 @@ export const storeHomepageApi = {
         }>(`${API_BASE}/store/homepage`);
 
         if (res.success && res.data) {
+          const hpData: HomepageData = {
+            settings: res.data.settings,
+            categories: res.data.categories,
+            slides: res.data.slides,
+            categoryProducts: res.data.categoryProducts,
+            featuredProducts: res.data.featuredProducts,
+            products: res.data.products,
+          };
+          const now = Date.now();
+          cachedHomepageData = {
+            data: hpData,
+            timestamp: now,
+          };
+          // Cross-populate individual caches to prevent redundant standalone requests
+          if (Array.isArray(hpData.categories)) {
+            cachedCategories = { data: hpData.categories, timestamp: now };
+          }
+          if (Array.isArray(hpData.slides)) {
+            cachedSliders = { data: hpData.slides, timestamp: now };
+          }
+          if (hpData.settings) {
+            cachedSettings = { data: hpData.settings, timestamp: now };
+          }
           return {
             success: true,
-            data: {
-              settings: res.data.settings,
-              categories: res.data.categories,
-              slides: res.data.slides,
-              categoryProducts: res.data.categoryProducts,
-              featuredProducts: res.data.featuredProducts,
-              products: res.data.products,
-            },
+            data: hpData,
           };
         }
         return {
@@ -146,6 +197,17 @@ export const storeHomepageApi = {
     })();
 
     return activeHomepagePromise;
+  },
+
+  clearCache(): void {
+    cachedHomepageData = null;
+  },
+
+  getCached(): HomepageData | null {
+    if (cachedHomepageData && (Date.now() - cachedHomepageData.timestamp < CACHE_TTL_MS)) {
+      return cachedHomepageData.data;
+    }
+    return null;
   },
 };
 
@@ -228,6 +290,7 @@ export const productsApi = {
   },
 
   async create(product: Partial<Product>): Promise<Product> {
+    storeHomepageApi.clearCache();
     const res = await apiRequest<{ success: boolean; product: Product }>(`${API_BASE}/products`, {
       method: 'POST',
       body: JSON.stringify(product),
@@ -239,6 +302,7 @@ export const productsApi = {
   },
 
   async update(id: string, updates: Partial<Product>): Promise<Product> {
+    storeHomepageApi.clearCache();
     const res = await apiRequest<{ success: boolean; product: Product }>(
       `${API_BASE}/products/${encodeURIComponent(id)}`,
       {
@@ -253,6 +317,7 @@ export const productsApi = {
   },
 
   async setFeatured(id: string, isFeatured: boolean, featuredSortOrder?: number): Promise<Product> {
+    storeHomepageApi.clearCache();
     const res = await apiRequest<{ success: boolean; product: Product }>(
       `${API_BASE}/products/${encodeURIComponent(id)}/featured`,
       {
@@ -267,6 +332,7 @@ export const productsApi = {
   },
 
   async delete(id: string): Promise<boolean> {
+    storeHomepageApi.clearCache();
     const res = await apiRequest<{ success: boolean }>(`${API_BASE}/products/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     });
@@ -281,15 +347,35 @@ export const productsApi = {
 // 2. CATEGORIES API
 // ==========================================
 export const categoriesApi = {
-  async getAll(): Promise<Category[]> {
-    const res = await apiRequest<{ success: boolean; categories: Category[] }>(`${API_BASE}/categories`);
-    if (res.success && res.data && Array.isArray(res.data.categories)) {
-      return res.data.categories;
+  async getAll(options?: { force?: boolean }): Promise<Category[]> {
+    if (!options?.force && cachedCategories && (Date.now() - cachedCategories.timestamp < CACHE_TTL_MS)) {
+      return cachedCategories.data;
     }
-    throw new Error(res.error || 'Failed to fetch categories from D1');
+    if (activeCategoriesPromise) {
+      return activeCategoriesPromise;
+    }
+    activeCategoriesPromise = (async () => {
+      try {
+        const res = await apiRequest<{ success: boolean; categories: Category[] }>(`${API_BASE}/categories`);
+        if (res.success && res.data && Array.isArray(res.data.categories)) {
+          cachedCategories = { data: res.data.categories, timestamp: Date.now() };
+          return res.data.categories;
+        }
+        throw new Error(res.error || 'Failed to fetch categories from D1');
+      } finally {
+        activeCategoriesPromise = null;
+      }
+    })();
+    return activeCategoriesPromise;
+  },
+
+  clearCache(): void {
+    cachedCategories = null;
   },
 
   async create(category: Partial<Category>): Promise<Category> {
+    cachedCategories = null;
+    storeHomepageApi.clearCache();
     const res = await apiRequest<{ success: boolean; category: Category }>(`${API_BASE}/categories`, {
       method: 'POST',
       body: JSON.stringify(category),
@@ -301,6 +387,8 @@ export const categoriesApi = {
   },
 
   async update(id: string, updates: Partial<Category>): Promise<Category> {
+    cachedCategories = null;
+    storeHomepageApi.clearCache();
     const res = await apiRequest<{ success: boolean; category: Category }>(
       `${API_BASE}/categories/${encodeURIComponent(id)}`,
       {
@@ -315,6 +403,8 @@ export const categoriesApi = {
   },
 
   async delete(id: string): Promise<boolean> {
+    cachedCategories = null;
+    storeHomepageApi.clearCache();
     const res = await apiRequest<{ success: boolean }>(`${API_BASE}/categories/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     });
@@ -329,15 +419,35 @@ export const categoriesApi = {
 // 3. SLIDERS API
 // ==========================================
 export const slidersApi = {
-  async getAll(): Promise<CarouselSlide[]> {
-    const res = await apiRequest<{ success: boolean; sliders: CarouselSlide[] }>(`${API_BASE}/sliders`);
-    if (res.success && res.data && Array.isArray(res.data.sliders)) {
-      return res.data.sliders;
+  async getAll(options?: { force?: boolean }): Promise<CarouselSlide[]> {
+    if (!options?.force && cachedSliders && (Date.now() - cachedSliders.timestamp < CACHE_TTL_MS)) {
+      return cachedSliders.data;
     }
-    throw new Error(res.error || 'Failed to fetch sliders from D1');
+    if (activeSlidersPromise) {
+      return activeSlidersPromise;
+    }
+    activeSlidersPromise = (async () => {
+      try {
+        const res = await apiRequest<{ success: boolean; sliders: CarouselSlide[] }>(`${API_BASE}/sliders`);
+        if (res.success && res.data && Array.isArray(res.data.sliders)) {
+          cachedSliders = { data: res.data.sliders, timestamp: Date.now() };
+          return res.data.sliders;
+        }
+        throw new Error(res.error || 'Failed to fetch sliders from D1');
+      } finally {
+        activeSlidersPromise = null;
+      }
+    })();
+    return activeSlidersPromise;
+  },
+
+  clearCache(): void {
+    cachedSliders = null;
   },
 
   async create(slider: Partial<CarouselSlide>): Promise<CarouselSlide> {
+    cachedSliders = null;
+    storeHomepageApi.clearCache();
     const res = await apiRequest<{ success: boolean; slider: CarouselSlide }>(`${API_BASE}/sliders`, {
       method: 'POST',
       body: JSON.stringify(slider),
@@ -349,6 +459,8 @@ export const slidersApi = {
   },
 
   async update(id: string, updates: Partial<CarouselSlide>): Promise<CarouselSlide> {
+    cachedSliders = null;
+    storeHomepageApi.clearCache();
     const res = await apiRequest<{ success: boolean; slider: CarouselSlide }>(
       `${API_BASE}/sliders/${encodeURIComponent(id)}`,
       {
@@ -363,6 +475,8 @@ export const slidersApi = {
   },
 
   async delete(id: string): Promise<boolean> {
+    cachedSliders = null;
+    storeHomepageApi.clearCache();
     const res = await apiRequest<{ success: boolean }>(`${API_BASE}/sliders/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     });
@@ -377,24 +491,44 @@ export const slidersApi = {
 // 4. STORE SETTINGS API
 // ==========================================
 export const settingsApi = {
-  async get(): Promise<StoreSettings> {
-    let res = await apiRequest<any>(`${API_BASE}/settings`);
-    if (!res.success) {
-      // Retry once after 250ms for dev server restart resilience
-      await new Promise((r) => setTimeout(r, 250));
-      res = await apiRequest<any>(`${API_BASE}/settings`);
+  async get(options?: { force?: boolean }): Promise<StoreSettings> {
+    if (!options?.force && cachedSettings && (Date.now() - cachedSettings.timestamp < CACHE_TTL_MS)) {
+      return cachedSettings.data;
     }
+    if (activeSettingsPromise) {
+      return activeSettingsPromise;
+    }
+    activeSettingsPromise = (async () => {
+      try {
+        let res = await apiRequest<any>(`${API_BASE}/settings`);
+        if (!res.success) {
+          // Retry once after 250ms for dev server restart resilience
+          await new Promise((r) => setTimeout(r, 250));
+          res = await apiRequest<any>(`${API_BASE}/settings`);
+        }
 
-    if (res.success && res.data) {
-      const candidate = res.data.settings || (res.data.siteName ? res.data : null);
-      if (candidate && typeof candidate === 'object') {
-        return candidate as StoreSettings;
+        if (res.success && res.data) {
+          const candidate = res.data.settings || (res.data.siteName ? res.data : null);
+          if (candidate && typeof candidate === 'object') {
+            cachedSettings = { data: candidate as StoreSettings, timestamp: Date.now() };
+            return candidate as StoreSettings;
+          }
+        }
+        throw new Error(res.error || 'Failed to fetch settings from D1');
+      } finally {
+        activeSettingsPromise = null;
       }
-    }
-    throw new Error(res.error || 'Failed to fetch settings from D1');
+    })();
+    return activeSettingsPromise;
+  },
+
+  clearCache(): void {
+    cachedSettings = null;
   },
 
   async update(settings: Partial<StoreSettings>): Promise<StoreSettings> {
+    cachedSettings = null;
+    storeHomepageApi.clearCache();
     const res = await apiRequest<any>(`${API_BASE}/settings`, {
       method: 'PUT',
       body: JSON.stringify(settings),
@@ -402,6 +536,7 @@ export const settingsApi = {
     if (res.success && res.data) {
       const candidate = res.data.settings || (res.data.siteName ? res.data : null);
       if (candidate && typeof candidate === 'object') {
+        cachedSettings = { data: candidate as StoreSettings, timestamp: Date.now() };
         return candidate as StoreSettings;
       }
     }
