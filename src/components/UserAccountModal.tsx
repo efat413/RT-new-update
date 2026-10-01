@@ -247,22 +247,22 @@ export const UserAccountModal: React.FC<UserAccountModalProps> = ({ isOpen, onCl
               <div
                 onClick={() => {
                   onClose();
-                  const isAlreadyHome =
-                    !window.location.search && (window.location.pathname === '/' || window.location.pathname === '');
-                  if (isAlreadyHome) {
-                    window.location.reload();
-                  } else {
-                    window.location.href = '/';
+                  setCurrentView('store');
+                  if (window.location.pathname !== '/' || window.location.search) {
+                    window.history.pushState({}, '', '/');
                   }
                 }}
                 className="w-10 h-10 sm:w-11 sm:h-11 rounded-2xl bg-gradient-to-br from-slate-900 to-slate-800 text-white font-bold flex items-center justify-center text-sm sm:text-base shadow-sm shrink-0 cursor-pointer hover:ring-2 hover:ring-rose-500 hover:scale-105 active:scale-95 transition-all select-none"
-                title="Click to visit or reload homepage"
+                title="Return to store homepage"
                 role="button"
                 tabIndex={0}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' || e.key === ' ') {
                     onClose();
-                    window.location.href = '/';
+                    setCurrentView('store');
+                    if (window.location.pathname !== '/' || window.location.search) {
+                      window.history.pushState({}, '', '/');
+                    }
                   }
                 }}
               >
