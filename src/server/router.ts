@@ -2099,8 +2099,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           201
         );
       } catch (err: any) {
-        console.error('Error creating product:', err);
-        return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+        console.error('Error creating product in D1:', err);
+        return jsonResponse({ success: false, error: err?.message || 'Failed to create product in database.' }, 500);
       }
     }
   }

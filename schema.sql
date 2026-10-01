@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS products (
   sizes_json TEXT DEFAULT '[]',
   colors_json TEXT DEFAULT '[]',
   sku TEXT,
+  video_url TEXT,
   status TEXT DEFAULT 'active',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP

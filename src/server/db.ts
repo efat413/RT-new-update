@@ -58,20 +58,110 @@ export async function checkTablesExist(db: D1Database): Promise<{ existing: stri
   return { existing, missing };
 }
 
-let schemaColumnsEnsured = true;
+let cachedProductTableColumns: Set<string> | null = null;
+let schemaHealingAttempted = false;
+
+export async function getProductTableColumns(db: D1Database): Promise<Set<string>> {
+  if (cachedProductTableColumns && cachedProductTableColumns.size > 0) {
+    return cachedProductTableColumns;
+  }
+  try {
+    const res = await db.prepare("SELECT name FROM pragma_table_info('products')").all<{ name: string }>();
+    if (res.results && res.results.length > 0) {
+      cachedProductTableColumns = new Set(res.results.map((r) => r.name.toLowerCase()));
+      return cachedProductTableColumns;
+    }
+  } catch (err) {
+    console.warn('[D1] Could not query pragma_table_info for products:', err);
+  }
+  return new Set([
+    'id', 'title', 'price', 'original_price', 'category_id', 'description',
+    'image_url', 'images_json', 'stock', 'featured', 'rating', 'reviews_count',
+    'specs_json', 'sizes_json', 'colors_json', 'sku', 'status', 'created_at', 'updated_at'
+  ]);
+}
 
 /**
- * Migration verification helper.
- * Persistent table and column updates are now strictly managed via D1 migrations:
- * - 0001_initial_schema.sql
- * - 0004_buying_price_and_expenses.sql
- * - 0006_password_reset_tokens.sql
- * - 0007_rate_limits_and_schema_cleanup.sql
- * Runtime PRAGMA inspection and mutation have been removed from normal request handling.
+ * Migration verification & self-healing helper.
+ * Ensures the products table contains all required columns (e.g. video_url, buying_price, featured_sort_order)
+ * without data loss, table drops, or resets.
  */
-export async function ensureSchemaColumns(_db: D1Database): Promise<void> {
-  // Schema is migration-driven; retained for backward-compatibility without runtime overhead.
-  schemaColumnsEnsured = true;
+export async function ensureProductTableSchema(db: D1Database): Promise<Set<string>> {
+  let columns = await getProductTableColumns(db);
+
+  if (!schemaHealingAttempted) {
+    schemaHealingAttempted = true;
+
+    // Self-heal: video_url column (missing in initial schema.sql)
+    if (!columns.has('video_url')) {
+      try {
+        await db.prepare('ALTER TABLE products ADD COLUMN video_url TEXT').run();
+        cachedProductTableColumns = null;
+        columns = await getProductTableColumns(db);
+        console.log('[D1] Self-healed: added missing video_url column to products table.');
+      } catch (err: any) {
+        console.warn('[D1] video_url column addition notice:', err?.message || err);
+      }
+    }
+
+    // Self-heal: buying_price column
+    if (!columns.has('buying_price')) {
+      try {
+        await db.prepare('ALTER TABLE products ADD COLUMN buying_price REAL DEFAULT 0').run();
+        cachedProductTableColumns = null;
+        columns = await getProductTableColumns(db);
+        console.log('[D1] Self-healed: added missing buying_price column to products table.');
+      } catch (err: any) {
+        console.warn('[D1] buying_price column addition notice:', err?.message || err);
+      }
+    }
+
+    // Self-heal: featured_sort_order column
+    if (!columns.has('featured_sort_order')) {
+      try {
+        await db.prepare('ALTER TABLE products ADD COLUMN featured_sort_order INTEGER DEFAULT 0').run();
+        cachedProductTableColumns = null;
+        columns = await getProductTableColumns(db);
+        console.log('[D1] Self-healed: added missing featured_sort_order column to products table.');
+      } catch (err: any) {
+        console.warn('[D1] featured_sort_order column addition notice:', err?.message || err);
+      }
+    }
+  }
+
+  return columns;
+}
+
+export function buildSelectProductColumns(availableColumns: Set<string>, includeBuyingPrice?: boolean): string {
+  const desired = [
+    'id',
+    'title',
+    'price',
+    'original_price',
+    ...(includeBuyingPrice ? ['buying_price'] : []),
+    'category_id',
+    'description',
+    'image_url',
+    'images_json',
+    'stock',
+    'featured',
+    'featured_sort_order',
+    'rating',
+    'reviews_count',
+    'specs_json',
+    'sizes_json',
+    'colors_json',
+    'sku',
+    'video_url',
+    'status',
+    'created_at',
+    'updated_at',
+  ];
+  return desired.filter((col) => availableColumns.has(col)).join(', ');
+}
+
+export async function ensureSchemaColumns(db: D1Database): Promise<void> {
+  await ensureProductTableSchema(db);
 }
 
 export interface SanitizationOptions {
@@ -428,7 +518,8 @@ export async function getAllProducts(
 ): Promise<Product[]> {
   const { whereClause, bindings } = buildProductWhereClause(filter);
   const orderClause = resolveProductOrderClause(filter?.sortBy);
-  const columns = filter?.includeBuyingPrice ? ADMIN_PRODUCT_COLUMNS : PUBLIC_PRODUCT_COLUMNS;
+  const availableColumns = await ensureProductTableSchema(db);
+  const columns = buildSelectProductColumns(availableColumns, Boolean(filter?.includeBuyingPrice));
 
   let query = `SELECT ${columns} FROM products${whereClause}${orderClause}`;
   const queryBindings = [...bindings];
@@ -559,7 +650,8 @@ export async function getPaginatedProducts(
 ): Promise<PaginatedProductsResult> {
   const { whereClause, bindings } = buildProductWhereClause(filter);
   const orderClause = resolveProductOrderClause(filter?.sortBy);
-  const columns = filter?.includeBuyingPrice ? ADMIN_PRODUCT_COLUMNS : PUBLIC_PRODUCT_COLUMNS;
+  const availableColumns = await ensureProductTableSchema(db);
+  const columns = buildSelectProductColumns(availableColumns, Boolean(filter?.includeBuyingPrice));
 
   // Safe limits: default 24, max 250
   const safeLimit = Math.min(250, Math.max(1, Number(filter?.limit) || 24));
@@ -610,9 +702,11 @@ export async function getProductById(
   id: string,
   options?: { includeBuyingPrice?: boolean; publicOnly?: boolean }
 ): Promise<Product | null> {
-  const columns = (options?.publicOnly || options?.includeBuyingPrice === false)
-    ? PUBLIC_PRODUCT_COLUMNS
-    : ADMIN_PRODUCT_COLUMNS;
+  const availableColumns = await ensureProductTableSchema(db);
+  const columns = buildSelectProductColumns(
+    availableColumns,
+    !options?.publicOnly && options?.includeBuyingPrice !== false
+  );
   const row = await db.prepare(`SELECT ${columns} FROM products WHERE id = ? LIMIT 1`).bind(id).first<ProductRow>();
   return row ? rowToProduct(row) : null;
 }
@@ -628,9 +722,11 @@ export async function getProductsByIds(
 ): Promise<Product[]> {
   const uniqueIds = Array.from(new Set(ids.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)));
   if (uniqueIds.length === 0) return [];
-  const columns = (options?.publicOnly || options?.includeBuyingPrice === false)
-    ? PUBLIC_PRODUCT_COLUMNS
-    : ADMIN_PRODUCT_COLUMNS;
+  const availableColumns = await ensureProductTableSchema(db);
+  const columns = buildSelectProductColumns(
+    availableColumns,
+    !options?.publicOnly && options?.includeBuyingPrice !== false
+  );
   const placeholders = uniqueIds.map(() => '?').join(', ');
   const stmt = db.prepare(`SELECT ${columns} FROM products WHERE id IN (${placeholders})`).bind(...uniqueIds);
   const result = await stmt.all<ProductRow>();
@@ -646,57 +742,85 @@ export async function insertProduct(db: D1Database, input: any): Promise<Product
     return updateProductInD1(db, id, input);
   }
 
+  // Ensure table schema has required columns (self-heals missing video_url / buying_price / featured_sort_order)
+  const availableColumns = await ensureProductTableSchema(db);
+
   const title = (input.title || input.name || 'Untitled Product').trim();
-  const price = Number(input.price) || 0;
-  const originalPrice = input.originalPrice ?? input.oldPrice ?? null;
-  const categoryId = input.categoryId || input.category || 'cat-mens-accessories';
-  const description = input.description || '';
-  const imageUrl = input.imageUrl || (Array.isArray(input.images) && input.images[0]) || '';
-  const images = Array.isArray(input.images) && input.images.length > 0 ? input.images : (imageUrl ? [imageUrl] : []);
-  const stock = Number(input.stock) || 0;
+  const price = Math.max(0, Number(input.price) || 0);
+  const originalPrice = input.originalPrice != null && !isNaN(Number(input.originalPrice))
+    ? Math.max(0, Number(input.originalPrice))
+    : (input.oldPrice != null && !isNaN(Number(input.oldPrice)) ? Math.max(0, Number(input.oldPrice)) : 0);
+  const buyingPrice = input.buyingPrice !== undefined && input.buyingPrice !== null && !isNaN(Number(input.buyingPrice))
+    ? Math.max(0, Number(input.buyingPrice))
+    : 0;
+  const categoryId = (typeof input.categoryId === 'string' && input.categoryId.trim())
+    || (typeof input.category === 'string' && input.category.trim())
+    || 'cat-mens-accessories';
+  const description = typeof input.description === 'string' ? input.description : '';
+  const imageUrl = (typeof input.imageUrl === 'string' && input.imageUrl.trim())
+    || (Array.isArray(input.images) && typeof input.images[0] === 'string' && input.images[0].trim())
+    || '';
+  const images = Array.isArray(input.images) && input.images.length > 0
+    ? input.images.filter((img: any) => typeof img === 'string' && img.trim().length > 0)
+    : (imageUrl ? [imageUrl] : []);
+  const stock = Math.max(0, Math.floor(Number(input.stock) || 0));
   const featured = input.featured ? 1 : 0;
-  const rating = Number(input.rating) || 5.0;
-  const reviewsCount = Number(input.reviewsCount) || 0;
+  const featuredSortOrder = input.featuredSortOrder != null && !isNaN(Number(input.featuredSortOrder))
+    ? Math.max(0, Math.floor(Number(input.featuredSortOrder)))
+    : 0;
+  const rating = input.rating != null && !isNaN(Number(input.rating))
+    ? Math.max(1, Math.min(5, Number(input.rating)))
+    : 5.0;
+  const reviewsCount = Math.max(0, Math.floor(Number(input.reviewsCount) || 0));
   const specs = Array.isArray(input.specs) ? input.specs : [];
   const sizes = Array.isArray(input.sizes) ? input.sizes : [];
   const colors = Array.isArray(input.colors) ? input.colors : [];
-  const sku = input.sku || null;
-  const videoUrl = input.videoUrl || input.youtubeUrl || null;
-  const status = input.status || 'active';
-  const buyingPrice = input.buyingPrice !== undefined && input.buyingPrice !== null ? Math.max(0, Number(input.buyingPrice)) : 0;
-  const createdAt = input.createdAt || new Date().toISOString();
+  const sku = (typeof input.sku === 'string' && input.sku.trim()) || null;
+  const videoUrl = (typeof input.videoUrl === 'string' && input.videoUrl.trim())
+    || (typeof input.youtubeUrl === 'string' && input.youtubeUrl.trim())
+    || null;
+  const status = typeof input.status === 'string' && input.status.trim() ? input.status.trim() : 'active';
+  const createdAt = (typeof input.createdAt === 'string' && input.createdAt.trim()) || new Date().toISOString();
 
-  await db
-    .prepare(`
-      INSERT INTO products (
-        id, title, price, original_price, buying_price, category_id, description,
-        image_url, images_json, stock, featured, rating, reviews_count,
-        specs_json, sizes_json, colors_json, sku, video_url, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    `)
-    .bind(
-      id,
-      title,
-      price,
-      originalPrice,
-      buyingPrice,
-      categoryId,
-      description,
-      imageUrl,
-      JSON.stringify(images),
-      stock,
-      featured,
-      rating,
-      reviewsCount,
-      JSON.stringify(specs),
-      JSON.stringify(sizes),
-      JSON.stringify(colors),
-      sku,
-      videoUrl,
-      status,
-      createdAt
-    )
-    .run();
+  // Dynamically assemble only the columns that actually exist in the products table!
+  const candidateFields: { col: string; val: any }[] = [
+    { col: 'id', val: id },
+    { col: 'title', val: title },
+    { col: 'price', val: price },
+    { col: 'original_price', val: originalPrice },
+    { col: 'buying_price', val: buyingPrice },
+    { col: 'category_id', val: categoryId },
+    { col: 'description', val: description },
+    { col: 'image_url', val: imageUrl },
+    { col: 'images_json', val: JSON.stringify(images) },
+    { col: 'stock', val: stock },
+    { col: 'featured', val: featured },
+    { col: 'featured_sort_order', val: featuredSortOrder },
+    { col: 'rating', val: rating },
+    { col: 'reviews_count', val: reviewsCount },
+    { col: 'specs_json', val: JSON.stringify(specs) },
+    { col: 'sizes_json', val: JSON.stringify(sizes) },
+    { col: 'colors_json', val: JSON.stringify(colors) },
+    { col: 'sku', val: sku },
+    { col: 'video_url', val: videoUrl },
+    { col: 'status', val: status },
+    { col: 'created_at', val: createdAt },
+  ];
+
+  const activeFields = candidateFields.filter((f) => availableColumns.has(f.col));
+  const colNames = [...activeFields.map((f) => f.col), 'updated_at'].join(', ');
+  const placeholders = [...activeFields.map(() => '?'), 'CURRENT_TIMESTAMP'].join(', ');
+  const bindings = activeFields.map((f) => f.val);
+
+  try {
+    await db
+      .prepare(`INSERT INTO products (${colNames}) VALUES (${placeholders})`)
+      .bind(...bindings)
+      .run();
+  } catch (insertErr: any) {
+    console.error('[D1 insertProduct Error]:', insertErr);
+    throw new Error(`D1 INSERT INTO products failed: ${insertErr?.message || insertErr}`);
+  }
 
   const created = await getProductById(db, id);
   if (!created) throw new Error('Failed to retrieve newly created product from D1');
@@ -713,18 +837,20 @@ export async function updateProductInD1(
     throw new Error('Product not found.');
   }
 
+  const availableColumns = await ensureProductTableSchema(db);
+
   const title = updates.title !== undefined ? updates.title.trim() : existing.title;
-  const price = updates.price !== undefined ? Number(updates.price) : existing.price;
-  const originalPrice = updates.originalPrice !== undefined ? updates.originalPrice : (existing.originalPrice ?? null);
+  const price = updates.price !== undefined ? Math.max(0, Number(updates.price)) : existing.price;
+  const originalPrice = updates.originalPrice !== undefined ? Math.max(0, Number(updates.originalPrice)) : (existing.originalPrice ?? 0);
   const buyingPrice = updates.buyingPrice !== undefined && updates.buyingPrice !== null ? Math.max(0, Number(updates.buyingPrice)) : (existing.buyingPrice ?? 0);
   const categoryId = updates.categoryId !== undefined ? updates.categoryId : existing.categoryId;
   const description = updates.description !== undefined ? updates.description : existing.description;
   const imageUrl = updates.imageUrl !== undefined ? updates.imageUrl : existing.imageUrl;
   const images = updates.images !== undefined ? updates.images : existing.images;
-  const stock = updates.stock !== undefined ? Number(updates.stock) : existing.stock;
+  const stock = updates.stock !== undefined ? Math.max(0, Math.floor(Number(updates.stock))) : existing.stock;
   const featured = updates.featured !== undefined ? (updates.featured ? 1 : 0) : (existing.featured ? 1 : 0);
   const rating = updates.rating !== undefined ? Number(updates.rating) : existing.rating;
-  const reviewsCount = updates.reviewsCount !== undefined ? Number(updates.reviewsCount) : existing.reviewsCount;
+  const reviewsCount = updates.reviewsCount !== undefined ? Math.max(0, Math.floor(Number(updates.reviewsCount))) : existing.reviewsCount;
   const specs = updates.specs !== undefined ? updates.specs : existing.specs;
   const sizes = updates.sizes !== undefined ? updates.sizes : existing.sizes;
   const colors = updates.colors !== undefined ? updates.colors : existing.colors;
@@ -732,109 +858,43 @@ export async function updateProductInD1(
   const videoUrl = updates.videoUrl !== undefined ? (updates.videoUrl || null) : (existing.videoUrl || null);
   const status = updates.status !== undefined ? updates.status : (existing.status || 'active');
   const featuredSortOrder = updates.featuredSortOrder !== undefined
-    ? Math.max(0, Number(updates.featuredSortOrder))
+    ? Math.max(0, Math.floor(Number(updates.featuredSortOrder)))
     : (existing.featuredSortOrder ?? 0);
+
+  const candidateUpdates: { col: string; val: any }[] = [
+    { col: 'title', val: title },
+    { col: 'price', val: price },
+    { col: 'original_price', val: originalPrice },
+    { col: 'buying_price', val: buyingPrice },
+    { col: 'category_id', val: categoryId },
+    { col: 'description', val: description },
+    { col: 'image_url', val: imageUrl },
+    { col: 'images_json', val: JSON.stringify(images) },
+    { col: 'stock', val: stock },
+    { col: 'featured', val: featured },
+    { col: 'featured_sort_order', val: featuredSortOrder },
+    { col: 'rating', val: rating },
+    { col: 'reviews_count', val: reviewsCount },
+    { col: 'specs_json', val: JSON.stringify(specs) },
+    { col: 'sizes_json', val: JSON.stringify(sizes) },
+    { col: 'colors_json', val: JSON.stringify(colors) },
+    { col: 'sku', val: sku },
+    { col: 'video_url', val: videoUrl },
+    { col: 'status', val: status },
+  ];
+
+  const activeUpdates = candidateUpdates.filter((u) => availableColumns.has(u.col));
+  const setClauses = [...activeUpdates.map((u) => `${u.col} = ?`), 'updated_at = CURRENT_TIMESTAMP'].join(', ');
+  const bindings = [...activeUpdates.map((u) => u.val), id];
 
   try {
     await db
-      .prepare(`
-        UPDATE products SET
-          title = ?,
-          price = ?,
-          original_price = ?,
-          buying_price = ?,
-          category_id = ?,
-          description = ?,
-          image_url = ?,
-          images_json = ?,
-          stock = ?,
-          featured = ?,
-          featured_sort_order = ?,
-          rating = ?,
-          reviews_count = ?,
-          specs_json = ?,
-          sizes_json = ?,
-          colors_json = ?,
-          sku = ?,
-          video_url = ?,
-          status = ?,
-          updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-      `)
-      .bind(
-        title,
-        price,
-        originalPrice,
-        buyingPrice,
-        categoryId,
-        description,
-        imageUrl,
-        JSON.stringify(images),
-        stock,
-        featured,
-        featuredSortOrder,
-        rating,
-        reviewsCount,
-        JSON.stringify(specs),
-        JSON.stringify(sizes),
-        JSON.stringify(colors),
-        sku,
-        videoUrl,
-        status,
-        id
-      )
+      .prepare(`UPDATE products SET ${setClauses} WHERE id = ?`)
+      .bind(...bindings)
       .run();
   } catch (err: any) {
-    if (err?.message?.includes('featured_sort_order') || err?.message?.includes('no such column')) {
-      await db
-        .prepare(`
-          UPDATE products SET
-            title = ?,
-            price = ?,
-            original_price = ?,
-            buying_price = ?,
-            category_id = ?,
-            description = ?,
-            image_url = ?,
-            images_json = ?,
-            stock = ?,
-            featured = ?,
-            rating = ?,
-            reviews_count = ?,
-            specs_json = ?,
-            sizes_json = ?,
-            colors_json = ?,
-            sku = ?,
-            video_url = ?,
-            status = ?,
-            updated_at = CURRENT_TIMESTAMP
-          WHERE id = ?
-        `)
-        .bind(
-          title,
-          price,
-          originalPrice,
-          buyingPrice,
-          categoryId,
-          description,
-          imageUrl,
-          JSON.stringify(images),
-          stock,
-          featured,
-          rating,
-          reviewsCount,
-          JSON.stringify(specs),
-          JSON.stringify(sizes),
-          JSON.stringify(colors),
-          sku,
-          videoUrl,
-          status,
-          id
-        )
-        .run();
-    } else {
-      throw err;
-    }
+    console.error('[D1 updateProductInD1 Error]:', err);
+    throw new Error(`D1 UPDATE products failed: ${err?.message || err}`);
   }
 
   const updated = await getProductById(db, id);
