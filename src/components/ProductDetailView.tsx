@@ -592,6 +592,8 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
                       width={64}
                       height={64}
                       alt={`Thumbnail ${idx + 1}`}
+                      loading="lazy"
+                      decoding="async"
                       className="w-full h-full object-cover"
                     />
                   </button>
@@ -608,6 +610,8 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
                       <img
                         src={getYouTubeThumbnailUrl(product.videoUrl, 'mq')!}
                         alt={`${product.title} video`}
+                        loading="lazy"
+                        decoding="async"
                         className="w-full h-full object-cover opacity-70 group-hover:opacity-95"
                       />
                     ) : (
@@ -616,6 +620,8 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
                         width={64}
                         height={64}
                         alt="video thumbnail"
+                        loading="lazy"
+                        decoding="async"
                         className="w-full h-full object-cover opacity-60"
                       />
                     )}

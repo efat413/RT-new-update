@@ -244,8 +244,8 @@ export const CategoryListingView: React.FC<CategoryListingViewProps> = ({
         <>
           {/* Products Grid */}
           <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-5">
-            {products.map((product) => (
-              <ProductCard key={product.id} product={product} />
+            {products.map((product, idx) => (
+              <ProductCard key={product.id} product={product} priority={idx < 2} />
             ))}
           </div>
 
