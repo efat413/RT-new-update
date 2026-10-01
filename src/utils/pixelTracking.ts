@@ -924,9 +924,10 @@ export function trackSocialEvent(
     }
   }
 
-  // 6. Direct Google Analytics (gtag.js) Dispatch (when active and not redundant with GTM)
-  const gaId = settings.googleAnalyticsId || (!settings.gtmId ? 'G-CKJLJSDKFZ' : '');
-  if (gaId && window.gtag) {
+  // 6. Direct Google Analytics (gtag.js) Dispatch (only when GTM container is not active to prevent duplicate tracking)
+  const isGtmActive = Boolean(settings.gtmId && settings.gtmId.trim());
+  const gaId = settings.googleAnalyticsId || (!isGtmActive ? 'G-CKJLJSDKFZ' : '');
+  if (!isGtmActive && gaId && window.gtag) {
     try {
       let gaEventName = eventName.toLowerCase();
       if (isViewEvent) gaEventName = 'view_item';
