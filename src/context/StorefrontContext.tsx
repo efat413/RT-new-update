@@ -22,11 +22,7 @@ import {
   getTrackingSources,
 } from '../utils/pixelTracking';
 import { updateDynamicFavicon } from '../utils/favicon';
-import {
-  INITIAL_SETTINGS,
-  INITIAL_REVIEWS,
-  INITIAL_COUPONS,
-} from '../data/seedData';
+import { DEFAULT_STORE_SETTINGS } from '../data/defaultSettings';
 import { sanitizeSettingsForBrowserStorage } from '../utils/courierStorage';
 import { orderApi } from '../services/orderApi';
 import {
@@ -212,33 +208,33 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               : '';
 
           return {
-            ...INITIAL_SETTINGS,
+            ...DEFAULT_STORE_SETTINGS,
             ...parsed,
             topBarAnnouncementText: effectiveAnnouncement,
             announcementText: effectiveAnnouncement,
-            fbPixelId: parsed.fbPixelId !== undefined ? parsed.fbPixelId : (INITIAL_SETTINGS.fbPixelId || ''),
-            fbTestEventCode: parsed.fbTestEventCode !== undefined ? parsed.fbTestEventCode : (INITIAL_SETTINGS.fbTestEventCode || ''),
-            gtmId: parsed.gtmId !== undefined ? parsed.gtmId : (INITIAL_SETTINGS.gtmId || ''),
-            tiktokPixelId: parsed.tiktokPixelId !== undefined ? parsed.tiktokPixelId : (INITIAL_SETTINGS.tiktokPixelId || ''),
-            tiktokTestEventCode: parsed.tiktokTestEventCode !== undefined ? parsed.tiktokTestEventCode : (INITIAL_SETTINGS.tiktokTestEventCode || ''),
-            dbblBank: parsed.dbblBank ? { ...INITIAL_SETTINGS.dbblBank, ...parsed.dbblBank } : INITIAL_SETTINGS.dbblBank,
+            fbPixelId: parsed.fbPixelId !== undefined ? parsed.fbPixelId : (DEFAULT_STORE_SETTINGS.fbPixelId || ''),
+            fbTestEventCode: parsed.fbTestEventCode !== undefined ? parsed.fbTestEventCode : (DEFAULT_STORE_SETTINGS.fbTestEventCode || ''),
+            gtmId: parsed.gtmId !== undefined ? parsed.gtmId : (DEFAULT_STORE_SETTINGS.gtmId || ''),
+            tiktokPixelId: parsed.tiktokPixelId !== undefined ? parsed.tiktokPixelId : (DEFAULT_STORE_SETTINGS.tiktokPixelId || ''),
+            tiktokTestEventCode: parsed.tiktokTestEventCode !== undefined ? parsed.tiktokTestEventCode : (DEFAULT_STORE_SETTINGS.tiktokTestEventCode || ''),
+            dbblBank: parsed.dbblBank ? { ...DEFAULT_STORE_SETTINGS.dbblBank, ...parsed.dbblBank } : DEFAULT_STORE_SETTINGS.dbblBank,
             footer: parsed.footer
               ? {
-                  ...INITIAL_SETTINGS.footer,
+                  ...DEFAULT_STORE_SETTINGS.footer,
                   ...parsed.footer,
                   warrantyBadgeText:
                     parsed.footer.warrantyBadgeText === '7-Day Return & Replacement Warranty'
                       ? ''
                       : parsed.footer.warrantyBadgeText || '',
                 }
-              : INITIAL_SETTINGS.footer,
-            blockedPhoneNumbers: Array.isArray(parsed.blockedPhoneNumbers) ? parsed.blockedPhoneNumbers : (INITIAL_SETTINGS.blockedPhoneNumbers || []),
+              : DEFAULT_STORE_SETTINGS.footer,
+            blockedPhoneNumbers: Array.isArray(parsed.blockedPhoneNumbers) ? parsed.blockedPhoneNumbers : (DEFAULT_STORE_SETTINGS.blockedPhoneNumbers || []),
           };
         }
       }
-      return INITIAL_SETTINGS;
+      return DEFAULT_STORE_SETTINGS;
     } catch {
-      return INITIAL_SETTINGS;
+      return DEFAULT_STORE_SETTINGS;
     }
   });
 
@@ -399,9 +395,9 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [coupons, setCoupons] = useState<Coupon[]>(() => {
     try {
       const saved = localStorage.getItem('rongdhonu_coupons') || localStorage.getItem(STORAGE_KEYS.COUPONS);
-      return saved ? JSON.parse(saved) : INITIAL_COUPONS;
+      return saved ? JSON.parse(saved) : [];
     } catch {
-      return INITIAL_COUPONS;
+      return [];
     }
   });
 
@@ -457,9 +453,9 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [reviews, setReviews] = useState<ProductReview[]>(() => {
     try {
       const saved = localStorage.getItem('rongdhonu_reviews') || localStorage.getItem(STORAGE_KEYS.REVIEWS);
-      return saved ? JSON.parse(saved) : INITIAL_REVIEWS;
+      return saved ? JSON.parse(saved) : [];
     } catch {
-      return INITIAL_REVIEWS;
+      return [];
     }
   });
 
@@ -684,6 +680,24 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     } catch (e) {
       console.error('Failed to load store data from D1:', e);
       setIsStoreError(true);
+      // Safe fallback for business-critical offline resilience:
+      // Dynamically load seed data on demand ONLY when remote API is unreachable
+      try {
+        const {
+          INITIAL_PRODUCTS,
+          INITIAL_CATEGORIES,
+          INITIAL_SLIDES,
+          INITIAL_COUPONS,
+          INITIAL_REVIEWS,
+        } = await import('../data/seedData');
+        setProducts((prev) => (prev.length === 0 ? INITIAL_PRODUCTS : prev));
+        setCategories((prev) => (prev.length === 0 ? INITIAL_CATEGORIES : prev));
+        setSlides((prev) => (prev.length === 0 ? INITIAL_SLIDES : prev));
+        setCoupons((prev) => (prev.length === 0 ? INITIAL_COUPONS : prev));
+        setReviews((prev) => (prev.length === 0 ? INITIAL_REVIEWS : prev));
+      } catch (err) {
+        console.warn('Fallback seed data loading notice:', err);
+      }
     } finally {
       setIsStoreInitializing(false);
     }

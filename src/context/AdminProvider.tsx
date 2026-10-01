@@ -25,16 +25,9 @@ import { useAuth } from './AuthContext';
 import { useCart } from './CartContext';
 import { STORAGE_KEYS } from './storageKeys';
 import {
-  INITIAL_PRODUCTS,
-  INITIAL_CATEGORIES,
-  INITIAL_ORDERS,
-  INITIAL_SETTINGS,
-  INITIAL_SLIDES,
-  INITIAL_COURIER_CONFIGS,
-  INITIAL_USERS,
-  INITIAL_REVIEWS,
-  INITIAL_COUPONS,
-} from '../data/seedData';
+  DEFAULT_STORE_SETTINGS,
+  DEFAULT_COURIER_CONFIGS,
+} from '../data/defaultSettings';
 import {
   sanitizeCourierConfig,
   sanitizeCourierConfigs,
@@ -240,15 +233,15 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const saved = localStorage.getItem(STORAGE_KEYS.COURIERS);
       if (saved) {
         const parsed = JSON.parse(saved);
-        const sanitized = sanitizeCourierConfigs(Array.isArray(parsed) ? parsed : INITIAL_COURIER_CONFIGS);
+        const sanitized = sanitizeCourierConfigs(Array.isArray(parsed) ? parsed : DEFAULT_COURIER_CONFIGS);
         localStorage.setItem(STORAGE_KEYS.COURIERS, JSON.stringify(sanitized));
         return sanitized;
       }
-      const initialSanitized = sanitizeCourierConfigs(INITIAL_COURIER_CONFIGS);
+      const initialSanitized = sanitizeCourierConfigs(DEFAULT_COURIER_CONFIGS);
       localStorage.setItem(STORAGE_KEYS.COURIERS, JSON.stringify(initialSanitized));
       return initialSanitized;
     } catch {
-      return sanitizeCourierConfigs(INITIAL_COURIER_CONFIGS);
+      return sanitizeCourierConfigs(DEFAULT_COURIER_CONFIGS);
     }
   });
 
@@ -278,9 +271,9 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) return parsed;
       }
-      return [...INITIAL_USERS];
+      return [];
     } catch {
-      return INITIAL_USERS;
+      return [];
     }
   });
 
@@ -672,7 +665,7 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [courierConfigs, triggerCourierWebhooks]);
 
   const resetCourierConfigs = useCallback(() => {
-    setCourierConfigs(INITIAL_COURIER_CONFIGS);
+    setCourierConfigs(DEFAULT_COURIER_CONFIGS);
   }, []);
 
   // Settings & Seed
@@ -993,31 +986,46 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [setSettings, showNotification]);
 
   // Settings & Seed
-  const resetToDefaultSeed = useCallback(() => {
-    setProducts(INITIAL_PRODUCTS);
-    setCategories(INITIAL_CATEGORIES);
-    setOrders(INITIAL_ORDERS);
-    setSettings(INITIAL_SETTINGS);
-    setSlides(INITIAL_SLIDES);
-    setCourierConfigs(INITIAL_COURIER_CONFIGS);
-    setUsers(INITIAL_USERS);
-    setCurrentUser(null);
-    setIsAdminLoggedIn(false);
-    setCart([]);
-    setCoupons(INITIAL_COUPONS);
+  const resetToDefaultSeed = useCallback(async () => {
     try {
-      localStorage.removeItem('rongdhonu_products');
-      localStorage.removeItem('rongdhonu_slides');
-      localStorage.removeItem(STORAGE_KEYS.ORDERS);
-      localStorage.removeItem(STORAGE_KEYS.SETTINGS);
-      localStorage.removeItem(STORAGE_KEYS.CART);
-      localStorage.removeItem(STORAGE_KEYS.COURIERS);
-      localStorage.removeItem(STORAGE_KEYS.USERS);
-      localStorage.removeItem(STORAGE_KEYS.CURRENT_USER);
-      localStorage.removeItem(STORAGE_KEYS.ADMIN_AUTH);
-      localStorage.removeItem(STORAGE_KEYS.COUPONS);
-    } catch {}
-  }, [setCart, setCategories, setCoupons, setCurrentUser, setIsAdminLoggedIn, setProducts, setSettings, setSlides]);
+      const {
+        INITIAL_PRODUCTS,
+        INITIAL_CATEGORIES,
+        INITIAL_ORDERS,
+        INITIAL_SETTINGS,
+        INITIAL_SLIDES,
+        INITIAL_COURIER_CONFIGS,
+        INITIAL_USERS,
+        INITIAL_COUPONS,
+      } = await import('../data/seedData');
+      setProducts(INITIAL_PRODUCTS);
+      setCategories(INITIAL_CATEGORIES);
+      setOrders(INITIAL_ORDERS);
+      setSettings(INITIAL_SETTINGS);
+      setSlides(INITIAL_SLIDES);
+      setCourierConfigs(INITIAL_COURIER_CONFIGS);
+      setUsers(INITIAL_USERS);
+      setCurrentUser(null);
+      setIsAdminLoggedIn(false);
+      setCart([]);
+      setCoupons(INITIAL_COUPONS);
+      try {
+        localStorage.removeItem('rongdhonu_products');
+        localStorage.removeItem('rongdhonu_slides');
+        localStorage.removeItem(STORAGE_KEYS.ORDERS);
+        localStorage.removeItem(STORAGE_KEYS.SETTINGS);
+        localStorage.removeItem(STORAGE_KEYS.CART);
+        localStorage.removeItem(STORAGE_KEYS.COURIERS);
+        localStorage.removeItem(STORAGE_KEYS.USERS);
+        localStorage.removeItem(STORAGE_KEYS.CURRENT_USER);
+        localStorage.removeItem(STORAGE_KEYS.ADMIN_AUTH);
+        localStorage.removeItem(STORAGE_KEYS.COUPONS);
+      } catch {}
+      showNotification('success', 'Reset Complete', 'Store has been reset to default demo seed data.');
+    } catch (e) {
+      console.error('Failed to load seed data for reset:', e);
+    }
+  }, [setCart, setCategories, setCoupons, setCurrentUser, setIsAdminLoggedIn, setProducts, setSettings, setSlides, showNotification]);
 
   // Admin User Management
   const updateUserRoleAndPermissions = useCallback((

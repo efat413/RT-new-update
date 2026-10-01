@@ -4643,6 +4643,9 @@ export default defineConfig(() => {
             if (id.includes('pixelTracking')) {
               return 'pixel-tracking';
             }
+            if (id.includes('seedData')) {
+              return 'seed-data';
+            }
           },
         },
       },
