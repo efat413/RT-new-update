@@ -8,7 +8,14 @@ import {
   injectCategorySEOIntoHtml,
   DEFAULT_SITE_NAME,
 } from './utils/seo';
-import { getAllCategories, getAllProducts, getStoreSettings, getProductById, getCategoryById } from './server/db';
+import {
+  getAllCategories,
+  getAllProducts,
+  getStoreSettings,
+  getProductById,
+  getCategoryById,
+  getSitemapData,
+} from './server/db';
 import { INITIAL_CATEGORIES, INITIAL_PRODUCTS } from './data/seedData';
 import { syncAllActiveCourierOrders } from './server/courier';
 import { getSecurityHeaders } from './server/securityHeaders';
@@ -94,16 +101,9 @@ export default {
 
       if (env.DB) {
         try {
-          const [dbCats, dbProds] = await Promise.all([
-            getAllCategories(env.DB),
-            getAllProducts(env.DB),
-          ]);
-          if (Array.isArray(dbCats)) {
-            categories = dbCats;
-          }
-          if (Array.isArray(dbProds)) {
-            products = dbProds;
-          }
+          const sitemapData = await getSitemapData(env.DB);
+          categories = sitemapData.categories;
+          products = sitemapData.products;
         } catch (err) {
           console.warn('Worker could not query D1 for sitemap:', err);
         }
@@ -155,7 +155,7 @@ export default {
         let product = null;
         if (env.DB) {
           try {
-            product = await getProductById(env.DB, prodParam);
+            product = await getProductById(env.DB, prodParam, { includeBuyingPrice: false, publicOnly: true });
           } catch {}
         } else {
           product = INITIAL_PRODUCTS.find(
@@ -187,42 +187,49 @@ export default {
         }
 
         // Product is valid: Generate Server-Side Rendered SEO HTML response with HTTP 200
-        let categoryName: string | undefined = undefined;
-        if (product.categoryId) {
-          let cat = null;
-          if (env.DB) {
-            try {
-              cat = await getCategoryById(env.DB, product.categoryId);
-            } catch {}
-          } else {
-            cat = INITIAL_CATEGORIES.find((c) => c.id === product.categoryId) || null;
-          }
-          if (cat) categoryName = cat.name;
-        }
-
-        let siteName = DEFAULT_SITE_NAME;
-        if (env.DB) {
-          try {
-            const settings = await getStoreSettings(env.DB);
-            if (settings?.siteName) siteName = settings.siteName;
-          } catch {}
-        }
-
-        let html = '';
-        if (env.ASSETS) {
-          try {
-            const assetRes = await env.ASSETS.fetch(new Request(new URL('/', request.url).toString(), {
-              headers: request.headers,
-            }));
-            if (assetRes.ok) {
-              html = await assetRes.text();
+        // Concurrently fetch Category Name, Store Settings, and HTML template shell
+        const [categoryName, siteName, rawHtml] = await Promise.all([
+          (async () => {
+            if (!product.categoryId) return undefined;
+            if (env.DB) {
+              try {
+                const cat = await getCategoryById(env.DB, product.categoryId);
+                return cat?.name;
+              } catch {
+                return undefined;
+              }
+            } else {
+              const cat = INITIAL_CATEGORIES.find((c) => c.id === product.categoryId);
+              return cat?.name;
             }
-          } catch {}
-        }
-        if (!html) {
-          html = getFallbackHtmlTemplate(siteName);
-        }
+          })(),
+          (async () => {
+            if (env.DB) {
+              try {
+                const settings = await getStoreSettings(env.DB);
+                return settings?.siteName || DEFAULT_SITE_NAME;
+              } catch {
+                return DEFAULT_SITE_NAME;
+              }
+            }
+            return DEFAULT_SITE_NAME;
+          })(),
+          (async () => {
+            if (env.ASSETS) {
+              try {
+                const assetRes = await env.ASSETS.fetch(new Request(new URL('/', request.url).toString(), {
+                  headers: request.headers,
+                }));
+                if (assetRes.ok) {
+                  return await assetRes.text();
+                }
+              } catch {}
+            }
+            return '';
+          })(),
+        ]);
 
+        const html = rawHtml || getFallbackHtmlTemplate(siteName);
         const injectedHtml = injectProductSEOIntoHtml(html, product, categoryName, siteName);
         return new Response(injectedHtml, {
           status: 200,
@@ -248,10 +255,6 @@ export default {
         if (env.DB) {
           try {
             category = await getCategoryById(env.DB, catParam);
-            if (!category) {
-              const allCats = await getAllCategories(env.DB);
-              category = allCats.find((c) => c.slug.toLowerCase() === catParam.toLowerCase() || c.id === catParam) || null;
-            }
           } catch {}
         } else {
           category = INITIAL_CATEGORIES.find(
@@ -282,30 +285,35 @@ export default {
           return Response.redirect(canonicalUrl.toString(), 301);
         }
 
-        // Category is valid: Generate Server-Side Rendered SEO HTML response with HTTP 200
-        let siteName = DEFAULT_SITE_NAME;
-        if (env.DB) {
-          try {
-            const settings = await getStoreSettings(env.DB);
-            if (settings?.siteName) siteName = settings.siteName;
-          } catch {}
-        }
-
-        let html = '';
-        if (env.ASSETS) {
-          try {
-            const assetRes = await env.ASSETS.fetch(new Request(new URL('/', request.url).toString(), {
-              headers: request.headers,
-            }));
-            if (assetRes.ok) {
-              html = await assetRes.text();
+        // Category is valid: Concurrently fetch Store Settings and HTML shell
+        const [siteName, rawHtml] = await Promise.all([
+          (async () => {
+            if (env.DB) {
+              try {
+                const settings = await getStoreSettings(env.DB);
+                return settings?.siteName || DEFAULT_SITE_NAME;
+              } catch {
+                return DEFAULT_SITE_NAME;
+              }
             }
-          } catch {}
-        }
-        if (!html) {
-          html = getFallbackHtmlTemplate(siteName);
-        }
+            return DEFAULT_SITE_NAME;
+          })(),
+          (async () => {
+            if (env.ASSETS) {
+              try {
+                const assetRes = await env.ASSETS.fetch(new Request(new URL('/', request.url).toString(), {
+                  headers: request.headers,
+                }));
+                if (assetRes.ok) {
+                  return await assetRes.text();
+                }
+              } catch {}
+            }
+            return '';
+          })(),
+        ]);
 
+        const html = rawHtml || getFallbackHtmlTemplate(siteName);
         const injectedHtml = injectCategorySEOIntoHtml(html, category, siteName);
         return new Response(injectedHtml, {
           status: 200,

@@ -2729,10 +2729,11 @@ function localApiDevPlugin(): Plugin {
             // Authoritative server-side cost and gross profit calculation
             let totalCost = 0;
             const verifiedItems = (rawOrder.items || []).map((it: any) => {
-              const prod = devProducts.find((p) => p.id === it.product?.id);
+              const prodId = it.product?.id || it.productId || it.id;
+              const prod = devProducts.find((p) => p.id === prodId);
               const qty = Number(it.quantity) || 1;
-              const buyingPrice = prod?.buyingPrice != null ? Number(prod.buyingPrice) : Math.round((Number(prod?.price || it.product?.price || 0) * 0.6));
-              const sellingPrice = Number(prod?.price || it.product?.price || 0);
+              const buyingPrice = prod?.buyingPrice != null ? Number(prod.buyingPrice) : Math.round((Number(prod?.price || it.product?.price || it.price || 0) * 0.6));
+              const sellingPrice = Number(prod?.price || it.product?.price || it.price || 0);
               const itemCost = buyingPrice * qty;
               const itemRev = sellingPrice * qty;
               const itemGrossProfit = itemRev - itemCost;
@@ -2744,7 +2745,7 @@ function localApiDevPlugin(): Plugin {
                 sellingPriceSnapshot: sellingPrice,
                 productCost: itemCost,
                 productGrossProfit: itemGrossProfit,
-                product: prod ? { ...prod, buyingPrice: undefined, unitProfit: undefined } : it.product,
+                product: prod ? { ...prod, buyingPrice: undefined, unitProfit: undefined } : (it.product || { id: prodId, title: it.title, price: sellingPrice }),
               };
             });
 
@@ -2794,10 +2795,11 @@ function localApiDevPlugin(): Plugin {
 
             // Verify stock availability for all items before placing order
             for (const it of verifiedItems) {
-              const prod = devProducts.find((p) => p.id === it.product?.id);
+              const prodId = it.product?.id || it.productId || it.id;
+              const prod = devProducts.find((p) => p.id === prodId);
               if (!prod) {
                 res.statusCode = 400;
-                return res.end(JSON.stringify({ success: false, error: `Product "${it.product?.title || it.product?.id}" not found.` }));
+                return res.end(JSON.stringify({ success: false, error: `Product "${it.product?.title || it.title || prodId}" not found.` }));
               }
               if (prod.stock < it.quantity) {
                 res.statusCode = 400;

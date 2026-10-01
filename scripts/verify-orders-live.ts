@@ -18,8 +18,8 @@ async function testOrders() {
       },
       items: [
         {
-          productId: 'prod-1',
-          title: 'Premium Panjabi',
+          productId: 'prod-wallet-01',
+          title: 'Premium Leather Wallet',
           price: 99999, // client spoofed price (should be recalculated or validated)
           quantity: 1,
         },

@@ -18,11 +18,13 @@ import {
   deleteCategoryFromD1,
   // Sliders
   getAllSliders,
+  getSliderById,
   insertSlider,
   updateSliderInD1,
   deleteSliderFromD1,
   // Store Settings
   getStoreSettings,
+  getHomepageMetadata,
   updateStoreSettingsInD1,
   detectLegacyD1CourierCredentials,
   cleanupLegacyCourierCredentialsFromD1,
@@ -1903,11 +1905,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
   // ==========================================
   if (path === '/api/store/homepage' && (method === 'GET' || method === 'HEAD')) {
     try {
-      const [rawSettings, categories, sliders] = await Promise.all([
-        getStoreSettings(env.DB),
-        getAllCategories(env.DB),
-        getAllSliders(env.DB),
-      ]);
+      // Single-batch fetch of store settings, categories, and sliders
+      const { settings: rawSettings, categories, sliders } = await getHomepageMetadata(env.DB);
 
       const safeSettings = maskSettings(rawSettings, false, false);
       const activeSliders = sliders;
@@ -2149,9 +2148,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
     if (method === 'GET') {
       try {
-        const product = await getProductById(env.DB, prodId);
-        if (!product) return jsonResponse({ success: false, error: 'Product not found' }, 404);
-
         // Security check: ONLY Super Admin or authorized users receive Buying Price & Unit Profit!
         const authRes = await requireAuth(request, env);
         const isSuperAdmin = Boolean(!authRes.errorResponse && authRes.auth?.role === 'super_admin');
@@ -2159,6 +2155,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         const canViewProfit = Boolean(!authRes.errorResponse && authRes.auth && hasPermission(authRes.auth, 'product.view_profit'));
         const canManageProducts = Boolean(!authRes.errorResponse && authRes.auth && (hasPermission(authRes.auth, 'product.create') || hasPermission(authRes.auth, 'product.update')));
         const isPrivileged = isSuperAdmin || canViewBuyingPrice || canViewProfit || canManageProducts;
+
+        const product = await getProductById(env.DB, prodId, { includeBuyingPrice: isPrivileged });
+        if (!product) return jsonResponse({ success: false, error: 'Product not found' }, 404);
 
         // Public single-product endpoint: Inactive/deleted products must not be publicly accessible
         const isInactive = product.status !== 'active' || Boolean((product as any).isDeleted);
@@ -2364,8 +2363,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
     if (method === 'GET') {
       try {
-        const sliders = await getAllSliders(env.DB);
-        const slide = sliders.find((s) => s.id === slideId);
+        const slide = await getSliderById(env.DB, slideId);
         if (!slide) return jsonResponse({ success: false, error: 'Slider not found' }, 404);
         return jsonResponse({ success: true, slider: slide }, 200, {
           'Cache-Control': 'public, max-age=60, s-maxage=120, stale-while-revalidate=60',
@@ -2910,13 +2908,19 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
   if (path === '/api/coupons') {
     if (method === 'GET') {
       try {
-        const coupons = await getAllCoupons(env.DB);
-        // If authenticated admin with coupon.view, return all coupons; otherwise return only active coupons
+        // If authenticated admin with coupon.view, return all coupons; otherwise return only active coupons directly from D1
         const authRes = await requireAuth(request, env);
         const hasCouponView = Boolean(!authRes.errorResponse && authRes.auth && hasPermission(authRes.auth, 'coupon.view'));
 
-        const returnList = hasCouponView ? coupons : coupons.filter((c) => c.isActive);
-        return jsonResponse({ success: true, coupons: returnList });
+        const returnList = await getAllCoupons(env.DB, !hasCouponView);
+        const cacheControl = hasCouponView
+          ? 'no-store, no-cache, must-revalidate, max-age=0'
+          : 'public, max-age=60, s-maxage=120, stale-while-revalidate=60';
+
+        return jsonResponse({ success: true, coupons: returnList }, 200, {
+          'Cache-Control': cacheControl,
+          'Vary': 'Origin, Cookie, Authorization',
+        });
       } catch (err: any) {
         console.error('Error fetching coupons:', err);
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);

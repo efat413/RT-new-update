@@ -324,6 +324,23 @@ export function rowToProduct(row: ProductRow): Product {
   };
 }
 
+export const PUBLIC_PRODUCT_COLUMNS =
+  'id, title, price, original_price, category_id, description, image_url, images_json, stock, featured, featured_sort_order, rating, reviews_count, specs_json, sizes_json, colors_json, sku, video_url, status, created_at, updated_at';
+
+export const ADMIN_PRODUCT_COLUMNS =
+  'id, title, price, original_price, buying_price, category_id, description, image_url, images_json, stock, featured, featured_sort_order, rating, reviews_count, specs_json, sizes_json, colors_json, sku, video_url, status, created_at, updated_at';
+
+export const CATEGORY_COLUMNS = 'id, name, slug, icon_name, description';
+
+export const SLIDER_COLUMNS =
+  'id, title, headline, subtext, tag, discount_badge, category_id, image_url, accent_gradient, button_text';
+
+export const COUPON_COLUMNS =
+  'code, discount_type, discount_value, min_spend, description, is_active';
+
+export const REVIEW_COLUMNS =
+  'id, product_id, author_name, rating, comment, verified_purchase, created_at';
+
 export interface ProductFilter {
   category?: string;
   search?: string;
@@ -333,6 +350,7 @@ export interface ProductFilter {
   sortBy?: 'featured' | 'price-asc' | 'price-desc' | 'rating' | 'newest';
   includeInactive?: boolean;
   status?: string;
+  includeBuyingPrice?: boolean;
 }
 
 export interface PaginatedProductsResult {
@@ -410,8 +428,9 @@ export async function getAllProducts(
 ): Promise<Product[]> {
   const { whereClause, bindings } = buildProductWhereClause(filter);
   const orderClause = resolveProductOrderClause(filter?.sortBy);
+  const columns = filter?.includeBuyingPrice ? ADMIN_PRODUCT_COLUMNS : PUBLIC_PRODUCT_COLUMNS;
 
-  let query = `SELECT * FROM products${whereClause}${orderClause}`;
+  let query = `SELECT ${columns} FROM products${whereClause}${orderClause}`;
   const queryBindings = [...bindings];
 
   if (filter?.limit && filter.limit > 0) {
@@ -444,6 +463,7 @@ export interface HomepageProductsData {
 /**
  * Loads strictly the products required for the homepage directly via SQL LIMITs and batching.
  * Eliminates loading the entire products table into memory and avoids N+1 database queries.
+ * Selects only public storefront fields without exposing internal buying prices.
  */
 export async function getHomepageProducts(
   db: D1Database,
@@ -458,7 +478,7 @@ export async function getHomepageProducts(
 
   // Statement 0: Featured products (SQL WHERE + ORDER BY + LIMIT)
   const featuredSql = `
-    SELECT * FROM products 
+    SELECT ${PUBLIC_PRODUCT_COLUMNS} FROM products 
     WHERE (status = 'active' OR status = 'published' OR status IS NULL OR status = '')
       AND (featured = 1 OR featured = 'true')
     ORDER BY CASE WHEN featured_sort_order IS NOT NULL AND featured_sort_order > 0 THEN featured_sort_order ELSE 99999 END ASC, created_at DESC 
@@ -469,7 +489,7 @@ export async function getHomepageProducts(
   // Statements 1..N: Products per category (SQL WHERE + ORDER BY + LIMIT)
   for (const catId of categoryIds) {
     const catSql = `
-      SELECT * FROM products 
+      SELECT ${PUBLIC_PRODUCT_COLUMNS} FROM products 
       WHERE category_id = ? 
         AND (status = 'active' OR status = 'published' OR status IS NULL OR status = '')
       ORDER BY created_at DESC 
@@ -487,7 +507,7 @@ export async function getHomepageProducts(
   } catch (err: any) {
     if (err?.message?.includes('featured_sort_order') || err?.message?.includes('no such column')) {
       const fallbackFeaturedSql = `
-        SELECT * FROM products 
+        SELECT ${PUBLIC_PRODUCT_COLUMNS} FROM products 
         WHERE (status = 'active' OR status = 'published' OR status IS NULL OR status = '')
           AND (featured = 1 OR featured = 'true')
         ORDER BY created_at DESC 
@@ -539,26 +559,41 @@ export async function getPaginatedProducts(
 ): Promise<PaginatedProductsResult> {
   const { whereClause, bindings } = buildProductWhereClause(filter);
   const orderClause = resolveProductOrderClause(filter?.sortBy);
+  const columns = filter?.includeBuyingPrice ? ADMIN_PRODUCT_COLUMNS : PUBLIC_PRODUCT_COLUMNS;
 
   // Safe limits: default 24, max 250
   const safeLimit = Math.min(250, Math.max(1, Number(filter?.limit) || 24));
   const page = Math.max(1, Number(filter?.page) || 1);
   const offset = (page - 1) * safeLimit;
 
-  // 1. Get total count
+  // 1. Prepare COUNT statement
   const countQuery = `SELECT COUNT(*) as total FROM products${whereClause}`;
   const countStmt = db.prepare(countQuery);
   const boundCount = bindings.length > 0 ? countStmt.bind(...bindings) : countStmt;
-  const countRow = await boundCount.first<{ total: number }>();
-  const total = Number(countRow?.total) || 0;
 
-  // 2. Get paginated page data
-  const dataQuery = `SELECT * FROM products${whereClause}${orderClause} LIMIT ? OFFSET ?`;
+  // 2. Prepare DATA statement
+  const dataQuery = `SELECT ${columns} FROM products${whereClause}${orderClause} LIMIT ? OFFSET ?`;
   const dataStmt = db.prepare(dataQuery);
   const boundData = dataStmt.bind(...bindings, safeLimit, offset);
-  const result = await boundData.all<ProductRow>();
-  const products = (result.results || []).map(rowToProduct);
 
+  // 3. Execute COUNT and DATA queries concurrently in a single batch round-trip
+  let countRes: any;
+  let dataRes: any;
+  if (typeof db.batch === 'function') {
+    const batchRes = await db.batch<any>([boundCount, boundData]);
+    countRes = batchRes[0];
+    dataRes = batchRes[1];
+  } else {
+    const [c, d] = await Promise.all([
+      boundCount.first<{ total: number }>(),
+      boundData.all<ProductRow>(),
+    ]);
+    countRes = { results: [c] };
+    dataRes = d;
+  }
+
+  const total = Number(countRes?.results?.[0]?.total ?? countRes?.total ?? 0);
+  const products = (dataRes?.results || []).map(rowToProduct);
   const totalPages = Math.ceil(total / safeLimit) || 1;
 
   return {
@@ -570,9 +605,36 @@ export async function getPaginatedProducts(
   };
 }
 
-export async function getProductById(db: D1Database, id: string): Promise<Product | null> {
-  const row = await db.prepare('SELECT * FROM products WHERE id = ? LIMIT 1').bind(id).first<ProductRow>();
+export async function getProductById(
+  db: D1Database,
+  id: string,
+  options?: { includeBuyingPrice?: boolean; publicOnly?: boolean }
+): Promise<Product | null> {
+  const columns = (options?.publicOnly || options?.includeBuyingPrice === false)
+    ? PUBLIC_PRODUCT_COLUMNS
+    : ADMIN_PRODUCT_COLUMNS;
+  const row = await db.prepare(`SELECT ${columns} FROM products WHERE id = ? LIMIT 1`).bind(id).first<ProductRow>();
   return row ? rowToProduct(row) : null;
+}
+
+/**
+ * Batch-retrieves multiple products by ID in a single SQL query.
+ * Eliminates N+1 database queries when verifying cart and checkout items.
+ */
+export async function getProductsByIds(
+  db: D1Database,
+  ids: string[],
+  options?: { includeBuyingPrice?: boolean; publicOnly?: boolean }
+): Promise<Product[]> {
+  const uniqueIds = Array.from(new Set(ids.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)));
+  if (uniqueIds.length === 0) return [];
+  const columns = (options?.publicOnly || options?.includeBuyingPrice === false)
+    ? PUBLIC_PRODUCT_COLUMNS
+    : ADMIN_PRODUCT_COLUMNS;
+  const placeholders = uniqueIds.map(() => '?').join(', ');
+  const stmt = db.prepare(`SELECT ${columns} FROM products WHERE id IN (${placeholders})`).bind(...uniqueIds);
+  const result = await stmt.all<ProductRow>();
+  return (result.results || []).map(rowToProduct);
 }
 
 export async function insertProduct(db: D1Database, input: any): Promise<Product> {
@@ -862,13 +924,13 @@ export function rowToCategory(row: CategoryRow): Category {
 }
 
 export async function getAllCategories(db: D1Database): Promise<Category[]> {
-  const result = await db.prepare('SELECT * FROM categories ORDER BY name ASC').all<CategoryRow>();
+  const result = await db.prepare(`SELECT ${CATEGORY_COLUMNS} FROM categories ORDER BY name ASC`).all<CategoryRow>();
   return (result.results || []).map(rowToCategory);
 }
 
 export async function getCategoryById(db: D1Database, idOrSlug: string): Promise<Category | null> {
-  const query = 'SELECT * FROM categories WHERE id = ? OR slug = ? LIMIT 1';
-  const row = await db.prepare(query).bind(idOrSlug, idOrSlug).first<CategoryRow>();
+  const query = `SELECT ${CATEGORY_COLUMNS} FROM categories WHERE id = ? OR slug = ? OR LOWER(slug) = LOWER(?) LIMIT 1`;
+  const row = await db.prepare(query).bind(idOrSlug, idOrSlug, idOrSlug).first<CategoryRow>();
   return row ? rowToCategory(row) : null;
 }
 
@@ -955,8 +1017,13 @@ export function rowToSlider(row: SliderRow): CarouselSlide {
 }
 
 export async function getAllSliders(db: D1Database): Promise<CarouselSlide[]> {
-  const result = await db.prepare('SELECT * FROM sliders ORDER BY sort_order ASC, created_at ASC').all<SliderRow>();
+  const result = await db.prepare(`SELECT ${SLIDER_COLUMNS} FROM sliders ORDER BY sort_order ASC, created_at ASC`).all<SliderRow>();
   return (result.results || []).map(rowToSlider);
+}
+
+export async function getSliderById(db: D1Database, id: string): Promise<CarouselSlide | null> {
+  const row = await db.prepare(`SELECT ${SLIDER_COLUMNS} FROM sliders WHERE id = ? LIMIT 1`).bind(id).first<SliderRow>();
+  return row ? rowToSlider(row) : null;
 }
 
 export async function insertSlider(db: D1Database, input: any): Promise<CarouselSlide> {
@@ -1000,13 +1067,13 @@ export async function insertSlider(db: D1Database, input: any): Promise<Carousel
     )
     .run();
 
-  const row = await db.prepare('SELECT * FROM sliders WHERE id = ?').bind(id).first<SliderRow>();
+  const row = await db.prepare(`SELECT ${SLIDER_COLUMNS} FROM sliders WHERE id = ?`).bind(id).first<SliderRow>();
   if (!row) throw new Error('Failed to retrieve inserted slider');
   return rowToSlider(row);
 }
 
 export async function updateSliderInD1(db: D1Database, id: string, updates: Partial<CarouselSlide>): Promise<CarouselSlide> {
-  const existing = await db.prepare('SELECT * FROM sliders WHERE id = ?').bind(id).first<SliderRow>();
+  const existing = await db.prepare(`SELECT ${SLIDER_COLUMNS} FROM sliders WHERE id = ?`).bind(id).first<SliderRow>();
   if (!existing) throw new Error('Slider not found.');
 
   const current = rowToSlider(existing);
@@ -1049,7 +1116,7 @@ export async function updateSliderInD1(db: D1Database, id: string, updates: Part
     )
     .run();
 
-  const row = await db.prepare('SELECT * FROM sliders WHERE id = ?').bind(id).first<SliderRow>();
+  const row = await db.prepare(`SELECT ${SLIDER_COLUMNS} FROM sliders WHERE id = ?`).bind(id).first<SliderRow>();
   if (!row) throw new Error('Failed to retrieve updated slider');
   return rowToSlider(row);
 }
@@ -1236,11 +1303,7 @@ export async function cleanupLegacyCourierCredentialsFromD1(db: D1Database): Pro
   }
 }
 
-export async function getStoreSettings(db: D1Database): Promise<StoreSettings> {
-  const row = await db
-    .prepare('SELECT settings_json FROM store_settings WHERE id = "default" LIMIT 1')
-    .first<StoreSettingsRow>();
-
+export function parseStoreSettingsRow(row: { settings_json?: string } | null | undefined): StoreSettings {
   if (!row || !row.settings_json) {
     return INITIAL_SETTINGS;
   }
@@ -1296,6 +1359,97 @@ export async function getStoreSettings(db: D1Database): Promise<StoreSettings> {
   }
 }
 
+export async function getStoreSettings(db: D1Database): Promise<StoreSettings> {
+  const row = await db
+    .prepare('SELECT settings_json FROM store_settings WHERE id = "default" LIMIT 1')
+    .first<StoreSettingsRow>();
+
+  return parseStoreSettingsRow(row);
+}
+
+/**
+ * Batches settings, categories, and sliders into a single D1 round-trip.
+ * Drastically reduces homepage latency and eliminates 2 redundant round-trips.
+ */
+export async function getHomepageMetadata(db: D1Database): Promise<{
+  settings: StoreSettings;
+  categories: Category[];
+  sliders: CarouselSlide[];
+}> {
+  const stmtSettings = db.prepare('SELECT settings_json FROM store_settings WHERE id = "default" LIMIT 1');
+  const stmtCategories = db.prepare(`SELECT ${CATEGORY_COLUMNS} FROM categories ORDER BY name ASC`);
+  const stmtSliders = db.prepare(`SELECT ${SLIDER_COLUMNS} FROM sliders ORDER BY sort_order ASC, created_at ASC`);
+
+  let resSettings: any;
+  let resCategories: any[] = [];
+  let resSliders: any[] = [];
+
+  if (typeof db.batch === 'function') {
+    const batch = await db.batch<any>([stmtSettings, stmtCategories, stmtSliders]);
+    resSettings = batch[0]?.results?.[0];
+    resCategories = batch[1]?.results || [];
+    resSliders = batch[2]?.results || [];
+  } else {
+    const [s, c, sl] = await Promise.all([
+      stmtSettings.first<StoreSettingsRow>(),
+      stmtCategories.all<CategoryRow>(),
+      stmtSliders.all<SliderRow>(),
+    ]);
+    resSettings = s;
+    resCategories = c.results || [];
+    resSliders = sl.results || [];
+  }
+
+  const settings = parseStoreSettingsRow(resSettings);
+  const categories = resCategories.map(rowToCategory);
+  const sliders = resSliders.map(rowToSlider);
+
+  return { settings, categories, sliders };
+}
+
+/**
+ * Batches lightweight sitemap categories and products in a single round-trip.
+ * Strictly selects only the fields required for sitemap generation without loading the entire catalog into memory.
+ */
+export async function getSitemapData(db: D1Database): Promise<{
+  categories: Array<{ id: string; slug: string }>;
+  products: Array<{ id: string; status?: string; featured: boolean; createdAt: string }>;
+}> {
+  const stmtCategories = db.prepare('SELECT id, slug FROM categories ORDER BY name ASC');
+  const stmtProducts = db.prepare(`
+    SELECT id, status, featured, created_at
+    FROM products
+    WHERE (status = 'active' OR status = 'published' OR status IS NULL OR status = '')
+    ORDER BY created_at DESC
+  `);
+
+  let catRows: any[] = [];
+  let prodRows: any[] = [];
+
+  if (typeof db.batch === 'function') {
+    const batch = await db.batch<any>([stmtCategories, stmtProducts]);
+    catRows = batch[0]?.results || [];
+    prodRows = batch[1]?.results || [];
+  } else {
+    const [cats, prods] = await Promise.all([
+      stmtCategories.all<{ id: string; slug: string }>(),
+      stmtProducts.all<any>(),
+    ]);
+    catRows = cats.results || [];
+    prodRows = prods.results || [];
+  }
+
+  return {
+    categories: catRows.map((r) => ({ id: r.id, slug: r.slug || r.id })),
+    products: prodRows.map((r) => ({
+      id: r.id,
+      status: r.status,
+      featured: Boolean(r.featured),
+      createdAt: r.created_at,
+    })),
+  };
+}
+
 export async function updateStoreSettingsInD1(db: D1Database, updates: Partial<StoreSettings>): Promise<StoreSettings> {
   // Never persist courier credentials into D1 settings_json
   const safeUpdates = { ...updates };
@@ -1311,41 +1465,24 @@ export async function updateStoreSettingsInD1(db: D1Database, updates: Partial<S
   delete (merged as any).steadfastSecretKey;
   const settingsJson = JSON.stringify(merged);
 
-  // 3. Persist to Cloudflare D1
-  const existing = await db.prepare('SELECT id FROM store_settings WHERE id = "default"').first();
-  if (existing) {
-    const res = await db
-      .prepare('UPDATE store_settings SET settings_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = "default"')
-      .bind(settingsJson)
-      .run();
-    if (res.success === false) {
-      console.error('Failed to execute UPDATE on store_settings table:', res.error);
-      throw new Error('Failed to update store settings.');
-    }
-  } else {
-    const res = await db
-      .prepare('INSERT INTO store_settings (id, settings_json, updated_at) VALUES ("default", ?, CURRENT_TIMESTAMP)')
-      .bind(settingsJson)
-      .run();
-    if (res.success === false) {
-      console.error('Failed to execute INSERT on store_settings table:', res.error);
-      throw new Error('Failed to save store settings.');
-    }
+  // 3. Persist to Cloudflare D1 with atomic UPSERT (eliminates 3 redundant queries)
+  const res = await db
+    .prepare(
+      `INSERT INTO store_settings (id, settings_json, updated_at)
+       VALUES ('default', ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(id) DO UPDATE SET
+         settings_json = excluded.settings_json,
+         updated_at = CURRENT_TIMESTAMP`
+    )
+    .bind(settingsJson)
+    .run();
+
+  if (res.success === false) {
+    console.error('Failed to execute UPSERT on store_settings table:', res.error);
+    throw new Error('Failed to update store settings.');
   }
 
-  // 4. Verify the database write by re-fetching the saved record directly from D1
-  const verifiedRow = await db
-    .prepare('SELECT settings_json FROM store_settings WHERE id = "default" LIMIT 1')
-    .first<StoreSettingsRow>();
-
-  if (!verifiedRow || !verifiedRow.settings_json) {
-    console.error('Verification failed: store_settings row not found in database after write.');
-    throw new Error('Failed to verify store settings after save.');
-  }
-
-  // 5. Parse and return the canonical D1 record
-  const canonical = await getStoreSettings(db);
-  return canonical;
+  return merged;
 }
 
 // Media assets persistence in D1 (used when R2 is not configured)
@@ -1400,8 +1537,11 @@ export function rowToCoupon(row: CouponRow): Coupon {
   };
 }
 
-export async function getAllCoupons(db: D1Database): Promise<Coupon[]> {
-  const result = await db.prepare('SELECT * FROM coupons ORDER BY code ASC').all<CouponRow>();
+export async function getAllCoupons(db: D1Database, activeOnly: boolean = false): Promise<Coupon[]> {
+  const query = activeOnly
+    ? `SELECT ${COUPON_COLUMNS} FROM coupons WHERE is_active = 1 ORDER BY code ASC`
+    : `SELECT ${COUPON_COLUMNS} FROM coupons ORDER BY code ASC`;
+  const result = await db.prepare(query).all<CouponRow>();
   return (result.results || []).map(rowToCoupon);
 }
 
@@ -1428,13 +1568,20 @@ export async function insertCoupon(db: D1Database, coupon: Coupon): Promise<Coup
     )
     .run();
 
-  const row = await db.prepare('SELECT * FROM coupons WHERE code = ?').bind(code).first<CouponRow>();
+  const row = await db.prepare(`SELECT ${COUPON_COLUMNS} FROM coupons WHERE code = ?`).bind(code).first<CouponRow>();
   if (!row) throw new Error('Failed to retrieve inserted coupon');
   return rowToCoupon(row);
 }
 
+export async function getCouponByCode(db: D1Database, code: string): Promise<Coupon | null> {
+  const clean = code.trim().toUpperCase();
+  if (!clean) return null;
+  const row = await db.prepare(`SELECT ${COUPON_COLUMNS} FROM coupons WHERE UPPER(code) = ? LIMIT 1`).bind(clean).first<CouponRow>();
+  return row ? rowToCoupon(row) : null;
+}
+
 export async function updateCouponInD1(db: D1Database, code: string, updates: Partial<Coupon>): Promise<Coupon> {
-  const existing = await db.prepare('SELECT * FROM coupons WHERE code = ?').bind(code).first<CouponRow>();
+  const existing = await db.prepare(`SELECT ${COUPON_COLUMNS} FROM coupons WHERE code = ?`).bind(code).first<CouponRow>();
   if (!existing) throw new Error('Coupon not found.');
 
   const current = rowToCoupon(existing);
@@ -1457,7 +1604,7 @@ export async function updateCouponInD1(db: D1Database, code: string, updates: Pa
     .bind(discountType, discountValue, minSpend, description, isActive, code)
     .run();
 
-  const row = await db.prepare('SELECT * FROM coupons WHERE code = ?').bind(code).first<CouponRow>();
+  const row = await db.prepare(`SELECT ${COUPON_COLUMNS} FROM coupons WHERE code = ?`).bind(code).first<CouponRow>();
   if (!row) throw new Error('Failed to retrieve updated coupon');
   return rowToCoupon(row);
 }
@@ -1484,7 +1631,7 @@ export function rowToReview(row: ReviewRow): ProductReview {
 }
 
 export async function getAllReviews(db: D1Database, productId?: string): Promise<ProductReview[]> {
-  let query = 'SELECT * FROM reviews';
+  let query = `SELECT ${REVIEW_COLUMNS} FROM reviews`;
   const bindings: any[] = [];
 
   if (productId) {
@@ -1517,7 +1664,7 @@ export async function insertReview(db: D1Database, input: any): Promise<ProductR
     .bind(id, productId, authorName, rating, comment, verifiedPurchase, createdAt)
     .run();
 
-  const row = await db.prepare('SELECT * FROM reviews WHERE id = ?').bind(id).first<ReviewRow>();
+  const row = await db.prepare(`SELECT ${REVIEW_COLUMNS} FROM reviews WHERE id = ?`).bind(id).first<ReviewRow>();
   if (!row) throw new Error('Failed to retrieve inserted review');
   return rowToReview(row);
 }
@@ -2208,8 +2355,33 @@ export async function insertOrder(db: D1Database, order: Order): Promise<Order> 
     throw new Error('A valid 11-digit Bangladeshi contact phone number is required.');
   }
 
-  // 3. Anti-Spam & Blocked Numbers Enforcement
-  const storeSettings = await getStoreSettings(db);
+  // 3. Parallel Batch Fetch: Retrieve Store Settings, Product records, and optional Coupon concurrently
+  const productIds = Array.from(
+    new Set(
+      order.items
+        .map((it) => it?.product?.id)
+        .filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+    )
+  );
+  const cleanCouponCode = order.couponCode && order.couponCode.trim() ? order.couponCode.trim().toUpperCase() : '';
+
+  const [storeSettings, couponRow, d1ProductList] = await Promise.all([
+    getStoreSettings(db),
+    cleanCouponCode
+      ? db
+          .prepare(`SELECT ${COUPON_COLUMNS} FROM coupons WHERE UPPER(code) = ?`)
+          .bind(cleanCouponCode)
+          .first<CouponRow>()
+      : Promise.resolve(null),
+    getProductsByIds(db, productIds, { includeBuyingPrice: true }),
+  ]);
+
+  const productMap = new Map<string, Product>();
+  for (const p of d1ProductList) {
+    productMap.set(p.id, p);
+  }
+
+  // Anti-Spam & Blocked Numbers Enforcement
   if (storeSettings.blockedPhoneNumbers && Array.isArray(storeSettings.blockedPhoneNumbers)) {
     const isBlocked = storeSettings.blockedPhoneNumbers.some((p: string) => {
       const cleanP = (p || '').replace(/\D/g, '');
@@ -2253,7 +2425,7 @@ export async function insertOrder(db: D1Database, order: Order): Promise<Order> 
       throw new Error(`Invalid item quantity for "${it?.product?.title || prodId}". Must be an integer between 1 and 100.`);
     }
 
-    const d1Product = await getProductById(db, prodId);
+    const d1Product = productMap.get(prodId);
     if (!d1Product) {
       throw new Error(`Product "${it?.product?.title || prodId}" does not exist.`);
     }
@@ -2298,26 +2470,18 @@ export async function insertOrder(db: D1Database, order: Order): Promise<Order> 
   let authoritativeDiscount = 0;
   let finalCouponCode: string | null = null;
 
-  if (order.couponCode && order.couponCode.trim()) {
-    const cleanCouponCode = order.couponCode.trim().toUpperCase();
-    const couponRow = await db
-      .prepare('SELECT * FROM coupons WHERE UPPER(code) = ?')
-      .bind(cleanCouponCode)
-      .first<CouponRow>();
-
-    if (couponRow && couponRow.is_active) {
-      const coupon = rowToCoupon(couponRow);
-      const minSpend = coupon.minSpend || 0;
-      if (authoritativeSubtotal >= minSpend) {
-        finalCouponCode = coupon.code;
-        if (coupon.discountType === 'percentage') {
-          const clampedPercentage = Math.min(100, Math.max(0, Number(coupon.discountValue) || 0));
-          authoritativeDiscount = Math.round((authoritativeSubtotal * clampedPercentage) / 100);
-        } else if (coupon.discountType === 'fixed') {
-          authoritativeDiscount = Math.min(authoritativeSubtotal, Math.max(0, Number(coupon.discountValue) || 0));
-        } else if (coupon.discountType === 'free_shipping') {
-          authoritativeDiscount = authoritativeDeliveryFee;
-        }
+  if (couponRow && couponRow.is_active) {
+    const coupon = rowToCoupon(couponRow);
+    const minSpend = coupon.minSpend || 0;
+    if (authoritativeSubtotal >= minSpend) {
+      finalCouponCode = coupon.code;
+      if (coupon.discountType === 'percentage') {
+        const clampedPercentage = Math.min(100, Math.max(0, Number(coupon.discountValue) || 0));
+        authoritativeDiscount = Math.round((authoritativeSubtotal * clampedPercentage) / 100);
+      } else if (coupon.discountType === 'fixed') {
+        authoritativeDiscount = Math.min(authoritativeSubtotal, Math.max(0, Number(coupon.discountValue) || 0));
+      } else if (coupon.discountType === 'free_shipping') {
+        authoritativeDiscount = authoritativeDeliveryFee;
       }
     }
   }
