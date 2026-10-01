@@ -8,6 +8,24 @@ import { Footer } from './components/Footer';
 import { CategoryProductCarousel } from './components/CategoryProductCarousel';
 import { FeaturedProductsCarousel } from './components/FeaturedProductsCarousel';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { formatWhatsAppLink } from './utils/phone';
+import { DEFAULT_SITE_NAME } from './utils/seo';
+import {
+  Sparkles,
+  SlidersHorizontal,
+  Phone,
+  MessageCircle,
+  Package,
+  Tag,
+  ChevronDown,
+  ShoppingCart,
+  Share2,
+  RefreshCw,
+  LayoutGrid,
+  Watch,
+  Headphones,
+  Gift,
+} from 'lucide-react';
 
 // Code-splitting: Lazy-load route pages
 // Storefront visitors do NOT download heavy admin, product detail, or category listing chunks during initial load
@@ -216,24 +234,6 @@ const CategoryListingLoadingFallback: React.FC = () => (
     </div>
   </div>
 );
-import { formatWhatsAppLink } from './utils/phone';
-import { DEFAULT_SITE_NAME } from './utils/seo';
-import {
-  Sparkles,
-  SlidersHorizontal,
-  Phone,
-  MessageCircle,
-  Package,
-  Tag,
-  ChevronDown,
-  ShoppingCart,
-  Share2,
-  RefreshCw,
-  LayoutGrid,
-  Watch,
-  Headphones,
-  Gift,
-} from 'lucide-react';
 
 const getCategoryIcon = (iconName?: string) => {
   switch (iconName?.toLowerCase()) {

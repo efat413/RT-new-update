@@ -188,15 +188,17 @@ async function runCodeSplittingVerification() {
     const hasCheckout = files.some(f => f.startsWith('CheckoutSection-'));
     const hasTracking = files.some(f => f.startsWith('OrderTrackingDropdown-'));
     const hasAreas = files.some(f => f.startsWith('bangladesh-areas-'));
+    const hasIcons = files.some(f => f.startsWith('vendor-icons-'));
     const hasIndex = files.some(f => f.startsWith('index-'));
 
     assert(hasVendorReact, '11.1 vendor-react chunk generated for long-term browser caching');
     assert(hasAreas, '11.2 bangladesh-areas chunk isolated for on-demand checkout loading');
-    assert(hasProductDetail, '11.3 ProductDetailView chunk generated independently');
-    assert(hasCategoryListing, '11.4 CategoryListingView chunk generated independently');
-    assert(hasCheckout, '11.5 CheckoutSection chunk generated independently');
-    assert(hasTracking, '11.6 OrderTrackingDropdown chunk generated independently');
-    assert(hasIndex, '11.7 Primary index chunk generated');
+    assert(hasIcons, '11.3 vendor-icons chunk consolidated to eliminate tiny micro-chunks');
+    assert(hasProductDetail, '11.4 ProductDetailView chunk generated independently');
+    assert(hasCategoryListing, '11.5 CategoryListingView chunk generated independently');
+    assert(hasCheckout, '11.6 CheckoutSection chunk generated independently');
+    assert(hasTracking, '11.7 OrderTrackingDropdown chunk generated independently');
+    assert(hasIndex, '11.8 Primary index chunk generated');
   } else {
     console.log('ℹ️ dist directory not yet populated, will check after build completes');
   }
