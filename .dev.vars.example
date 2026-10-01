@@ -1,0 +1,11 @@
+# Cloudflare Workers Local Development Secrets (.dev.vars)
+# Copy this file to .dev.vars for local development with `wrangler dev`
+# NEVER commit .dev.vars to version control.
+
+ADMIN_SECRET=
+STEADFAST_API_KEY=
+STEADFAST_SECRET_KEY=
+RESEND_API_KEY=
+RESEND_FROM_EMAIL=
+APP_URL=
+SUPER_ADMIN_EMAILS=cmt413uec@gmail.com

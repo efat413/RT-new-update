@@ -1,0 +1,98 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', sans-serif;
+  }
+  h1, h2, h3, h4, h5, h6, .font-display {
+    font-family: 'Outfit', sans-serif;
+  }
+}
+
+/* Rainbow brand dynamic styling */
+.rainbow-gradient-text {
+  background: linear-gradient(135deg, #ef4444 0%, #f59e0b 25%, #10b981 50%, #0ea5e9 75%, #8b5cf6 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.rainbow-gradient-bg {
+  background: linear-gradient(135deg, #ef4444 0%, #f59e0b 25%, #10b981 50%, #0ea5e9 75%, #8b5cf6 100%);
+}
+
+.rainbow-border {
+  border-image: linear-gradient(135deg, #ef4444 0%, #f59e0b 25%, #10b981 50%, #0ea5e9 75%, #8b5cf6 100%) 1;
+}
+
+.rainbow-glow {
+  box-shadow: 0 0 25px -5px rgba(239, 68, 68, 0.25), 0 0 25px -5px rgba(14, 165, 233, 0.25);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Highly visible horizontal scrollbar for admin navigation tabs */
+.admin-tabs-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #64748b #0f172a;
+}
+.admin-tabs-scrollbar::-webkit-scrollbar {
+  height: 8px;
+}
+.admin-tabs-scrollbar::-webkit-scrollbar-track {
+  background: #0f172a;
+  border-radius: 9999px;
+  border: 1px solid #1e293b;
+}
+.admin-tabs-scrollbar::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 9999px;
+  border: 1px solid #0f172a;
+}
+.admin-tabs-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+@keyframes scaleUp {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-scaleUp {
+  animation: scaleUp 0.18s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes dropdownRight {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-dropdownRight {
+  animation: dropdownRight 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+

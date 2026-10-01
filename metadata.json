@@ -1,0 +1,8 @@
+{
+  "name": "Rongdhonu Trade",
+  "description": "Production-ready Bangladeshi e-commerce storefront and admin management portal with dynamic rainbow branding, BDT currency, local payment gateways, and courier integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

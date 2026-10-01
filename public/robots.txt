@@ -1,0 +1,10 @@
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /account
+Disallow: /cart
+Disallow: /checkout
+Disallow: /dashboard
+Disallow: /api
+
+Sitemap: https://rongdhonutrade.com/sitemap.xml

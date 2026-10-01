@@ -1,0 +1,41 @@
+{
+  "name": "rongdhonu-trade",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
+  },
+  "scripts": {
+    "dev": "vite --port=3000 --host=0.0.0.0",
+    "build": "vite build",
+    "deploy": "wrangler deploy",
+    "d1:migrate": "wrangler d1 migrations apply rongdhonu-db --remote",
+    "d1:migrate:local": "wrangler d1 migrations apply rongdhonu-db --local",
+    "preview": "vite preview --port=3000 --host=0.0.0.0",
+    "clean": "rm -rf dist server.js",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@google/genai": "^2.4.0",
+    "@tailwindcss/vite": "^4.1.14",
+    "@vitejs/plugin-react": "^5.0.4",
+    "lucide-react": "^0.546.0",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "motion": "^12.23.24"
+  },
+  "devDependencies": {
+    "@rollup/rollup-linux-x64-gnu": "^4.63.5",
+    "@types/node": "^22.14.0",
+    "autoprefixer": "^10.4.21",
+    "esbuild": "^0.25.0",
+    "sharp": "^0.35.5",
+    "tailwindcss": "^4.1.14",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.3",
+    "wrangler": "^4.137.0"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "rongdhonutrade",
+  "main": "src/worker.ts",
+  "compatibility_date": "2024-09-23",
+  "observability": {
+    "enabled": true
+  },
+  "build": {
+    "command": "npm run build"
+  },
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "none"
+  },
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "vars": {
+    "APP_URL": "https://rongdhonutrade.com",
+    "RESEND_FROM_EMAIL": "support@rongdhonutrade.com",
+    "SUPER_ADMIN_EMAILS": "cmt413uec@gmail.com"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "rongdhonu-db",
+      "database_id": "3276795d-5593-42c0-8e14-947f3ab1172b",
+      "migrations_dir": "migrations"
+    }
+  ]
+}
