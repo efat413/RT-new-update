@@ -90,10 +90,10 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
   const [isFullscreenOpen, setIsFullscreenOpen] = useState(false);
   const [isZoomed, setIsZoomed] = useState(false);
 
-  // Track ViewContent event to Meta, TikTok, and GTM
+  // Track ProductView / ViewContent event to Meta, TikTok, and GTM
   useEffect(() => {
     if (product) {
-      trackEvent('ViewContent', {
+      trackEvent('ProductView', {
         content_name: product.title,
         content_ids: [product.id],
         content_type: 'product',

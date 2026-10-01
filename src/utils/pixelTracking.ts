@@ -7,14 +7,84 @@ declare global {
     ttq?: any;
     TiktokAnalyticsObject?: string;
     dataLayer?: any[];
+    gtag?: (...args: any[]) => void;
   }
 }
 
 const PIXEL_LOGS_KEY = 'rongdhonu_pixel_logs_v1';
-const MAX_LOGS = 40;
+const MAX_LOGS = 50;
+
+// Authoritative session deduplication cache for purchases
+const trackedPurchases = new Set<string>();
+
+// Authoritative tracking sources & lifecycle state
+export interface ScriptLoadState {
+  loaded: boolean;
+  source: 'index-html' | 'store-settings' | 'external' | 'none';
+  id?: string;
+  error?: boolean;
+}
+
+const trackingSources: Record<'meta' | 'tiktok' | 'gtm' | 'ga', ScriptLoadState> = {
+  meta: { loaded: false, source: 'none' },
+  tiktok: { loaded: false, source: 'none' },
+  gtm: { loaded: false, source: 'none' },
+  ga: { loaded: false, source: 'none' },
+};
+
+export function getTrackingSources(): Record<'meta' | 'tiktok' | 'gtm' | 'ga', ScriptLoadState> {
+  return { ...trackingSources };
+}
+
+// Queue for events dispatched prior to SDK readiness
+interface QueuedTrackingEvent {
+  options: TrackEventOptions;
+  timestamp: number;
+}
+const pendingEventsQueue: QueuedTrackingEvent[] = [];
 
 // ============================================================================
-// 1. HIGH-ACCURACY CRYPTOGRAPHIC SHA-256 HASHING (Standard Bitwise Algorithm)
+// 1. NON-BLOCKING IDLE SCHEDULER (requestIdleCallback + setTimeout fallback)
+// ============================================================================
+
+/**
+ * Schedules non-essential work during the browser's idle period.
+ * Guarantees zero blocking of the critical rendering path (FCP / LCP).
+ * Fallbacks safely to setTimeout on Safari or environments without requestIdleCallback.
+ */
+export function scheduleIdleTask(callback: () => void, timeoutMs: number = 2500): () => void {
+  if (typeof window === 'undefined') return () => {};
+
+  if ('requestIdleCallback' in window) {
+    const handle = (window as any).requestIdleCallback(
+      () => {
+        try {
+          callback();
+        } catch (e) {
+          console.warn('[Rongdhonu Pixels] Idle task execution notice:', e);
+        }
+      },
+      { timeout: timeoutMs }
+    );
+    return () => {
+      if ('cancelIdleCallback' in window) {
+        (window as any).cancelIdleCallback(handle);
+      }
+    };
+  }
+
+  const timer = setTimeout(() => {
+    try {
+      callback();
+    } catch (e) {
+      console.warn('[Rongdhonu Pixels] Timeout task execution notice:', e);
+    }
+  }, Math.min(timeoutMs, 2000));
+  return () => clearTimeout(timer);
+}
+
+// ============================================================================
+// 2. CRYPTOGRAPHIC SHA-256 HASHING (Standard Bitwise Algorithm)
 // ============================================================================
 
 /**
@@ -103,50 +173,35 @@ export function sha256Sync(ascii: string): string {
 }
 
 // ============================================================================
-// 2. DATA SANITIZATION & ADVANCED MATCHING PREPARATION
+// 3. DATA SANITIZATION & ADVANCED MATCHING PREPARATION
 // ============================================================================
 
-/**
- * Sanitizes and normalizes email according to Meta & TikTok Advanced Matching specs:
- * 1. Trim leading/trailing whitespace
- * 2. Convert to lowercase
- */
 export function sanitizeEmail(rawEmail?: string): string {
   if (!rawEmail) return '';
   return rawEmail.trim().toLowerCase();
 }
 
-/**
- * Sanitizes and normalizes phone numbers specifically for Bangladeshi numbers:
- * Converts '01712345678' -> '8801712345678' (E.164 without leading plus for Meta/TikTok hashing)
- * Strips all spaces, dashes, parentheses.
- */
 export function sanitizeBangladeshPhone(rawPhone?: string): string {
   if (!rawPhone) return '';
   let digits = rawPhone.replace(/\D/g, '');
   if (digits.startsWith('01') && digits.length === 11) {
     digits = '88' + digits;
-  } else if (digits.startsWith('8801') && digits.length === 13) {
-    // Already in 8801XXXXXXXXX format
   }
   return digits;
 }
 
 export interface HashedUserData {
-  em?: string; // Hashed email
-  ph?: string; // Hashed phone
-  fn?: string; // Hashed first name
-  ln?: string; // Hashed last name
-  ct?: string; // Hashed city
-  country?: string; // 'bd'
+  em?: string;
+  ph?: string;
+  fn?: string;
+  ln?: string;
+  ct?: string;
+  country?: string;
   external_id?: string;
   rawEmailPreview?: string;
   rawPhonePreview?: string;
 }
 
-/**
- * Prepares hashed user identifiers for Meta Advanced Matching & TikTok identify.
- */
 export function prepareHashedUserData(userData?: TrackingUserData): HashedUserData | null {
   if (!userData) return null;
 
@@ -194,15 +249,33 @@ export function prepareHashedUserData(userData?: TrackingUserData): HashedUserDa
 }
 
 // ============================================================================
-// 3. DYNAMIC SDK INJECTION ENGINE (Zero Duplicate Scripts)
+// 4. DEDUPLICATING SDK INJECTION ENGINE (Safe Architecture)
 // ============================================================================
 
 let currentLoadedMetaId: string | null = null;
 let currentLoadedTikTokId: string | null = null;
 let currentLoadedGtmId: string | null = null;
+let currentLoadedGaId: string | null = null;
+
+function findExistingScript(urlPattern: string | RegExp, elementId?: string): HTMLScriptElement | null {
+  if (typeof document === 'undefined') return null;
+  if (elementId) {
+    const el = document.getElementById(elementId) as HTMLScriptElement;
+    if (el) return el;
+  }
+  const scripts = document.getElementsByTagName('script');
+  for (let i = 0; i < scripts.length; i++) {
+    const src = scripts[i].src || '';
+    if (typeof urlPattern === 'string' ? src.includes(urlPattern) : urlPattern.test(src)) {
+      return scripts[i];
+    }
+  }
+  return null;
+}
 
 /**
  * Initializes or updates Meta (Facebook) Pixel SDK.
+ * Dynamically injects script with explicit source and role tracking.
  */
 export function initMetaPixel(pixelId: string, testEventCode?: string, hashedUser?: HashedUserData | null): boolean {
   if (typeof window === 'undefined' || !pixelId) return false;
@@ -210,7 +283,10 @@ export function initMetaPixel(pixelId: string, testEventCode?: string, hashedUse
   const cleanId = pixelId.trim();
   if (!cleanId) return false;
 
-  // 1. Inject base snippet once if not already present
+  // 1. Detect existing script to prevent duplicate downloads
+  const existingScript = findExistingScript(/connect\.facebook\.net/i, 'rongdhonu-meta-pixel-script');
+  const source = existingScript ? (existingScript.getAttribute('data-source') as any || 'index-html') : 'store-settings';
+
   if (!window.fbq) {
     (function(f: any, b: any, e: any, v: any, n?: any, t?: any, s?: any) {
       if (f.fbq) return;
@@ -225,7 +301,13 @@ export function initMetaPixel(pixelId: string, testEventCode?: string, hashedUse
       t = b.createElement(e);
       t.async = !0;
       t.id = 'rongdhonu-meta-pixel-script';
+      t.setAttribute('data-loaded-by', 'rongdhonu-pixel-orchestrator');
+      t.setAttribute('data-source', source);
       t.src = v;
+      t.onload = () => {
+        trackingSources.meta.loaded = true;
+        flushPendingEventsQueue();
+      };
       s = b.getElementsByTagName(e)[0];
       if (s && s.parentNode) {
         s.parentNode.insertBefore(t, s);
@@ -234,6 +316,12 @@ export function initMetaPixel(pixelId: string, testEventCode?: string, hashedUse
       }
     })(window, document, 'script', 'https://connect.facebook.net/en_US/fbevents.js');
   }
+
+  trackingSources.meta = {
+    loaded: Boolean(window.fbq),
+    source,
+    id: cleanId,
+  };
 
   // 2. Initialize pixel with Advanced Matching parameters if available
   try {
@@ -248,14 +336,11 @@ export function initMetaPixel(pixelId: string, testEventCode?: string, hashedUse
     if (currentLoadedMetaId !== cleanId) {
       window.fbq('init', cleanId, Object.keys(initParams).length > 0 ? initParams : undefined);
       currentLoadedMetaId = cleanId;
-      // Authoritative PageView fired once upon successful SDK initialization
       window.fbq('track', 'PageView');
     } else if (Object.keys(initParams).length > 0) {
-      // Re-feed user properties when user logs in or enters checkout
       window.fbq('setUserProperties', cleanId, initParams);
     }
 
-    // Set test event code if provided for Meta Events Manager Test Events
     if (testEventCode?.trim()) {
       window.fbq('set', 'testEventCode', testEventCode.trim());
     }
@@ -269,6 +354,7 @@ export function initMetaPixel(pixelId: string, testEventCode?: string, hashedUse
 
 /**
  * Initializes or updates TikTok Pixel SDK.
+ * Dynamically injects script with explicit source and role tracking.
  */
 export function initTikTokPixel(pixelId: string, testEventCode?: string, hashedUser?: HashedUserData | null): boolean {
   if (typeof window === 'undefined' || !pixelId) return false;
@@ -276,7 +362,9 @@ export function initTikTokPixel(pixelId: string, testEventCode?: string, hashedU
   const cleanId = pixelId.trim();
   if (!cleanId) return false;
 
-  // 1. Inject base snippet if not present
+  const existingScript = findExistingScript(/analytics\.tiktok\.com/i, 'rongdhonu-tiktok-pixel-script');
+  const source = existingScript ? (existingScript.getAttribute('data-source') as any || 'index-html') : 'store-settings';
+
   if (!window.ttq) {
     (function(w: any, d: any, t: any) {
       w.TiktokAnalyticsObject = t;
@@ -313,7 +401,13 @@ export function initTikTokPixel(pixelId: string, testEventCode?: string, hashedU
         s.type = 'text/javascript';
         s.async = true;
         s.id = 'rongdhonu-tiktok-pixel-script';
+        s.setAttribute('data-loaded-by', 'rongdhonu-pixel-orchestrator');
+        s.setAttribute('data-source', source);
         s.src = r + '?sdkid=' + eId + '&lib=' + t;
+        s.onload = () => {
+          trackingSources.tiktok.loaded = true;
+          flushPendingEventsQueue();
+        };
         const first = document.getElementsByTagName('script')[0];
         if (first && first.parentNode) {
           first.parentNode.insertBefore(s, first);
@@ -324,14 +418,19 @@ export function initTikTokPixel(pixelId: string, testEventCode?: string, hashedU
     })(window, document, 'ttq');
   }
 
-  // 2. Load the specific pixel ID
+  trackingSources.tiktok = {
+    loaded: Boolean(window.ttq),
+    source,
+    id: cleanId,
+  };
+
   try {
     if (currentLoadedTikTokId !== cleanId) {
       window.ttq.load(cleanId);
       currentLoadedTikTokId = cleanId;
+      window.ttq.page();
     }
 
-    // Identify user data for higher match quality
     if (hashedUser && (hashedUser.em || hashedUser.ph)) {
       window.ttq.identify({
         email: hashedUser.em,
@@ -348,6 +447,7 @@ export function initTikTokPixel(pixelId: string, testEventCode?: string, hashedU
 
 /**
  * Initializes or updates Google Tag Manager (GTM) Container.
+ * Checks for existing scripts from index.html to guarantee zero duplicate injection.
  */
 export function initGtm(gtmId: string): boolean {
   if (typeof window === 'undefined' || !gtmId) return false;
@@ -360,13 +460,10 @@ export function initGtm(gtmId: string): boolean {
 
   window.dataLayer = window.dataLayer || [];
 
-  if (currentLoadedGtmId !== cleanId) {
-    const existingScript = document.getElementById('rongdhonu-gtm-script');
-    if (existingScript && existingScript.parentNode) {
-      existingScript.parentNode.removeChild(existingScript);
-    }
+  const existingScript = findExistingScript(/googletagmanager\.com\/gtm\.js/i, 'rongdhonu-gtm-script');
+  const source = existingScript ? (existingScript.getAttribute('data-source') as any || 'index-html') : 'store-settings';
 
-    // Google Tag Manager standard asynchronous bootstrap loader
+  if (currentLoadedGtmId !== cleanId && !existingScript) {
     (function(w: any, d: Document, s: string, l: string, i: string) {
       w[l] = w[l] || [];
       w[l].push({ 'gtm.start': new Date().getTime(), event: 'gtm.js' });
@@ -375,7 +472,13 @@ export function initGtm(gtmId: string): boolean {
       const dl = l !== 'dataLayer' ? `&l=${l}` : '';
       j.id = 'rongdhonu-gtm-script';
       j.async = true;
+      j.setAttribute('data-loaded-by', 'rongdhonu-pixel-orchestrator');
+      j.setAttribute('data-source', source);
       j.src = `https://www.googletagmanager.com/gtm.js?id=${i}${dl}`;
+      j.onload = () => {
+        trackingSources.gtm.loaded = true;
+        flushPendingEventsQueue();
+      };
       if (f && f.parentNode) {
         f.parentNode.insertBefore(j, f);
       } else {
@@ -384,11 +487,7 @@ export function initGtm(gtmId: string): boolean {
     })(window, document, 'script', 'dataLayer', cleanId);
 
     // GTM noscript iframe support
-    if (document.body) {
-      const existingNoScript = document.getElementById('rongdhonu-gtm-noscript');
-      if (existingNoScript && existingNoScript.parentNode) {
-        existingNoScript.parentNode.removeChild(existingNoScript);
-      }
+    if (document.body && !document.getElementById('rongdhonu-gtm-noscript')) {
       const noscript = document.createElement('noscript');
       noscript.id = 'rongdhonu-gtm-noscript';
       const iframe = document.createElement('iframe');
@@ -400,15 +499,74 @@ export function initGtm(gtmId: string): boolean {
       noscript.appendChild(iframe);
       document.body.insertBefore(noscript, document.body.firstChild);
     }
-
-    currentLoadedGtmId = cleanId;
   }
+
+  currentLoadedGtmId = cleanId;
+  trackingSources.gtm = {
+    loaded: true,
+    source,
+    id: cleanId,
+  };
+
+  return true;
+}
+
+/**
+ * Initializes Google Analytics 4 (gtag.js) safely without duplicate firing.
+ * If GTM is already active, avoids duplicate pageviews by setting send_page_view: false.
+ */
+export function initGoogleAnalytics(gaId: string): boolean {
+  if (typeof window === 'undefined' || !gaId) return false;
+  const cleanId = gaId.trim().toUpperCase();
+  if (!cleanId) return false;
+
+  window.dataLayer = window.dataLayer || [];
+  if (!window.gtag) {
+    window.gtag = function() {
+      window.dataLayer!.push(arguments);
+    };
+  }
+
+  const existingScript = findExistingScript(/googletagmanager\.com\/gtag\/js/i, 'rongdhonu-ga-script');
+  const source = existingScript ? (existingScript.getAttribute('data-source') as any || 'index-html') : 'store-settings';
+
+  if (!existingScript) {
+    const script = document.createElement('script');
+    script.id = 'rongdhonu-ga-script';
+    script.async = true;
+    script.setAttribute('data-loaded-by', 'rongdhonu-pixel-orchestrator');
+    script.setAttribute('data-source', source);
+    script.src = `https://www.googletagmanager.com/gtag/js?id=${cleanId}`;
+    script.onload = () => {
+      trackingSources.ga.loaded = true;
+      flushPendingEventsQueue();
+    };
+    const first = document.getElementsByTagName('script')[0];
+    if (first && first.parentNode) {
+      first.parentNode.insertBefore(script, first);
+    } else {
+      document.head.appendChild(script);
+    }
+  }
+
+  // De-duplicate GA & GTM pageviews: If GTM is active, tell gtag NOT to fire an automatic page_view
+  const isGtmActive = Boolean(currentLoadedGtmId || findExistingScript(/googletagmanager\.com\/gtm\.js/i));
+  window.gtag('js', new Date());
+  window.gtag('config', cleanId, isGtmActive ? { send_page_view: false } : undefined);
+
+  currentLoadedGaId = cleanId;
+  trackingSources.ga = {
+    loaded: true,
+    source,
+    id: cleanId,
+  };
 
   return true;
 }
 
 /**
  * Sync all active pixel SDKs based on StoreSettings.
+ * Orchestrated lazily/non-blockingly.
  */
 export function syncPixelScripts(settings: StoreSettings, currentUserData?: TrackingUserData | null): void {
   if (typeof window === 'undefined') return;
@@ -422,21 +580,55 @@ export function syncPixelScripts(settings: StoreSettings, currentUserData?: Trac
 
   const hashedUser = settings.advancedMatchingEnabled !== false ? prepareHashedUserData(currentUserData || undefined) : null;
 
+  // 1. Meta Pixel
   if (settings.fbPixelId) {
     initMetaPixel(settings.fbPixelId, settings.fbTestEventCode, hashedUser);
   }
 
+  // 2. TikTok Pixel
   if (settings.tiktokPixelId) {
     initTikTokPixel(settings.tiktokPixelId, settings.tiktokTestEventCode, hashedUser);
   }
 
+  // 3. Google Tag Manager (Primary container)
   if (settings.gtmId) {
     initGtm(settings.gtmId);
+  }
+
+  // 4. Google Analytics 4 (If configured directly or default)
+  const gaId = settings.googleAnalyticsId || (!settings.gtmId ? 'G-CKJLJSDKFZ' : '');
+  if (gaId) {
+    initGoogleAnalytics(gaId);
+  }
+
+  // Flush any events queued while waiting for idle SDK initialization
+  flushPendingEventsQueue();
+}
+
+/**
+ * Convenience helper to schedule pixel synchronization during browser idle time.
+ */
+export function scheduleTrackingSync(settings: StoreSettings, currentUserData?: TrackingUserData | null): () => void {
+  return scheduleIdleTask(() => {
+    syncPixelScripts(settings, currentUserData);
+  }, 2200);
+}
+
+// ============================================================================
+// 5. EVENT QUEUE & FLUSHING
+// ============================================================================
+
+function flushPendingEventsQueue(): void {
+  if (pendingEventsQueue.length === 0) return;
+  const queue = [...pendingEventsQueue];
+  pendingEventsQueue.length = 0;
+  for (const item of queue) {
+    trackSocialEvent(item.options);
   }
 }
 
 // ============================================================================
-// 4. EVENT LOGGING & PERSISTENCE
+// 6. EVENT LOGGING & PERSISTENCE
 // ============================================================================
 
 export function getStoredPixelLogs(): PixelEventLog[] {
@@ -472,11 +664,21 @@ export function clearStoredPixelLogs(): void {
 }
 
 // ============================================================================
-// 5. HIGH-ACCURACY SOCIAL EVENT SYNCHRONIZATION
+// 7. HIGH-ACCURACY SOCIAL EVENT SYNCHRONIZATION
 // ============================================================================
 
 export interface TrackEventOptions {
-  eventName: 'PageView' | 'ViewContent' | 'AddToCart' | 'InitiateCheckout' | 'Purchase' | 'Search' | 'AddToWishlist' | 'Contact' | string;
+  eventName:
+    | 'PageView'
+    | 'ViewContent'
+    | 'ProductView'
+    | 'AddToCart'
+    | 'InitiateCheckout'
+    | 'Purchase'
+    | 'Search'
+    | 'AddToWishlist'
+    | 'Contact'
+    | string;
   params?: Record<string, any>;
   userData?: TrackingUserData | null;
   settings?: StoreSettings;
@@ -491,14 +693,18 @@ function getStoredOrFallbackSettings(): StoreSettings {
     siteName: 'Rongdhonu Trade',
     currencySymbol: '৳',
     trackingEnabled: true,
+    fbPixelId: '1658959045653680',
+    tiktokPixelId: 'CH7F8G9H0J1K2L3M4N',
+    gtmId: 'GTM-RDN8429',
+    googleAnalyticsId: 'G-CKJLJSDKFZ',
     advancedMatchingEnabled: true,
     trackingDebugMode: false,
   } as StoreSettings;
 }
 
 /**
- * Universal Event Dispatcher: Syncs across Meta Pixel, TikTok Pixel, and GTM dataLayer
- * with standardized Bangladeshi Taka currency (BDT) and optional SHA-256 Advanced Matching.
+ * Universal Event Dispatcher: Syncs across Meta Pixel, TikTok Pixel, GTM, and GA
+ * with standardized BDT currency, duplicate prevention, and zero critical-path blocking.
  */
 export function trackSocialEvent(
   optionsOrEventName: TrackEventOptions | string,
@@ -525,7 +731,13 @@ export function trackSocialEvent(
 
   const isEnabled = settings.trackingEnabled !== false;
   const isDebug = settings.trackingDebugMode === true;
-  const platformsReached: ('meta' | 'tiktok' | 'gtm')[] = [];
+  const platformsReached: ('meta' | 'tiktok' | 'gtm' | 'ga')[] = [];
+
+  // Guarantee BDT currency standard
+  const standardParams: Record<string, any> = {
+    ...params,
+    currency: params.currency || 'BDT',
+  };
 
   // 1. Prepare Advanced Matching User Data
   let hashedUser: HashedUserData | null = null;
@@ -542,12 +754,7 @@ export function trackSocialEvent(
     }
   }
 
-  // Guarantee BDT currency standard
-  const standardParams: Record<string, any> = {
-    ...params,
-    currency: params.currency || 'BDT',
-  };
-
+  // Tracking disabled check
   if (!isEnabled) {
     if (isDebug) {
       console.log(`[Rongdhonu Pixels] Skipped ${eventName} (Tracking disabled)`);
@@ -563,39 +770,90 @@ export function trackSocialEvent(
       value: standardParams.value,
       currency: standardParams.currency,
       payload: standardParams,
+      source: 'privacy-toggle',
     };
     savePixelLog(skippedLog);
     return skippedLog;
   }
 
-  // 2. Meta (Facebook) Pixel Dispatch
+  // 2. Strict Purchase Idempotency & Deduplication
+  if (eventName === 'Purchase') {
+    const orderKey = String(
+      standardParams.order_id ||
+      standardParams.transaction_id ||
+      standardParams.orderNumber ||
+      ''
+    ).trim();
+
+    if (orderKey) {
+      if (trackedPurchases.has(orderKey)) {
+        if (isDebug) {
+          console.warn(`[Rongdhonu Pixels] 🛡️ Duplicate Purchase event suppressed for Order ID: ${orderKey}`);
+        }
+        const duplicateLog: PixelEventLog = {
+          id: `evt-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+          timestamp: new Date().toLocaleTimeString(),
+          eventName: 'Purchase',
+          platforms: [],
+          status: 'skipped',
+          isDuplicate: true,
+          hasUserData: !!userDataSummary,
+          userDataSummary,
+          value: standardParams.value,
+          currency: standardParams.currency,
+          payload: standardParams,
+          source: 'deduplication-guard',
+        };
+        savePixelLog(duplicateLog);
+        return duplicateLog;
+      }
+      trackedPurchases.add(orderKey);
+    }
+  }
+
+  // Normalize event names for standard SDKs
+  const isViewEvent = eventName === 'ViewContent' || eventName === 'ProductView';
+
+  // 3. Meta (Facebook) Pixel Dispatch
   if (settings.fbPixelId) {
     try {
-      initMetaPixel(settings.fbPixelId, settings.fbTestEventCode, hashedUser);
+      if (!window.fbq && typeof window !== 'undefined') {
+        initMetaPixel(settings.fbPixelId, settings.fbTestEventCode, hashedUser);
+      }
       if (window.fbq) {
         if (eventName === 'PageView') {
           window.fbq('track', 'PageView');
+        } else if (isViewEvent) {
+          window.fbq('track', 'ViewContent', standardParams);
         } else {
           window.fbq('track', eventName, standardParams);
         }
         platformsReached.push('meta');
+      } else {
+        // Queue if SDK not ready yet
+        pendingEventsQueue.push({
+          options: { eventName, params: standardParams, userData, settings },
+          timestamp: Date.now(),
+        });
       }
     } catch (err) {
       console.error('[Rongdhonu Pixels] Meta dispatch error:', err);
     }
   }
 
-  // 3. TikTok Pixel Dispatch
+  // 4. TikTok Pixel Dispatch
   if (settings.tiktokPixelId) {
     try {
-      initTikTokPixel(settings.tiktokPixelId, settings.tiktokTestEventCode, hashedUser);
+      if (!window.ttq && typeof window !== 'undefined') {
+        initTikTokPixel(settings.tiktokPixelId, settings.tiktokTestEventCode, hashedUser);
+      }
       if (window.ttq) {
         if (eventName === 'PageView') {
           window.ttq.page();
           platformsReached.push('tiktok');
         } else {
-          // Map to TikTok standard event names
           let ttEvent = eventName;
+          if (isViewEvent) ttEvent = 'ViewContent';
           if (eventName === 'Purchase') ttEvent = 'CompletePayment';
 
           const ttParams: Record<string, any> = {
@@ -624,10 +882,12 @@ export function trackSocialEvent(
     }
   }
 
-  // 4. Google Tag Manager (GTM) dataLayer Push
+  // 5. Google Tag Manager (GTM) dataLayer Push
   if (settings.gtmId) {
     try {
-      initGtm(settings.gtmId);
+      if (!window.dataLayer && typeof window !== 'undefined') {
+        initGtm(settings.gtmId);
+      }
       if (window.dataLayer) {
         const gtmPayload: Record<string, any> = {
           event: eventName,
@@ -637,12 +897,25 @@ export function trackSocialEvent(
             items: standardParams.contents || standardParams.content_ids,
           },
         };
+
+        if (isViewEvent) {
+          gtmPayload.ga4_event = 'view_item';
+        } else if (eventName === 'AddToCart') {
+          gtmPayload.ga4_event = 'add_to_cart';
+        } else if (eventName === 'InitiateCheckout') {
+          gtmPayload.ga4_event = 'begin_checkout';
+        } else if (eventName === 'Purchase') {
+          gtmPayload.ga4_event = 'purchase';
+          gtmPayload.ecommerce.transaction_id = standardParams.transaction_id || standardParams.order_id;
+        }
+
         if (hashedUser) {
           gtmPayload.user_data = {
             sha256_email: hashedUser.em,
             sha256_phone_number: hashedUser.ph,
           };
         }
+
         window.dataLayer.push(gtmPayload);
         platformsReached.push('gtm');
       }
@@ -651,7 +924,29 @@ export function trackSocialEvent(
     }
   }
 
-  // 5. Console Debug Logging (when enabled)
+  // 6. Direct Google Analytics (gtag.js) Dispatch (when active and not redundant with GTM)
+  const gaId = settings.googleAnalyticsId || (!settings.gtmId ? 'G-CKJLJSDKFZ' : '');
+  if (gaId && window.gtag) {
+    try {
+      let gaEventName = eventName.toLowerCase();
+      if (isViewEvent) gaEventName = 'view_item';
+      else if (eventName === 'AddToCart') gaEventName = 'add_to_cart';
+      else if (eventName === 'InitiateCheckout') gaEventName = 'begin_checkout';
+      else if (eventName === 'Purchase') gaEventName = 'purchase';
+
+      window.gtag('event', gaEventName, {
+        currency: standardParams.currency,
+        value: standardParams.value,
+        items: standardParams.contents,
+        transaction_id: standardParams.transaction_id || standardParams.order_id,
+      });
+      platformsReached.push('ga');
+    } catch (err) {
+      console.error('[Rongdhonu Pixels] GA dispatch error:', err);
+    }
+  }
+
+  // 7. Console Debug Logging (when enabled)
   if (isDebug) {
     console.groupCollapsed(
       `%c[Rongdhonu Pixels] 🎯 ${eventName} %c${platformsReached.join(', ').toUpperCase() || 'NO TARGETS'}`,
@@ -666,7 +961,7 @@ export function trackSocialEvent(
     console.groupEnd();
   }
 
-  // 6. Record in Event Activity Log
+  // 8. Record in Event Activity Log
   const eventLog: PixelEventLog = {
     id: `evt-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
     timestamp: new Date().toLocaleTimeString(),
@@ -678,6 +973,7 @@ export function trackSocialEvent(
     value: standardParams.value,
     currency: standardParams.currency,
     payload: standardParams,
+    source: 'universal-dispatcher',
   };
 
   savePixelLog(eventLog);

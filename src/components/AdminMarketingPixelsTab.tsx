@@ -86,7 +86,7 @@ export const AdminMarketingPixelsTab: React.FC = () => {
   };
 
   const handleTestEvent = (
-    type: 'PageView' | 'ViewContent' | 'AddToCart' | 'InitiateCheckout' | 'Purchase'
+    type: 'PageView' | 'ViewContent' | 'ProductView' | 'AddToCart' | 'InitiateCheckout' | 'Purchase'
   ) => {
     setIsFiringTest(type);
     try {
@@ -517,6 +517,14 @@ export const AdminMarketingPixelsTab: React.FC = () => {
               className="px-3 py-1.5 bg-white border border-blue-200 hover:bg-blue-50 text-blue-800 rounded-xl text-xs font-bold shadow-2xs transition-all active:scale-95 cursor-pointer disabled:opacity-50"
             >
               {isFiringTest === 'ViewContent' ? 'Firing...' : 'Test ViewContent'}
+            </button>
+            <button
+              type="button"
+              disabled={isFiringTest !== null}
+              onClick={() => handleTestEvent('ProductView')}
+              className="px-3 py-1.5 bg-white border border-sky-200 hover:bg-sky-50 text-sky-800 rounded-xl text-xs font-bold shadow-2xs transition-all active:scale-95 cursor-pointer disabled:opacity-50"
+            >
+              {isFiringTest === 'ProductView' ? 'Firing...' : 'Test ProductView'}
             </button>
             <button
               type="button"

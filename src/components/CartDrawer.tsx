@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import {
   X,
@@ -192,6 +192,31 @@ export const CartDrawer: React.FC = () => {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isCartOpen, setIsCartOpen]);
+
+  // Track InitiateCheckout once when customer opens checkout drawer with items
+  const hasTrackedCheckoutRef = useRef(false);
+  useEffect(() => {
+    if (isCartOpen && cart.length > 0) {
+      if (!hasTrackedCheckoutRef.current) {
+        hasTrackedCheckoutRef.current = true;
+        trackEvent('InitiateCheckout', {
+          content_name: cart.map((it) => it.product.title).join(', '),
+          content_ids: cart.map((it) => it.product.id),
+          contents: cart.map((it) => ({
+            id: it.product.id,
+            name: it.product.title,
+            price: it.product.price,
+            quantity: it.quantity,
+          })),
+          num_items: cart.reduce((acc, it) => acc + it.quantity, 0),
+          value: cartSubtotal,
+          currency: 'BDT',
+        });
+      }
+    } else if (!isCartOpen) {
+      hasTrackedCheckoutRef.current = false;
+    }
+  }, [isCartOpen, cart, cartSubtotal, trackEvent]);
 
   if (!isCartOpen) return null;
 

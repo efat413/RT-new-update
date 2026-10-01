@@ -167,10 +167,10 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
     return pool.filter((p) => p.id !== product.id).slice(0, 4);
   }, [product, products, homepageCategoryProducts]);
 
-  // Track ViewContent event
+  // Track ProductView / ViewContent event
   useEffect(() => {
     if (product) {
-      trackEvent('ViewContent', {
+      trackEvent('ProductView', {
         content_name: product.title,
         content_ids: [product.id],
         content_type: 'product',

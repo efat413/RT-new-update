@@ -13,11 +13,13 @@ import {
   TrackingUserData,
 } from '../types';
 import {
+  scheduleTrackingSync,
   syncPixelScripts,
   trackSocialEvent,
   getStoredPixelLogs,
   clearStoredPixelLogs,
   prepareHashedUserData,
+  getTrackingSources,
 } from '../utils/pixelTracking';
 import { updateDynamicFavicon } from '../utils/favicon';
 import {
@@ -177,15 +179,16 @@ export interface StorefrontContextType {
 
   pixelLogs: PixelEventLog[];
   trackEvent: (
-    eventName: 'PageView' | 'ViewContent' | 'AddToCart' | 'InitiateCheckout' | 'Purchase' | 'Search' | 'AddToWishlist' | 'Contact' | string,
+    eventName: 'PageView' | 'ViewContent' | 'ProductView' | 'AddToCart' | 'InitiateCheckout' | 'Purchase' | 'Search' | 'AddToWishlist' | 'Contact' | string,
     params?: Record<string, any>,
     userData?: TrackingUserData
   ) => PixelEventLog;
-  fireTestPixelEvent: (type: 'PageView' | 'ViewContent' | 'AddToCart' | 'InitiateCheckout' | 'Purchase') => PixelEventLog;
+  fireTestPixelEvent: (type: 'PageView' | 'ViewContent' | 'ProductView' | 'AddToCart' | 'InitiateCheckout' | 'Purchase') => PixelEventLog;
   clearPixelLogs: () => void;
   isMetaActive: boolean;
   isTikTokActive: boolean;
   isGtmActive: boolean;
+  isGaActive?: boolean;
 }
 
 export const StorefrontContext = createContext<StorefrontContextType | undefined>(undefined);
@@ -979,14 +982,23 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const isMetaActive = Boolean(settings.trackingEnabled && settings.fbPixelId && settings.fbPixelId.trim());
   const isTikTokActive = Boolean(settings.trackingEnabled && settings.tiktokPixelId && settings.tiktokPixelId.trim());
   const isGtmActive = Boolean(settings.trackingEnabled && settings.gtmId && settings.gtmId.trim());
+  const isGaActive = Boolean(settings.trackingEnabled && settings.googleAnalyticsId && settings.googleAnalyticsId.trim());
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    try {
-      syncPixelScripts(settings);
-    } catch (e) {
-      console.warn('Pixel synchronization failed:', e);
-    }
+    // Non-blocking initialization: Execute strictly during idle periods or post-FCP
+    const cancelSync = scheduleTrackingSync(
+      settings,
+      currentUser
+        ? {
+            email: currentUser.email,
+            phone: currentUser.phone,
+            fullName: currentUser.name,
+            district: currentUser.district,
+          }
+        : null
+    );
+    return () => cancelSync();
   }, [
     settings.trackingEnabled,
     settings.fbPixelId,
@@ -994,7 +1006,10 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     settings.tiktokPixelId,
     settings.tiktokTestEventCode,
     settings.gtmId,
+    settings.googleAnalyticsId,
     settings.advancedMatchingEnabled,
+    currentUser?.email,
+    currentUser?.phone,
   ]);
 
   const trackEvent = useCallback((
@@ -1007,7 +1022,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     return log;
   }, []);
 
-  const fireTestPixelEvent = useCallback((type: 'PageView' | 'ViewContent' | 'AddToCart' | 'InitiateCheckout' | 'Purchase'): PixelEventLog => {
+  const fireTestPixelEvent = useCallback((type: 'PageView' | 'ViewContent' | 'ProductView' | 'AddToCart' | 'InitiateCheckout' | 'Purchase'): PixelEventLog => {
     const sampleProduct = products[0] || {
       id: 'prod-test-01',
       title: 'Premium Test Product',
@@ -1025,7 +1040,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       currency: 'BDT',
     });
     setPixelLogs((prev) => [log, ...prev.slice(0, 99)]);
-    showNotification('success', 'Test Event Fired', `${type} dispatched to Meta, TikTok & GTM dataLayer.`);
+    showNotification('success', 'Test Event Fired', `${type} dispatched to Meta, TikTok & GTM/GA pipelines.`);
     return log;
   }, [products, showNotification]);
 
@@ -1222,6 +1237,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     isMetaActive,
     isTikTokActive,
     isGtmActive,
+    isGaActive,
   }), [
     isStoreInitializing,
     isStoreError,
@@ -1285,6 +1301,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     isMetaActive,
     isTikTokActive,
     isGtmActive,
+    isGaActive,
   ]);
 
   return <StorefrontContext.Provider value={value}>{children}</StorefrontContext.Provider>;

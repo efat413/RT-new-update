@@ -45,6 +45,7 @@ export const INITIAL_SETTINGS: StoreSettings = {
   tiktokPixelId: 'CH7F8G9H0J1K2L3M4N',
   tiktokTestEventCode: '',
   gtmId: 'GTM-RDN8429',
+  googleAnalyticsId: 'G-CKJLJSDKFZ',
   advancedMatchingEnabled: true,
   trackingDebugMode: true,
   // Master Hero Slider Aspect Ratio: Desktop 1200x480 is the Master Ratio (5:2 = 2.5:1)
