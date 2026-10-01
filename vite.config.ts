@@ -1694,7 +1694,8 @@ function localApiDevPlugin(): Plugin {
 
           const uniqueProducts = Array.from(collectedMap.values());
 
-          res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=120, stale-while-revalidate=60');
+          res.setHeader('Cache-Control', 'public, max-age=30, s-maxage=60, stale-while-revalidate=30');
+          res.setHeader('Vary', 'Origin, Accept-Encoding');
           res.statusCode = 200;
           return res.end(
             JSON.stringify({
@@ -1803,9 +1804,9 @@ function localApiDevPlugin(): Plugin {
             const sanitized = pagedList.map((p) => sanitizeDevProduct(p, { isSuperAdmin, canViewBuyingPrice, canViewProfit }));
             const cacheControl = isPrivileged
               ? 'no-store, no-cache, must-revalidate, max-age=0'
-              : 'public, max-age=30, s-maxage=60, stale-while-revalidate=30';
+              : (search ? 'public, max-age=15, s-maxage=30, stale-while-revalidate=15' : 'public, max-age=30, s-maxage=60, stale-while-revalidate=30');
             res.setHeader('Cache-Control', cacheControl);
-            res.setHeader('Vary', 'Origin, Cookie, Authorization');
+            res.setHeader('Vary', 'Origin, Cookie, Authorization, Accept-Encoding');
             res.statusCode = 200;
             return res.end(JSON.stringify({
               success: true,
@@ -1911,14 +1912,22 @@ function localApiDevPlugin(): Plugin {
           const isSuperAdmin = auth?.role === 'super_admin';
           const canViewBuyingPrice = Boolean(auth && (isSuperAdmin || hasDevPermission(auth, 'product.view_buying_price')));
           const canViewProfit = Boolean(auth && (isSuperAdmin || hasDevPermission(auth, 'product.view_profit')));
+          const isPrivileged = Boolean(
+            auth &&
+            (isSuperAdmin ||
+              canViewBuyingPrice ||
+              canViewProfit ||
+              hasDevPermission(auth, 'product.create') ||
+              hasDevPermission(auth, 'product.update'))
+          );
 
           if (method === 'GET') {
             const found = devProducts.find((p) => p.id === id);
-            const singleCacheControl = (isSuperAdmin || canViewBuyingPrice || canViewProfit)
+            const singleCacheControl = isPrivileged
               ? 'no-store, no-cache, must-revalidate, max-age=0'
-              : 'public, max-age=30, s-maxage=60, stale-while-revalidate=30';
+              : 'public, max-age=15, s-maxage=45, stale-while-revalidate=30';
             res.setHeader('Cache-Control', singleCacheControl);
-            res.setHeader('Vary', 'Origin, Cookie, Authorization');
+            res.setHeader('Vary', 'Origin, Cookie, Authorization, Accept-Encoding');
             res.statusCode = found ? 200 : 404;
             return res.end(JSON.stringify(found ? {
               success: true,
@@ -1968,6 +1977,8 @@ function localApiDevPlugin(): Plugin {
         // 2. CATEGORIES
         if (url.pathname === '/api/categories') {
           if (method === 'GET') {
+            res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=300, stale-while-revalidate=120');
+            res.setHeader('Vary', 'Origin, Accept-Encoding');
             res.statusCode = 200;
             return res.end(JSON.stringify({ success: true, count: devCategories.length, categories: devCategories }));
           }
@@ -2026,6 +2037,8 @@ function localApiDevPlugin(): Plugin {
         // 3. SLIDERS
         if (url.pathname === '/api/sliders') {
           if (method === 'GET') {
+            res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=120, stale-while-revalidate=60');
+            res.setHeader('Vary', 'Origin, Accept-Encoding');
             res.statusCode = 200;
             return res.end(JSON.stringify({ success: true, count: devSliders.length, sliders: devSliders }));
           }
@@ -2081,6 +2094,11 @@ function localApiDevPlugin(): Plugin {
             const authResult = requireDevAuth(req);
             const isAdmin = Boolean(authResult.auth && (authResult.auth.role === 'super_admin' || authResult.auth.role === 'admin' || authResult.auth.role === 'sub_admin'));
             const canViewCourier = Boolean(authResult.auth && (authResult.auth.role === 'super_admin' || hasDevPermission(authResult.auth, 'courier.configure') || hasDevPermission(authResult.auth, 'settings.manage')));
+            const cacheControl = authResult.auth
+              ? 'no-store, no-cache, must-revalidate, max-age=0'
+              : 'public, max-age=30, s-maxage=60, stale-while-revalidate=30';
+            res.setHeader('Cache-Control', cacheControl);
+            res.setHeader('Vary', 'Origin, Cookie, Authorization, Accept-Encoding');
             res.statusCode = 200;
             return res.end(JSON.stringify({ success: true, settings: maskDevSettings(devSettings, isAdmin, canViewCourier) }));
           }
@@ -2168,6 +2186,11 @@ function localApiDevPlugin(): Plugin {
             const authResult = requireDevAuth(req);
             const hasCouponView = Boolean(authResult.auth && (authResult.auth.role === 'super_admin' || hasDevPermission(authResult.auth, 'coupon.view')));
             const list = hasCouponView ? devCoupons : devCoupons.filter((c) => c.isActive);
+            const cacheControl = authResult.auth
+              ? 'no-store, no-cache, must-revalidate, max-age=0'
+              : 'public, max-age=30, s-maxage=60, stale-while-revalidate=30';
+            res.setHeader('Cache-Control', cacheControl);
+            res.setHeader('Vary', 'Origin, Cookie, Authorization, Accept-Encoding');
             res.statusCode = 200;
             return res.end(JSON.stringify({ success: true, coupons: list }));
           }
@@ -4641,6 +4664,9 @@ export default defineConfig(() => {
     build: {
       rollupOptions: {
         output: {
+          entryFileNames: 'assets/[name]-[hash].js',
+          chunkFileNames: 'assets/[name]-[hash].js',
+          assetFileNames: 'assets/[name]-[hash].[ext]',
           manualChunks(id) {
             if (id.includes('node_modules/react/') || id.includes('node_modules/react-dom/')) {
               return 'vendor-react';

@@ -1940,8 +1940,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         },
         200,
         {
-          'Cache-Control': 'public, max-age=60, s-maxage=120, stale-while-revalidate=60',
-          'Vary': 'Origin',
+          'Cache-Control': 'public, max-age=30, s-maxage=60, stale-while-revalidate=30',
+          'Vary': 'Origin, Accept-Encoding',
         }
       );
     } catch (err: any) {
@@ -2059,11 +2059,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
         const cacheControl = isPrivileged
           ? 'no-store, no-cache, must-revalidate, max-age=0'
-          : 'public, max-age=30, s-maxage=60, stale-while-revalidate=30';
+          : (search ? 'public, max-age=15, s-maxage=30, stale-while-revalidate=15' : 'public, max-age=30, s-maxage=60, stale-while-revalidate=30');
 
         return jsonResponse(responsePayload, 200, {
           'Cache-Control': cacheControl,
-          'Vary': 'Origin, Cookie, Authorization',
+          'Vary': 'Origin, Cookie, Authorization, Accept-Encoding',
         });
       } catch (err: any) {
         console.error('Error fetching products:', err);
@@ -2167,13 +2167,13 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
         const safeProduct = sanitizeProductForRole(product, { isSuperAdmin, canViewBuyingPrice, canViewProfit });
 
-        const cacheControl = (isSuperAdmin || canViewBuyingPrice || canViewProfit)
+        const cacheControl = isPrivileged
           ? 'no-store, no-cache, must-revalidate, max-age=0'
-          : 'public, max-age=30, s-maxage=60, stale-while-revalidate=30';
+          : 'public, max-age=15, s-maxage=45, stale-while-revalidate=30';
 
         return jsonResponse({ success: true, product: safeProduct }, 200, {
           'Cache-Control': cacheControl,
-          'Vary': 'Origin, Cookie, Authorization',
+          'Vary': 'Origin, Cookie, Authorization, Accept-Encoding',
         });
       } catch (err: any) {
         console.error('Error fetching product by ID:', err);
@@ -2241,8 +2241,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       try {
         const categories = await getAllCategories(env.DB);
         return jsonResponse({ success: true, count: categories.length, categories }, 200, {
-          'Cache-Control': 'public, max-age=60, s-maxage=120, stale-while-revalidate=60',
-          'Vary': 'Origin',
+          'Cache-Control': 'public, max-age=60, s-maxage=300, stale-while-revalidate=120',
+          'Vary': 'Origin, Accept-Encoding',
         });
       } catch (err: any) {
         console.error('Error fetching categories:', err);
@@ -2277,8 +2277,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         const category = await getCategoryById(env.DB, catId);
         if (!category) return jsonResponse({ success: false, error: 'Category not found' }, 404);
         return jsonResponse({ success: true, category }, 200, {
-          'Cache-Control': 'public, max-age=60, s-maxage=120, stale-while-revalidate=60',
-          'Vary': 'Origin',
+          'Cache-Control': 'public, max-age=60, s-maxage=300, stale-while-revalidate=120',
+          'Vary': 'Origin, Accept-Encoding',
         });
       } catch (err: any) {
         console.error('Error fetching category by ID:', err);
@@ -2331,7 +2331,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         const sliders = await getAllSliders(env.DB);
         return jsonResponse({ success: true, count: sliders.length, sliders }, 200, {
           'Cache-Control': 'public, max-age=60, s-maxage=120, stale-while-revalidate=60',
-          'Vary': 'Origin',
+          'Vary': 'Origin, Accept-Encoding',
         });
       } catch (err: any) {
         console.error('Error fetching sliders:', err);
@@ -2423,7 +2423,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         const isAdmin = Boolean(!authRes.errorResponse && authRes.auth && (authRes.auth.role === 'super_admin' || authRes.auth.role === 'admin' || authRes.auth.role === 'sub_admin'));
         const canViewCourier = Boolean(!authRes.errorResponse && authRes.auth && (authRes.auth.role === 'super_admin' || hasPermission(authRes.auth, 'courier.configure') || hasPermission(authRes.auth, 'settings.manage')));
 
-        const cacheControl = isAdmin
+        const isAuthenticated = Boolean(!authRes.errorResponse && authRes.auth);
+        const cacheControl = isAuthenticated
           ? 'no-store, no-cache, must-revalidate, max-age=0'
           : 'public, max-age=30, s-maxage=60, stale-while-revalidate=30';
 
@@ -2432,7 +2433,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           settings: maskSettings(rawSettings, isAdmin, canViewCourier, env),
         }, 200, {
           'Cache-Control': cacheControl,
-          'Vary': 'Origin, Cookie, Authorization',
+          'Vary': 'Origin, Cookie, Authorization, Accept-Encoding',
         });
       } catch (err: any) {
         console.error('Error fetching settings:', err);
@@ -2913,13 +2914,14 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         const hasCouponView = Boolean(!authRes.errorResponse && authRes.auth && hasPermission(authRes.auth, 'coupon.view'));
 
         const returnList = await getAllCoupons(env.DB, !hasCouponView);
-        const cacheControl = hasCouponView
+        const isAuthenticated = Boolean(!authRes.errorResponse && authRes.auth);
+        const cacheControl = isAuthenticated
           ? 'no-store, no-cache, must-revalidate, max-age=0'
-          : 'public, max-age=60, s-maxage=120, stale-while-revalidate=60';
+          : 'public, max-age=30, s-maxage=60, stale-while-revalidate=30';
 
         return jsonResponse({ success: true, coupons: returnList }, 200, {
           'Cache-Control': cacheControl,
-          'Vary': 'Origin, Cookie, Authorization',
+          'Vary': 'Origin, Cookie, Authorization, Accept-Encoding',
         });
       } catch (err: any) {
         console.error('Error fetching coupons:', err);
@@ -2995,7 +2997,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         const reviews = await getAllReviews(env.DB, productId);
         return jsonResponse({ success: true, count: reviews.length, reviews }, 200, {
           'Cache-Control': 'public, max-age=30, s-maxage=60, stale-while-revalidate=30',
-          'Vary': 'Origin',
+          'Vary': 'Origin, Accept-Encoding',
         });
       } catch (err: any) {
         console.error('Error fetching reviews:', err);
@@ -3954,6 +3956,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         return jsonResponse({
           success: true,
           order: sanitizeOrderForPublicTracking(order!),
+        }, 200, {
+          'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0, private',
+          'Vary': 'Origin',
         });
       } catch (err: any) {
         console.error('Error processing tracking request:', err);

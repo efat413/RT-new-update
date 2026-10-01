@@ -140,7 +140,32 @@ export default {
           }
         );
       }
-      return assetRes;
+
+      // Determine optimal caching headers based on static asset type
+      const newHeaders = new Headers(assetRes.headers);
+      for (const [k, v] of Object.entries(secHeaders)) {
+        if (!newHeaders.has(k)) newHeaders.set(k, v);
+      }
+
+      if (url.pathname.startsWith('/assets/')) {
+        // Content-hashed immutable bundles (JavaScript chunks, CSS, fonts, SVG)
+        newHeaders.set('Cache-Control', 'public, max-age=31536000, immutable');
+      } else if (/\.(woff2?|ttf|otf|eot)$/i.test(url.pathname)) {
+        // Font files are static and immutable
+        newHeaders.set('Cache-Control', 'public, max-age=31536000, immutable');
+      } else if (/\.(png|jpe?g|webp|gif|svg|ico)$/i.test(url.pathname)) {
+        // Public static images outside /assets/ (e.g. /favicon.ico, /screenshot.png)
+        newHeaders.set('Cache-Control', 'public, max-age=86400, s-maxage=604800, stale-while-revalidate=86400');
+      } else if (url.pathname.endsWith('.html') || url.pathname === '/') {
+        // HTML shells must always revalidate so updated chunk hashes are loaded immediately
+        newHeaders.set('Cache-Control', 'public, max-age=0, must-revalidate');
+      }
+
+      return new Response(assetRes.body, {
+        status: assetRes.status,
+        statusText: assetRes.statusText,
+        headers: newHeaders,
+      });
     }
 
     // 5. Technical SEO & SSR: Check for Product URL (query param or pathname)
@@ -235,7 +260,7 @@ export default {
           status: 200,
           headers: {
             'Content-Type': 'text/html; charset=UTF-8',
-            'Cache-Control': 'public, max-age=120, s-maxage=600',
+            'Cache-Control': 'public, max-age=30, s-maxage=120, stale-while-revalidate=60',
             ...secHeaders,
           },
         });
@@ -319,7 +344,7 @@ export default {
           status: 200,
           headers: {
             'Content-Type': 'text/html; charset=UTF-8',
-            'Cache-Control': 'public, max-age=120, s-maxage=600',
+            'Cache-Control': 'public, max-age=60, s-maxage=300, stale-while-revalidate=120',
             ...secHeaders,
           },
         });
