@@ -44,11 +44,21 @@ export const HeroCarousel: React.FC = () => {
           className="relative w-full overflow-hidden rounded-2xl sm:rounded-3xl bg-slate-950 text-white shadow-xl mt-4 select-none"
           style={{ aspectRatio: masterRatio }}
         >
-          <img
-            {...singleBannerProps}
-            alt={settings.siteName || 'Rongdhonu Trade'}
-            className={`w-full h-full ${fitMode === 'cover' ? 'object-cover' : 'object-contain'}`}
-          />
+          <div className="relative w-full h-full overflow-hidden">
+            {fitMode !== 'cover' && (
+              <div className="absolute inset-0 z-0 overflow-hidden pointer-events-none bg-gradient-to-r from-slate-950 via-slate-900/60 to-slate-950" />
+            )}
+            <div className="absolute inset-0 z-0 flex items-center justify-center">
+              <img
+                {...singleBannerProps}
+                alt={settings.siteName || 'Rongdhonu Trade'}
+                className={`w-full h-full ${fitMode === 'cover' ? 'object-cover' : 'object-contain'} object-center`}
+                onError={(e) => {
+                  (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1524805444758-089113d48a6d?auto=format&fit=crop&w=1400&q=80';
+                }}
+              />
+            </div>
+          </div>
         </div>
       );
     }
@@ -148,22 +158,9 @@ export const HeroCarousel: React.FC = () => {
     >
       {/* Slide Container (Guaranteed 100% width and 100% height from parent fixed aspect ratio) */}
       <div className="relative w-full h-full overflow-hidden">
-        {/* Ambient Blurred Backdrop: Reuses main banner image with identical srcSet to eliminate duplicate network requests */}
+        {/* Ambient Subtle Backdrop: Pure CSS gradient replaces heavy duplicate <img> tag, eliminating secondary decoding and GPU blur filter overhead */}
         {fitMode !== 'cover' && (
-          <div className="absolute inset-0 z-0 overflow-hidden pointer-events-none">
-            <img
-              src={bannerImageProps.src}
-              srcSet={bannerImageProps.srcSet}
-              sizes={bannerImageProps.sizes}
-              alt=""
-              aria-hidden="true"
-              loading="lazy"
-              decoding="async"
-              width={bannerImageProps.width}
-              height={bannerImageProps.height}
-              className="w-full h-full object-cover blur-xl opacity-35 scale-110"
-            />
-          </div>
+          <div className="absolute inset-0 z-0 overflow-hidden pointer-events-none bg-gradient-to-r from-slate-950 via-slate-900/60 to-slate-950" />
         )}
 
         {/* Authoritative Banner Image: Zero stretching, zero distortion, zero forced cropping (LCP prioritized) */}
@@ -171,7 +168,7 @@ export const HeroCarousel: React.FC = () => {
           <img
             {...bannerImageProps}
             alt={slide.headline || slide.title || 'Promotional Banner'}
-            className={`w-full h-full ${fitMode === 'cover' ? 'object-cover' : 'object-contain'} object-center transition-all duration-700`}
+            className={`w-full h-full ${fitMode === 'cover' ? 'object-cover' : 'object-contain'} object-center transition-opacity duration-300`}
             onError={(e) => {
               (e.target as HTMLImageElement).src = slide.imageUrl || 'https://images.unsplash.com/photo-1524805444758-089113d48a6d?auto=format&fit=crop&w=1400&q=80';
             }}
