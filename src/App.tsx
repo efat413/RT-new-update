@@ -3,13 +3,6 @@ import { StoreProvider, useStore } from './context/StoreContext';
 import { Header } from './components/Header';
 import { HeroCarousel } from './components/HeroCarousel';
 import { ProductCard } from './components/ProductCard';
-import { CartDrawer } from './components/CartDrawer';
-import { WishlistDrawer } from './components/WishlistDrawer';
-import { QuickViewModal } from './components/QuickViewModal';
-import { ProductVideoModal } from './components/ProductVideoModal';
-import { OrderSuccessModal } from './components/OrderSuccessModal';
-import { AuthModal } from './components/AuthModal';
-import { UserAccountModal } from './components/UserAccountModal';
 import { ToastNotification } from './components/ToastNotification';
 import { Footer } from './components/Footer';
 import { CategoryProductCarousel } from './components/CategoryProductCarousel';
@@ -25,6 +18,108 @@ const AdminPanel = React.lazy(() =>
 const ResetPasswordPage = React.lazy(() =>
   import('./components/ResetPasswordPage').then((m) => ({ default: m.ResetPasswordPage }))
 );
+
+// Code-splitting: Lazy-load global modal and drawer components
+// Heavy modal/drawer chunks are loaded on demand only when opened by the user,
+// drastically reducing initial JavaScript bundle size and homepage parse time.
+const CartDrawer = React.lazy(() =>
+  import('./components/CartDrawer').then((m) => ({ default: m.CartDrawer }))
+);
+const WishlistDrawer = React.lazy(() =>
+  import('./components/WishlistDrawer').then((m) => ({ default: m.WishlistDrawer }))
+);
+const QuickViewModal = React.lazy(() =>
+  import('./components/QuickViewModal').then((m) => ({ default: m.QuickViewModal }))
+);
+const ProductVideoModal = React.lazy(() =>
+  import('./components/ProductVideoModal').then((m) => ({ default: m.ProductVideoModal }))
+);
+const OrderSuccessModal = React.lazy(() =>
+  import('./components/OrderSuccessModal').then((m) => ({ default: m.OrderSuccessModal }))
+);
+const AuthModal = React.lazy(() =>
+  import('./components/AuthModal').then((m) => ({ default: m.AuthModal }))
+);
+const UserAccountModal = React.lazy(() =>
+  import('./components/UserAccountModal').then((m) => ({ default: m.UserAccountModal }))
+);
+
+// Unified, on-demand global modal container with individual Suspense boundaries
+const GlobalModals: React.FC = () => {
+  const {
+    products,
+    isCartOpen,
+    isWishlistOpen,
+    isAuthModalOpen,
+    isUserAccountModalOpen,
+    setIsUserAccountModalOpen,
+    quickViewProduct,
+    setQuickViewProduct,
+    videoModalProduct,
+    setVideoModalProduct,
+    videoModalMode,
+    recentSuccessOrder,
+    setRecentSuccessOrder,
+  } = useStore();
+
+  return (
+    <>
+      {isCartOpen && (
+        <React.Suspense fallback={null}>
+          <CartDrawer />
+        </React.Suspense>
+      )}
+      {isWishlistOpen && (
+        <React.Suspense fallback={null}>
+          <WishlistDrawer />
+        </React.Suspense>
+      )}
+      {isUserAccountModalOpen && (
+        <React.Suspense fallback={null}>
+          <UserAccountModal
+            isOpen={isUserAccountModalOpen}
+            onClose={() => setIsUserAccountModalOpen(false)}
+          />
+        </React.Suspense>
+      )}
+      {quickViewProduct && (
+        <React.Suspense fallback={null}>
+          <QuickViewModal
+            product={quickViewProduct}
+            onClose={() => setQuickViewProduct(null)}
+          />
+        </React.Suspense>
+      )}
+      {videoModalProduct && (
+        <React.Suspense fallback={null}>
+          <ProductVideoModal
+            isOpen={Boolean(videoModalProduct)}
+            onClose={() => setVideoModalProduct(null)}
+            product={
+              (videoModalProduct && products.find((p) => p.id === videoModalProduct.id)) ||
+              videoModalProduct
+            }
+            initialMode={videoModalMode}
+            onEnterFloatingMode={() => setQuickViewProduct(null)}
+          />
+        </React.Suspense>
+      )}
+      {recentSuccessOrder && (
+        <React.Suspense fallback={null}>
+          <OrderSuccessModal
+            order={recentSuccessOrder}
+            onClose={() => setRecentSuccessOrder(null)}
+          />
+        </React.Suspense>
+      )}
+      {isAuthModalOpen && (
+        <React.Suspense fallback={null}>
+          <AuthModal />
+        </React.Suspense>
+      )}
+    </>
+  );
+};
 
 const AdminLoadingFallback: React.FC = () => (
   <div className="min-h-screen bg-slate-900 text-slate-100 flex items-center justify-center p-4 selection:bg-rose-500 selection:text-white">
@@ -83,21 +178,12 @@ const StoreContent: React.FC = () => {
     setSearchQuery,
     currentView,
     selectedProductId,
-    quickViewProduct,
-    setQuickViewProduct,
-    videoModalProduct,
-    setVideoModalProduct,
-    videoModalMode,
-    recentSuccessOrder,
-    setRecentSuccessOrder,
     settings,
     currentUser,
     isAdminLoggedIn,
     cartCount,
     cartSubtotal,
     setIsCartOpen,
-    isUserAccountModalOpen,
-    setIsUserAccountModalOpen,
     copyCategoryLink,
     isStoreInitializing,
     isStoreError,
@@ -148,13 +234,7 @@ const StoreContent: React.FC = () => {
         <React.Suspense fallback={<PageLoadingFallback />}>
           <ResetPasswordPage />
         </React.Suspense>
-        <CartDrawer />
-        <WishlistDrawer />
-        <UserAccountModal
-          isOpen={isUserAccountModalOpen}
-          onClose={() => setIsUserAccountModalOpen(false)}
-        />
-        <AuthModal />
+        <GlobalModals />
         <ToastNotification />
       </>
     );
@@ -166,11 +246,7 @@ const StoreContent: React.FC = () => {
         <React.Suspense fallback={<AdminLoadingFallback />}>
           <AdminPanel />
         </React.Suspense>
-        <UserAccountModal
-          isOpen={isUserAccountModalOpen}
-          onClose={() => setIsUserAccountModalOpen(false)}
-        />
-        <AuthModal />
+        <GlobalModals />
         <ToastNotification />
       </>
     );
@@ -196,31 +272,7 @@ const StoreContent: React.FC = () => {
           </main>
         </div>
         <Footer />
-        <CartDrawer />
-        <WishlistDrawer />
-        <UserAccountModal
-          isOpen={isUserAccountModalOpen}
-          onClose={() => setIsUserAccountModalOpen(false)}
-        />
-        <QuickViewModal
-          product={quickViewProduct}
-          onClose={() => setQuickViewProduct(null)}
-        />
-        <ProductVideoModal
-          isOpen={Boolean(videoModalProduct)}
-          onClose={() => setVideoModalProduct(null)}
-          product={
-            (videoModalProduct && products.find((p) => p.id === videoModalProduct.id)) ||
-            videoModalProduct
-          }
-          initialMode={videoModalMode}
-          onEnterFloatingMode={() => setQuickViewProduct(null)}
-        />
-        <OrderSuccessModal
-          order={recentSuccessOrder}
-          onClose={() => setRecentSuccessOrder(null)}
-        />
-        <AuthModal />
+        <GlobalModals />
         <ToastNotification />
       </div>
     );
@@ -294,9 +346,7 @@ const StoreContent: React.FC = () => {
         </div>
 
         <Footer />
-        <CartDrawer />
-        <WishlistDrawer />
-        <AuthModal />
+        <GlobalModals />
         <ToastNotification />
       </div>
     );
@@ -331,9 +381,7 @@ const StoreContent: React.FC = () => {
         </div>
 
         <Footer />
-        <CartDrawer />
-        <WishlistDrawer />
-        <AuthModal />
+        <GlobalModals />
         <ToastNotification />
       </div>
     );
@@ -580,31 +628,7 @@ const StoreContent: React.FC = () => {
       <Footer />
 
       {/* Interactive Global Modals & Drawers */}
-      <CartDrawer />
-      <WishlistDrawer />
-      <UserAccountModal
-        isOpen={isUserAccountModalOpen}
-        onClose={() => setIsUserAccountModalOpen(false)}
-      />
-      <QuickViewModal
-        product={quickViewProduct}
-        onClose={() => setQuickViewProduct(null)}
-      />
-      <ProductVideoModal
-        isOpen={Boolean(videoModalProduct)}
-        onClose={() => setVideoModalProduct(null)}
-        product={
-          (videoModalProduct && products.find((p) => p.id === videoModalProduct.id)) ||
-          videoModalProduct
-        }
-        initialMode={videoModalMode}
-        onEnterFloatingMode={() => setQuickViewProduct(null)}
-      />
-      <OrderSuccessModal
-        order={recentSuccessOrder}
-        onClose={() => setRecentSuccessOrder(null)}
-      />
-      <AuthModal />
+      <GlobalModals />
       <ToastNotification />
     </div>
   );
