@@ -520,7 +520,7 @@ export const CartDrawer: React.FC = () => {
                   <div className="space-y-3">
                     {cart.map((item) => (
                       <div
-                        key={item.product.id}
+                        key={`${item.product.id}-${item.selectedSize || ''}-${item.selectedColor || ''}`}
                         className="flex gap-3 p-3 bg-slate-50 rounded-2xl border border-slate-200 relative group"
                       >
                         <img
@@ -569,7 +569,12 @@ export const CartDrawer: React.FC = () => {
                               <button
                                 type="button"
                                 onClick={() =>
-                                  updateCartQuantity(item.product.id, item.quantity - 1)
+                                  updateCartQuantity(
+                                    item.product.id,
+                                    item.quantity - 1,
+                                    item.selectedSize,
+                                    item.selectedColor
+                                  )
                                 }
                                 className="p-1 hover:bg-slate-100 text-slate-600 transition-colors cursor-pointer"
                                 aria-label="Decrease quantity"
@@ -582,7 +587,12 @@ export const CartDrawer: React.FC = () => {
                               <button
                                 type="button"
                                 onClick={() =>
-                                  updateCartQuantity(item.product.id, item.quantity + 1)
+                                  updateCartQuantity(
+                                    item.product.id,
+                                    item.quantity + 1,
+                                    item.selectedSize,
+                                    item.selectedColor
+                                  )
                                 }
                                 className="p-1 hover:bg-slate-100 text-slate-600 transition-colors cursor-pointer"
                                 aria-label="Increase quantity"
@@ -597,7 +607,9 @@ export const CartDrawer: React.FC = () => {
                         </div>
                         <button
                           type="button"
-                          onClick={() => removeFromCart(item.product.id)}
+                          onClick={() =>
+                            removeFromCart(item.product.id, item.selectedSize, item.selectedColor)
+                          }
                           className="absolute top-3 right-3 text-slate-400 hover:text-rose-600 p-1 transition-colors cursor-pointer"
                           title="Remove item"
                         >

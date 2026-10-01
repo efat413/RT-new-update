@@ -31,10 +31,9 @@ const ProductCardComponent: React.FC<ProductCardProps> = ({ product, priority = 
 
   const category = categories.find((c) => c.id === product.categoryId);
   const isSavedInWishlist = wishlist.includes(product.id);
-  const hasVariants = Boolean(
-    (product.sizes && product.sizes.length > 0) ||
-    (product.colors && product.colors.length > 0)
-  );
+  const hasMultipleColors = Boolean(product.colors && product.colors.length > 1);
+  const hasMultipleSizes = Boolean(product.sizes && product.sizes.length > 1);
+  const requiresVariantSelection = hasMultipleColors || hasMultipleSizes;
 
   const handleProductClick = (e: React.MouseEvent) => {
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
@@ -60,8 +59,12 @@ const ProductCardComponent: React.FC<ProductCardProps> = ({ product, priority = 
 
   const handleAddToCart = (e: React.MouseEvent) => {
     e.stopPropagation();
-    const defaultSize = product.sizes && product.sizes.length > 0 ? product.sizes[0] : undefined;
-    const defaultColor = product.colors && product.colors.length > 0 ? product.colors[0] : undefined;
+    if (requiresVariantSelection) {
+      setQuickViewProduct(product);
+      return;
+    }
+    const defaultSize = product.sizes && product.sizes.length === 1 ? product.sizes[0] : undefined;
+    const defaultColor = product.colors && product.colors.length === 1 ? product.colors[0] : undefined;
     addToCart(product, 1, defaultSize, defaultColor, false);
     setIsAdded(true);
     setTimeout(() => setIsAdded(false), 1200);
@@ -69,8 +72,12 @@ const ProductCardComponent: React.FC<ProductCardProps> = ({ product, priority = 
 
   const handleQuickBuy = (e: React.MouseEvent) => {
     e.stopPropagation();
-    const defaultSize = product.sizes && product.sizes.length > 0 ? product.sizes[0] : undefined;
-    const defaultColor = product.colors && product.colors.length > 0 ? product.colors[0] : undefined;
+    if (requiresVariantSelection) {
+      setQuickViewProduct(product);
+      return;
+    }
+    const defaultSize = product.sizes && product.sizes.length === 1 ? product.sizes[0] : undefined;
+    const defaultColor = product.colors && product.colors.length === 1 ? product.colors[0] : undefined;
     quickBuy(product, defaultSize, defaultColor);
   };
 

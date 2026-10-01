@@ -25,6 +25,7 @@ import {
   Phone,
   HelpCircle,
   ExternalLink,
+  AlertTriangle,
 } from 'lucide-react';
 import { Product } from '../types';
 import { useStore } from '../context/StoreContext';
@@ -70,11 +71,13 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
     selectedProductId,
     setCurrentView,
     setSelectedProductId,
+    showNotification,
   } = useStore();
 
   const [quantity, setQuantity] = useState(1);
   const [selectedSize, setSelectedSize] = useState<string | undefined>(undefined);
   const [selectedColor, setSelectedColor] = useState<string | undefined>(undefined);
+  const [validationError, setValidationError] = useState<string | null>(null);
   const [addedNotice, setAddedNotice] = useState(false);
   const [selectedImageIdx, setSelectedImageIdx] = useState(0);
   const [activeTab, setActiveTab] = useState<'overview' | 'reviews'>('overview');
@@ -185,16 +188,17 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
     setReviewSuccessMsg('');
     setIsFullscreenOpen(false);
 
-    if (product?.sizes && product.sizes.length > 0) {
+    if (product?.sizes && product.sizes.length === 1) {
       setSelectedSize(product.sizes[0]);
     } else {
       setSelectedSize(undefined);
     }
-    if (product?.colors && product.colors.length > 0) {
+    if (product?.colors && product.colors.length === 1) {
       setSelectedColor(product.colors[0]);
     } else {
       setSelectedColor(undefined);
     }
+    setValidationError(null);
     if (currentUser?.name) {
       setReviewAuthor(currentUser.name);
     } else {
@@ -350,8 +354,46 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
   const hasVideo = Boolean(product.videoUrl && product.videoUrl.trim());
   const isOutOfStock = product.stock <= 0;
 
+  const validateVariantSelection = (): { valid: boolean; color?: string; size?: string } => {
+    const hasMultipleColors = Boolean(product?.colors && product.colors.length > 1);
+    const hasMultipleSizes = Boolean(product?.sizes && product.sizes.length > 1);
+
+    const resolvedColor =
+      selectedColor || (product?.colors && product.colors.length === 1 ? product.colors[0] : undefined);
+    const resolvedSize =
+      selectedSize || (product?.sizes && product.sizes.length === 1 ? product.sizes[0] : undefined);
+
+    const isColorMissing = hasMultipleColors && !resolvedColor;
+    const isSizeMissing = hasMultipleSizes && !resolvedSize;
+
+    if (isColorMissing && isSizeMissing) {
+      const msg = 'Please select a color and size.';
+      setValidationError(msg);
+      showNotification('warning', 'Selection Required', msg);
+      return { valid: false };
+    }
+    if (isColorMissing) {
+      const msg = 'Please select a color.';
+      setValidationError(msg);
+      showNotification('warning', 'Color Required', msg);
+      return { valid: false };
+    }
+    if (isSizeMissing) {
+      const msg = 'Please select a size.';
+      setValidationError(msg);
+      showNotification('warning', 'Size Required', msg);
+      return { valid: false };
+    }
+
+    setValidationError(null);
+    return { valid: true, color: resolvedColor, size: resolvedSize };
+  };
+
   const handleAddToCart = () => {
-    addToCart(product, quantity, selectedSize, selectedColor);
+    const { valid, color, size } = validateVariantSelection();
+    if (!valid) return;
+
+    addToCart(product, quantity, size, color);
     setAddedNotice(true);
     setTimeout(() => {
       setAddedNotice(false);
@@ -359,7 +401,10 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
   };
 
   const handleQuickBuy = () => {
-    quickBuy(product, selectedSize, selectedColor);
+    const { valid, color, size } = validateVariantSelection();
+    if (!valid) return;
+
+    quickBuy(product, size, color);
   };
 
   const handleReviewSubmit = (e: React.FormEvent) => {
@@ -690,7 +735,13 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
 
               {/* Color Variants */}
               {product.colors && product.colors.length > 0 && (
-                <div className="space-y-2">
+                <div
+                  className={`rounded-xl transition-all ${
+                    validationError && product.colors.length > 1 && !selectedColor
+                      ? 'p-2.5 ring-2 ring-rose-400 bg-rose-50/50'
+                      : 'space-y-2'
+                  }`}
+                >
                   <div className="flex items-center justify-between text-xs">
                     <span className="font-bold text-slate-700">Available Colors:</span>
                     <span className="font-semibold text-rose-600">
@@ -705,7 +756,10 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
                         <button
                           key={idx}
                           type="button"
-                          onClick={() => setSelectedColor(color)}
+                          onClick={() => {
+                            setSelectedColor(color);
+                            setValidationError(null);
+                          }}
                           className={`group flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
                             isSelected
                               ? 'border-slate-900 bg-slate-900 text-white shadow-xs'
@@ -729,7 +783,13 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
 
               {/* Size Variants */}
               {product.sizes && product.sizes.length > 0 && (
-                <div className="space-y-2">
+                <div
+                  className={`rounded-xl transition-all ${
+                    validationError && product.sizes.length > 1 && !selectedSize
+                      ? 'p-2.5 ring-2 ring-rose-400 bg-rose-50/50'
+                      : 'space-y-2'
+                  }`}
+                >
                   <div className="flex items-center justify-between text-xs">
                     <span className="font-bold text-slate-700">Size / Option:</span>
                     <span className="font-semibold text-rose-600">{selectedSize || 'Choose a size'}</span>
@@ -741,7 +801,10 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
                         <button
                           key={idx}
                           type="button"
-                          onClick={() => setSelectedSize(size)}
+                          onClick={() => {
+                            setSelectedSize(size);
+                            setValidationError(null);
+                          }}
                           className={`px-3.5 py-1.5 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
                             isSelected
                               ? 'border-rose-600 bg-rose-50 text-rose-700 ring-2 ring-rose-200'
@@ -781,6 +844,18 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
                   </button>
                 </div>
               </div>
+
+              {/* Validation Warning Alert */}
+              {validationError && (
+                <div
+                  id="product-detail-variant-validation-alert"
+                  className="p-3 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-xs font-bold flex items-center gap-2 animate-in fade-in duration-200"
+                  role="alert"
+                >
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span>{validationError}</span>
+                </div>
+              )}
 
               {/* Call To Action Buttons: Add to Cart & Buy Now */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">

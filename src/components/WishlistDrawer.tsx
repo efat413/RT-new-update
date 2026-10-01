@@ -44,7 +44,17 @@ export const WishlistDrawer: React.FC = () => {
   const wishlistProducts = products.filter((p) => wishlist.includes(p.id));
 
   const handleAddToCart = (product: any) => {
-    addToCart(product, 1);
+    const hasMultipleColors = Boolean(product.colors && product.colors.length > 1);
+    const hasMultipleSizes = Boolean(product.sizes && product.sizes.length > 1);
+    if (hasMultipleColors || hasMultipleSizes) {
+      setQuickViewProduct(product);
+      setIsWishlistOpen(false);
+      return;
+    }
+
+    const defaultSize = product.sizes && product.sizes.length === 1 ? product.sizes[0] : undefined;
+    const defaultColor = product.colors && product.colors.length === 1 ? product.colors[0] : undefined;
+    addToCart(product, 1, defaultSize, defaultColor, false);
     setAddedMap((prev) => ({ ...prev, [product.id]: true }));
     setTimeout(() => {
       setAddedMap((prev) => ({ ...prev, [product.id]: false }));

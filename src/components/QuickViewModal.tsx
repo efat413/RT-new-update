@@ -23,6 +23,7 @@ import {
   Play,
   Video,
   Tv,
+  AlertTriangle,
 } from 'lucide-react';
 import { Product } from '../types';
 import { useStore } from '../context/StoreContext';
@@ -63,6 +64,7 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
     setCurrentView,
     setSelectedProductId,
     loadProductById,
+    showNotification,
   } = useStore();
 
   // Always resolve the latest product instance from store to reflect rating & reviewsCount adjustments immediately
@@ -81,6 +83,7 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
   const [quantity, setQuantity] = useState(1);
   const [selectedSize, setSelectedSize] = useState<string | undefined>(undefined);
   const [selectedColor, setSelectedColor] = useState<string | undefined>(undefined);
+  const [validationError, setValidationError] = useState<string | null>(null);
   const [addedNotice, setAddedNotice] = useState(false);
   const [selectedImageIdx, setSelectedImageIdx] = useState(0);
   const [activeTab, setActiveTab] = useState<'overview' | 'reviews'>('overview');
@@ -149,16 +152,17 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
     setReviewSuccessMsg('');
     setIsFullscreenOpen(false);
     setIsZoomed(false);
-    if (product?.sizes && product.sizes.length > 0) {
+    if (product?.sizes && product.sizes.length === 1) {
       setSelectedSize(product.sizes[0]);
     } else {
       setSelectedSize(undefined);
     }
-    if (product?.colors && product.colors.length > 0) {
+    if (product?.colors && product.colors.length === 1) {
       setSelectedColor(product.colors[0]);
     } else {
       setSelectedColor(undefined);
     }
+    setValidationError(null);
     if (currentUser?.name) {
       setReviewAuthor(currentUser.name);
     } else {
@@ -223,8 +227,46 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
 
   const hasVideo = Boolean(product.videoUrl && product.videoUrl.trim());
 
+  const validateVariantSelection = (): { valid: boolean; color?: string; size?: string } => {
+    const hasMultipleColors = Boolean(product?.colors && product.colors.length > 1);
+    const hasMultipleSizes = Boolean(product?.sizes && product.sizes.length > 1);
+
+    const resolvedColor =
+      selectedColor || (product?.colors && product.colors.length === 1 ? product.colors[0] : undefined);
+    const resolvedSize =
+      selectedSize || (product?.sizes && product.sizes.length === 1 ? product.sizes[0] : undefined);
+
+    const isColorMissing = hasMultipleColors && !resolvedColor;
+    const isSizeMissing = hasMultipleSizes && !resolvedSize;
+
+    if (isColorMissing && isSizeMissing) {
+      const msg = 'Please select a color and size.';
+      setValidationError(msg);
+      showNotification('warning', 'Selection Required', msg);
+      return { valid: false };
+    }
+    if (isColorMissing) {
+      const msg = 'Please select a color.';
+      setValidationError(msg);
+      showNotification('warning', 'Color Required', msg);
+      return { valid: false };
+    }
+    if (isSizeMissing) {
+      const msg = 'Please select a size.';
+      setValidationError(msg);
+      showNotification('warning', 'Size Required', msg);
+      return { valid: false };
+    }
+
+    setValidationError(null);
+    return { valid: true, color: resolvedColor, size: resolvedSize };
+  };
+
   const handleAddToCart = () => {
-    addToCart(product, quantity, selectedSize, selectedColor);
+    const { valid, color, size } = validateVariantSelection();
+    if (!valid) return;
+
+    addToCart(product, quantity, size, color);
     setAddedNotice(true);
     setTimeout(() => {
       setAddedNotice(false);
@@ -233,7 +275,10 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
   };
 
   const handleQuickBuy = () => {
-    quickBuy(product, selectedSize, selectedColor);
+    const { valid, color, size } = validateVariantSelection();
+    if (!valid) return;
+
+    quickBuy(product, size, color);
     onClose();
   };
 
@@ -598,7 +643,13 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
               <div className="space-y-3 pt-3 border-t border-slate-100">
                 {/* Size Selector */}
                 {product.sizes && product.sizes.length > 0 && (
-                  <div>
+                  <div
+                    className={`rounded-xl transition-all ${
+                      validationError && product.sizes.length > 1 && !selectedSize
+                        ? 'p-2.5 ring-2 ring-rose-400 bg-rose-50/50'
+                        : ''
+                    }`}
+                  >
                     <div className="flex items-center justify-between mb-1.5">
                       <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">
                         Available Sizes:
@@ -612,7 +663,10 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
                         <button
                           key={sz}
                           type="button"
-                          onClick={() => setSelectedSize(sz)}
+                          onClick={() => {
+                            setSelectedSize(sz);
+                            setValidationError(null);
+                          }}
                           className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                             selectedSize === sz
                               ? 'bg-slate-900 text-white shadow-xs scale-105 ring-2 ring-slate-900/20'
@@ -628,7 +682,13 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
 
                 {/* Color Selector */}
                 {product.colors && product.colors.length > 0 && (
-                  <div>
+                  <div
+                    className={`rounded-xl transition-all ${
+                      validationError && product.colors.length > 1 && !selectedColor
+                        ? 'p-2.5 ring-2 ring-rose-400 bg-rose-50/50'
+                        : ''
+                    }`}
+                  >
                     <div className="flex items-center justify-between mb-1.5">
                       <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">
                         Available Colors:
@@ -656,7 +716,10 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
                           <button
                             key={col}
                             type="button"
-                            onClick={() => setSelectedColor(col)}
+                            onClick={() => {
+                              setSelectedColor(col);
+                              setValidationError(null);
+                            }}
                             className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 border shadow-2xs ${
                               isSelected
                                 ? 'bg-slate-900 text-white border-slate-900 ring-2 ring-rose-500 scale-105'
@@ -709,6 +772,18 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
                   </button>
                 </div>
               </div>
+
+              {/* Validation Warning Alert */}
+              {validationError && (
+                <div
+                  id="quick-view-variant-validation-alert"
+                  className="p-3 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-xs font-bold flex items-center gap-2 animate-in fade-in duration-200"
+                  role="alert"
+                >
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span>{validationError}</span>
+                </div>
+              )}
 
               {/* CTAs */}
               <div className="grid grid-cols-2 gap-3">
