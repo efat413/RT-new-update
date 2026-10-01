@@ -4655,6 +4655,12 @@ export default defineConfig(() => {
             if (id.includes('seedData')) {
               return 'seed-data';
             }
+            if (id.includes('utils/seo')) {
+              return 'seo-engine';
+            }
+            if (id.includes('src/services/')) {
+              return 'store-services';
+            }
           },
         },
       },
