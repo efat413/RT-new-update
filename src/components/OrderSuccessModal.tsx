@@ -20,8 +20,12 @@ import { Order } from '../types';
 import { useStore } from '../context/StoreContext';
 import { EditDeliveryInfoModal } from './EditDeliveryInfoModal';
 import { ConfirmModal } from './ConfirmModal';
-import { InvoiceModal } from './InvoiceModal';
 import { formatWhatsAppLink } from '../utils/phone';
+
+// Code-splitting: Lazy-load InvoiceModal on demand only when viewing/downloading invoices
+const InvoiceModal = React.lazy(() =>
+  import('./InvoiceModal').then((m) => ({ default: m.InvoiceModal }))
+);
 import { parseColorOption } from '../utils/productVariants';
 import { getResponsiveImageUrl } from '../utils/responsiveImage';
 import {
@@ -423,11 +427,15 @@ export const OrderSuccessModal: React.FC<OrderSuccessModalProps> = ({ order: ini
       </div>
 
       {/* Official Customer Invoice Modal */}
-      <InvoiceModal
-        order={order}
-        isOpen={isInvoiceOpen}
-        onClose={() => setIsInvoiceOpen(false)}
-      />
+      {isInvoiceOpen && (
+        <React.Suspense fallback={null}>
+          <InvoiceModal
+            order={order}
+            isOpen={isInvoiceOpen}
+            onClose={() => setIsInvoiceOpen(false)}
+          />
+        </React.Suspense>
+      )}
 
       {/* Edit Delivery Info Modal */}
       <EditDeliveryInfoModal

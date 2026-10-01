@@ -105,9 +105,11 @@ import { ConfirmModal } from './ConfirmModal';
 import { FormattedDescription } from './FormattedDescription';
 import { ImageUploadField } from './ImageUploadField';
 import { AdminSidebar } from './AdminSidebar';
-import { FeaturedProductsManagement } from './Admin/FeaturedProductsManagement';
 
 // Code-splitting: Lazy-load large admin-only feature tabs and modals
+const FeaturedProductsManagement = React.lazy(() =>
+  import('./Admin/FeaturedProductsManagement').then((m) => ({ default: m.FeaturedProductsManagement }))
+);
 const PermissionManagementModal = React.lazy(() =>
   import('./Admin/PermissionManagementModal').then((m) => ({ default: m.PermissionManagementModal }))
 );
@@ -3897,15 +3899,17 @@ const AdminPanelContent: React.FC = () => {
             </div>
 
             {(productsSubView === 'featured' || productStockFilter === 'featured') ? (
-              <FeaturedProductsManagement
-                products={products}
-                categories={categories}
-                featuredProducts={featuredProducts}
-                onToggleFeatured={toggleProductFeatured}
-                hasPermission={hasPermission}
-                isSuperAdmin={isSuperAdmin}
-                onOpenEditModal={openEditProductModal}
-              />
+              <React.Suspense fallback={<AdminTabFallback />}>
+                <FeaturedProductsManagement
+                  products={products}
+                  categories={categories}
+                  featuredProducts={featuredProducts}
+                  onToggleFeatured={toggleProductFeatured}
+                  hasPermission={hasPermission}
+                  isSuperAdmin={isSuperAdmin}
+                  onOpenEditModal={openEditProductModal}
+                />
+              </React.Suspense>
             ) : (
               <>
 

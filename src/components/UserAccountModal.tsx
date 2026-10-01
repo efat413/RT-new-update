@@ -35,7 +35,11 @@ import { Product, Order, DeliveryZone } from '../types';
 import { authApi } from '../services/authApi';
 import { EditDeliveryInfoModal } from './EditDeliveryInfoModal';
 import { ConfirmModal } from './ConfirmModal';
-import { InvoiceModal } from './InvoiceModal';
+
+// Code-splitting: Lazy-load InvoiceModal so it is only fetched when customer views an invoice
+const InvoiceModal = React.lazy(() =>
+  import('./InvoiceModal').then((m) => ({ default: m.InvoiceModal }))
+);
 import { parseColorOption } from '../utils/productVariants';
 
 interface UserAccountModalProps {
@@ -1027,11 +1031,15 @@ export const UserAccountModal: React.FC<UserAccountModalProps> = ({ isOpen, onCl
         }}
       />
       {/* Official Customer Invoice Modal */}
-      <InvoiceModal
-        order={viewingInvoiceOrder}
-        isOpen={Boolean(viewingInvoiceOrder)}
-        onClose={() => setViewingInvoiceOrder(null)}
-      />
+      {viewingInvoiceOrder && (
+        <React.Suspense fallback={null}>
+          <InvoiceModal
+            order={viewingInvoiceOrder}
+            isOpen={Boolean(viewingInvoiceOrder)}
+            onClose={() => setViewingInvoiceOrder(null)}
+          />
+        </React.Suspense>
+      )}
     </div>,
     document.body
   );

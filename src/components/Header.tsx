@@ -27,8 +27,20 @@ import {
 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { BrandLogo } from './BrandLogo';
-import { OrderTrackingDropdown } from './OrderTrackingDropdown';
 import { formatWhatsAppLink } from '../utils/phone';
+import { ErrorBoundary } from './ErrorBoundary';
+
+// Code-splitting: Lazy-load OrderTrackingDropdown so the initial header bundle does not include heavy tracking & courier UI
+const OrderTrackingDropdown = React.lazy(() =>
+  import('./OrderTrackingDropdown').then((m) => ({ default: m.OrderTrackingDropdown }))
+);
+
+const OrderTrackingFallback: React.FC = () => (
+  <div className="p-8 flex flex-col items-center justify-center space-y-3 text-slate-400">
+    <div className="w-8 h-8 border-2 border-rose-500/20 border-t-rose-500 rounded-full animate-spin" />
+    <span className="text-xs font-semibold text-slate-500">Loading Order Tracking...</span>
+  </div>
+);
 
 export const Header: React.FC = () => {
   const {
@@ -513,9 +525,13 @@ export const Header: React.FC = () => {
                 id="header-track-order-dropdown-menu"
                 className="absolute right-0 top-full mt-2 w-[420px] sm:w-[460px] md:w-[480px] max-h-[82vh] bg-white rounded-2xl shadow-2xl border border-slate-200/90 z-50 origin-top-right transition-all duration-200 ease-out transform animate-dropdownRight overflow-hidden flex flex-col"
               >
-                <OrderTrackingDropdown
-                  onClose={() => setIsTrackingDropdownOpen(false)}
-                />
+                <ErrorBoundary compact fallbackTitle="Order Tracking Unavailable" fallbackMessage="Could not load order tracking module. Please try again.">
+                  <React.Suspense fallback={<OrderTrackingFallback />}>
+                    <OrderTrackingDropdown
+                      onClose={() => setIsTrackingDropdownOpen(false)}
+                    />
+                  </React.Suspense>
+                </ErrorBoundary>
               </div>
             )}
           </div>
@@ -773,9 +789,13 @@ export const Header: React.FC = () => {
             onClick={() => setIsTrackingDropdownOpen(false)}
           />
           <div className="fixed top-16 right-3 left-3 sm:left-auto sm:right-4 sm:w-[460px] max-h-[85vh] bg-white rounded-2xl shadow-2xl border border-slate-200/90 z-50 overflow-hidden flex flex-col animate-dropdownRight">
-            <OrderTrackingDropdown
-              onClose={() => setIsTrackingDropdownOpen(false)}
-            />
+            <ErrorBoundary compact fallbackTitle="Order Tracking Unavailable" fallbackMessage="Could not load order tracking module. Please try again.">
+              <React.Suspense fallback={<OrderTrackingFallback />}>
+                <OrderTrackingDropdown
+                  onClose={() => setIsTrackingDropdownOpen(false)}
+                />
+              </React.Suspense>
+            </ErrorBoundary>
           </div>
         </div>
       )}

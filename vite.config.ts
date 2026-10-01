@@ -4640,8 +4640,14 @@ export default defineConfig(() => {
       rollupOptions: {
         output: {
           manualChunks(id) {
+            if (id.includes('node_modules/react/') || id.includes('node_modules/react-dom/')) {
+              return 'vendor-react';
+            }
             if (id.includes('pixelTracking')) {
               return 'pixel-tracking';
+            }
+            if (id.includes('bangladeshAreas')) {
+              return 'bangladesh-areas';
             }
             if (id.includes('seedData')) {
               return 'seed-data';
