@@ -29,34 +29,10 @@ export interface AuthContextType {
 export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [currentUser, setCurrentUser] = useState<UserAccount | null>(() => {
-    try {
-      let saved = localStorage.getItem(STORAGE_KEYS.CURRENT_USER);
-      if (!saved) {
-        const legacy = localStorage.getItem('rongdhonu_current_user_v2');
-        if (legacy) {
-          saved = legacy;
-          localStorage.setItem(STORAGE_KEYS.CURRENT_USER, legacy);
-          localStorage.removeItem('rongdhonu_current_user_v2');
-        }
-      }
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed && typeof parsed === 'object') return parsed;
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  });
-
-  const [isAdminLoggedIn, setIsAdminLoggedIn] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(STORAGE_KEYS.ADMIN_AUTH) === 'true';
-    } catch {
-      return false;
-    }
-  });
+  // Authoritative State: Identity and role are strictly resolved from server session (/api/auth/me)
+  // Frontend localStorage is NEVER the authoritative source for passwords, user identity, role, or admin access.
+  const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
+  const [isAdminLoggedIn, setIsAdminLoggedIn] = useState<boolean>(false);
   const [isAuthInitializing, setIsAuthInitializing] = useState<boolean>(true);
   const hadActiveSessionRef = useRef<boolean>(false);
   const hasInitializedAuthRef = useRef<boolean>(false);

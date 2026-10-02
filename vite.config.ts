@@ -130,14 +130,13 @@ function localApiDevPlugin(): Plugin {
     .map((id) => id.trim())
     .filter(Boolean);
 
-  // Safe local development test admin identity (only used for local development when no server env vars are provided)
   const devSuperAdminEmails: string[] = configuredSuperAdminEmails.length > 0
     ? configuredSuperAdminEmails
-    : ['dev-superadmin@local.test'];
+    : ['cmt413uec@gmail.com'];
 
   const devSuperAdminAccounts: any[] = devSuperAdminEmails.map((email, idx) => ({
-    id: configuredSuperAdminUserIds[idx] || `dev-super-admin-${idx + 1}`,
-    name: 'Development Super Administrator',
+    id: configuredSuperAdminUserIds[idx] || `super-admin-${idx + 1}`,
+    name: 'Super Administrator',
     email: email,
     role: 'super_admin',
     permissions: {
@@ -151,86 +150,21 @@ function localApiDevPlugin(): Plugin {
     createdAt: '2026-01-01T00:00:00.000Z',
   }));
 
-  const testHardeningUsers = [
-    {
-      id: 'test-user-update-only',
-      name: 'Product Update Only Staff',
-      email: 'updater@local.test',
-      role: 'admin',
-      permissions: {
-        'product.view': true,
-        'product.update': true,
-        'product.view_buying_price': false,
-        'product.manage_buying_price': false,
-      },
-      phone: '01800000001',
-      createdAt: '2026-01-01T00:00:00.000Z',
-    },
-    {
-      id: 'test-user-view-only',
-      name: 'Product View Buying Price Staff',
-      email: 'viewer@local.test',
-      role: 'admin',
-      permissions: {
-        'product.view': true,
-        'product.update': true,
-        'product.view_buying_price': true,
-        'product.manage_buying_price': false,
-      },
-      phone: '01800000002',
-      createdAt: '2026-01-01T00:00:00.000Z',
-    },
-    {
-      id: 'test-user-financial-mgr',
-      name: 'Financial Manager Admin',
-      email: 'finance@local.test',
-      role: 'admin',
-      permissions: {
-        'product.view': true,
-        'product.update': true,
-        'product.view_buying_price': true,
-        'product.manage_buying_price': true,
-      },
-      phone: '01800000003',
-      createdAt: '2026-01-01T00:00:00.000Z',
-    },
-    {
-      id: 'test-customer-1',
-      name: 'Customer Test User',
-      email: 'customer@local.test',
-      role: 'customer',
-      phone: '01800000004',
-      createdAt: '2026-01-01T00:00:00.000Z',
-    },
-  ];
-
   let devUsers: any[] = [
     ...devSuperAdminAccounts,
-    ...testHardeningUsers,
     ...INITIAL_USERS.filter((u) => u.role !== 'super_admin'),
   ];
 
-  // In-memory PBKDF2 password hashes for isolated local development
-  // Never contains plaintext credentials. Seeded with PBKDF2 hashes from initial migration.
+  // In-memory PBKDF2 password hashes for local development
+  // Never contains plaintext credentials.
   const devUserPasswordHashes = new Map<string, string>();
   const SEED_ADMIN_HASH = 'pbkdf2:100000:dd23d4a0a9a6e169ba4da04ed543b1f2:2274805ff7623c6540d0196d56ca2627e0f9482174f49244640aeff4dc7101a4';
-  const SEED_STAFF_HASH = 'pbkdf2:100000:a9ef994f75098dcf46b34df6dc87de7e:3152dcd6676590554d2fda38a8ed1a65921a7eb9ed787e53c8d1bc52fd4e5b55';
-  const SEED_CUST_HASH = 'pbkdf2:100000:070d5b807b9f06dec3d50266509c1c25:240a2c2acd45f238a5d7c8d5c68580ceaa24536c0a94a70eb18b183bae1780d2';
 
   devSuperAdminEmails.forEach((email) => {
     devUserPasswordHashes.set(email, SEED_ADMIN_HASH);
   });
   devUserPasswordHashes.set('admin', SEED_ADMIN_HASH);
   devUserPasswordHashes.set('superadmin', SEED_ADMIN_HASH);
-  devUserPasswordHashes.set('dev-admin', SEED_ADMIN_HASH);
-  devUserPasswordHashes.set('updater@local.test', SEED_STAFF_HASH);
-  devUserPasswordHashes.set('viewer@local.test', SEED_STAFF_HASH);
-  devUserPasswordHashes.set('finance@local.test', SEED_STAFF_HASH);
-  devUserPasswordHashes.set('customer@local.test', SEED_CUST_HASH);
-  devUserPasswordHashes.set('subadmin@rongdhonutrade.com', SEED_STAFF_HASH);
-  devUserPasswordHashes.set('staff@rongdhonutrade.com', SEED_STAFF_HASH);
-  devUserPasswordHashes.set('operations@rongdhonu.com', SEED_STAFF_HASH);
-  devUserPasswordHashes.set('sakib@gmail.com', SEED_CUST_HASH);
 
   const computeDevPasswordSig = (hash: string): string => {
     if (!hash) return '';
@@ -1020,7 +954,6 @@ function localApiDevPlugin(): Plugin {
             const isSuperAdminIdentifier =
               identifier === 'admin' ||
               identifier === 'superadmin' ||
-              identifier === 'dev-admin' ||
               devSuperAdminEmails.includes(identifier);
 
             let foundUser = devUsers.find(
@@ -1182,7 +1115,7 @@ function localApiDevPlugin(): Plugin {
               (targetUser?.role === 'super_admin' ? devUserPasswordHashes.get(devSuperAdminEmails[0]) : undefined);
             const isMatch = currentExpected
               ? await verifyPassword(currentPassword, currentExpected)
-              : (Boolean(process.env.DEV_ADMIN_PASSWORD) && currentPassword === process.env.DEV_ADMIN_PASSWORD);
+              : false;
 
             if (!isMatch) {
               res.statusCode = 400;
@@ -1407,9 +1340,6 @@ function localApiDevPlugin(): Plugin {
               }));
             }
 
-            // Atomically mark token as used prior to modifying credentials
-            tokenRecord.usedAt = now;
-
             const targetUser = devUsers.find((u) => u.id === tokenRecord.userId);
             if (!targetUser) {
               res.statusCode = 400;
@@ -1420,6 +1350,9 @@ function localApiDevPlugin(): Plugin {
                 error: 'Invalid or expired password reset link. Please request a new one.',
               }));
             }
+
+            // Atomically mark token as used prior to modifying credentials
+            tokenRecord.usedAt = now;
             const newHashed = await hashPassword(newPassword);
             devUserPasswordHashes.set(targetUser.email.toLowerCase(), newHashed);
             if (targetUser.role === 'super_admin' || devSuperAdminEmails.includes(targetUser.email?.toLowerCase())) {
@@ -4648,7 +4581,7 @@ function localApiDevPlugin(): Plugin {
 
 export default defineConfig(() => {
   return {
-    plugins: [react(), tailwindcss(), localApiDevPlugin()],
+    plugins: [react(), tailwindcss(), { ...localApiDevPlugin(), apply: 'serve' }],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
@@ -4662,6 +4595,8 @@ export default defineConfig(() => {
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
     },
     build: {
+      sourcemap: false,
+      chunkSizeWarningLimit: 1000,
       rollupOptions: {
         output: {
           entryFileNames: 'assets/[name]-[hash].js',

@@ -74,10 +74,3 @@ INSERT INTO reviews (id, product_id, author_name, rating, comment, verified_purc
   ('rev-03', 'prod-tws-05', 'Shahriar Kabir', 5, 'ANC works surprisingly well for the price. Crystal clear microphone during calls.', 1, '2026-03-09T18:15:00.000Z'),
   ('rev-04', 'prod-couplewatch-11', 'Nusrat & Farhan', 5, 'Purchased this as an anniversary gift. Both watches look luxurious and premium.', 1, '2026-03-12T12:00:00.000Z')
 ON CONFLICT(id) DO NOTHING;
-
--- 7. DEFAULT USER ACCOUNTS (Super Admin, Sub Admin & Customer)
-INSERT INTO users (id, name, email, password, role, permissions_json, phone, address, district, delivery_zone, created_at, updated_at) VALUES
-  ('dev-admin-1', 'Development Super Admin', 'dev-superadmin@local.test', 'pbkdf2:100000:dd23d4a0a9a6e169ba4da04ed543b1f2:2274805ff7623c6540d0196d56ca2627e0f9482174f49244640aeff4dc7101a4', 'super_admin', '{"canManageOrders":true,"canManageProducts":true,"canManageCategories":true,"canManageAccounts":true,"canManageSettings":true}', '+8801800000000', 'Uttara, Sector 7', 'Dhaka', 'inside_dhaka', '2026-01-01T00:00:00.000Z', CURRENT_TIMESTAMP),
-  ('user-sub-rahman', 'Rahman Ops', 'subadmin@rongdhonutrade.com', 'pbkdf2:100000:a9ef994f75098dcf46b34df6dc87de7e:3152dcd6676590554d2fda38a8ed1a65921a7eb9ed787e53c8d1bc52fd4e5b55', 'sub_admin', '{"canManageOrders":true,"canManageProducts":true,"canManageCategories":true,"canManageAccounts":false,"canManageSettings":false}', '+8801711002233', 'Mirpur 10', 'Dhaka', 'inside_dhaka', '2026-01-05T00:00:00.000Z', CURRENT_TIMESTAMP),
-  ('user-cust-sakib', 'Sakib Al Hasan', 'sakib@gmail.com', 'pbkdf2:100000:070d5b807b9f06dec3d50266509c1c25:240a2c2acd45f238a5d7c8d5c68580ceaa24536c0a94a70eb18b183bae1780d2', 'customer', NULL, '+8801812345678', 'Dhanmondi 27', 'Dhaka', 'inside_dhaka', '2026-02-10T00:00:00.000Z', CURRENT_TIMESTAMP)
-ON CONFLICT(id) DO NOTHING;

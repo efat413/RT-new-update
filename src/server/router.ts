@@ -53,6 +53,7 @@ import {
   createPasswordResetToken,
   getPasswordResetToken,
   claimPasswordResetToken,
+  unclaimPasswordResetToken,
   markPasswordResetTokenUsed,
   // Orders
   getAllOrders,
@@ -1557,6 +1558,36 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(rawToken));
       const tokenHash = bufferToHex(hashBuffer);
 
+      // Check existing reset token before claiming
+      const existingToken = await getPasswordResetToken(env.DB, tokenHash);
+      const now = Date.now();
+      if (!existingToken || existingToken.used_at != null || existingToken.expires_at <= now) {
+        await recordFailedAttempt(verifyRateKey, 10, 900, env.DB);
+        return jsonResponse(
+          {
+            success: false,
+            status: 'INVALID_TOKEN',
+            message: 'Invalid or expired password reset link. Please request a new one.',
+            error: 'Invalid or expired password reset link. Please request a new one.',
+          },
+          400
+        );
+      }
+
+      // Verify associated user account exists in D1 before claiming token
+      const targetUser = await env.DB.prepare('SELECT id, email, role FROM users WHERE id = ?').bind(existingToken.user_id).first<UserRow>();
+      if (!targetUser) {
+        return jsonResponse(
+          {
+            success: false,
+            status: 'INVALID_TOKEN',
+            message: 'Invalid or expired password reset link. Please request a new one.',
+            error: 'Invalid or expired password reset link. Please request a new one.',
+          },
+          400
+        );
+      }
+
       // Atomic claim: Claim the reset token in a single atomic SQL operation.
       // Eliminates the race condition where concurrent requests could use the same token.
       const claimResult = await claimPasswordResetToken(env.DB, tokenHash);
@@ -1573,24 +1604,21 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         );
       }
 
-      const tokenRecord = claimResult.tokenRecord;
-
-      // Verify associated user account exists in D1
-      const targetUser = await env.DB.prepare('SELECT id, email, role FROM users WHERE id = ?').bind(tokenRecord.user_id).first<UserRow>();
-      if (!targetUser) {
+      // Update password using authoritative updateUserPasswordInD1 (which uses PBKDF2 hashPassword)
+      const updateSuccess = await updateUserPasswordInD1(env.DB, targetUser.id, newPassword);
+      if (!updateSuccess) {
+        // Avoid consuming the reset token unnecessarily if the password update cannot be completed in D1
+        await unclaimPasswordResetToken(env.DB, claimResult.tokenRecord.id);
         return jsonResponse(
           {
             success: false,
-            status: 'INVALID_TOKEN',
-            message: 'Invalid or expired password reset link. Please request a new one.',
-            error: 'Invalid or expired password reset link. Please request a new one.',
+            status: 'UPDATE_FAILED',
+            message: 'Failed to update password in database. Please try again.',
+            error: 'Failed to update password in database. Please try again.',
           },
-          400
+          500
         );
       }
-
-      // Update password using authoritative updateUserPasswordInD1 (which uses PBKDF2 hashPassword)
-      await updateUserPasswordInD1(env.DB, targetUser.id, newPassword);
 
       await clearFailedAttempts(verifyRateKey, env.DB);
 
@@ -1650,7 +1678,13 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     }
 
     // Update password in Cloudflare D1 with fresh PBKDF2 hash
-    await updateUserPasswordInD1(env.DB, auth!.dbUser.id, newPassword);
+    const updateSuccess = await updateUserPasswordInD1(env.DB, auth!.dbUser.id, newPassword);
+    if (!updateSuccess) {
+      return jsonResponse(
+        { success: false, error: 'Failed to update password in database. Please try again.' },
+        500
+      );
+    }
 
     // Fetch updated user to obtain fresh password signature
     const updatedUserRow = await getUserByEmailOrUsername(env.DB, auth!.dbUser.email);
@@ -3491,7 +3525,13 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       }
 
       // Update password in D1 using existing PBKDF2 hashPassword
-      await updateUserPasswordInD1(env.DB, targetUser.id, newPassword);
+      const updateSuccess = await updateUserPasswordInD1(env.DB, targetUser.id, newPassword);
+      if (!updateSuccess) {
+        return jsonResponse(
+          { success: false, error: 'Failed to update user password in database.' },
+          500
+        );
+      }
 
       return jsonResponse({
         success: true,

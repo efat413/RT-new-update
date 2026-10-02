@@ -1875,13 +1875,33 @@ export async function updateUserInD1(db: D1Database, id: string, updates: Partia
 }
 
 export async function updateUserPasswordInD1(db: D1Database, id: string, newPasswordPlain: string): Promise<boolean> {
-  const hashedPassword = await hashPassword(newPasswordPlain);
-  const res = await db
-    .prepare('UPDATE users SET password = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-    .bind(hashedPassword, id)
-    .run();
+  try {
+    const hashedPassword = await hashPassword(newPasswordPlain);
+    const res = await db
+      .prepare('UPDATE users SET password = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .bind(hashedPassword, id)
+      .run();
 
-  return res.success;
+    const changes = res.meta?.changes ?? (res as any)?.changes ?? (res as any)?.meta?.rows_written;
+    if (changes !== undefined && changes !== null) {
+      return Boolean(res.success && changes > 0);
+    }
+    return Boolean(res.success);
+  } catch (err) {
+    console.error('Database error in updateUserPasswordInD1:', err);
+    return false;
+  }
+}
+
+export async function unclaimPasswordResetToken(db: D1Database, tokenId: string): Promise<void> {
+  try {
+    await db
+      .prepare('UPDATE password_reset_tokens SET used_at = NULL WHERE id = ?')
+      .bind(tokenId)
+      .run();
+  } catch (err) {
+    console.error('Error unclaiming reset token in D1:', err);
+  }
 }
 
 export async function deleteUserFromD1(db: D1Database, id: string): Promise<boolean> {
