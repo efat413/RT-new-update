@@ -188,6 +188,7 @@ const AdminPanelContent: React.FC = () => {
     users,
     currentUser,
     adjustProductRating,
+    fetchUsers,
     deleteUser,
     resetCustomerPassword,
     changeSuperAdminPassword,
@@ -601,6 +602,13 @@ const AdminPanelContent: React.FC = () => {
       }
     }
   }, [isPrivilegedAdmin]);
+
+  // Synchronize users directory directly from authoritative D1 database when Users tab is opened
+  useEffect(() => {
+    if (activeTab === 'users' && hasPermission('canManageAccounts')) {
+      fetchUsers().catch(() => {});
+    }
+  }, [activeTab, hasPermission, fetchUsers]);
 
   // While startup server-session verification (/api/auth/me) is in flight, show clean loading screen
   if (isAuthInitializing) {
@@ -6412,8 +6420,8 @@ const AdminPanelContent: React.FC = () => {
                                         confirmText: 'Delete Account',
                                         cancelText: 'Cancel',
                                         variant: 'danger',
-                                        onConfirm: () => {
-                                          const res = deleteUser(u.id);
+                                        onConfirm: async () => {
+                                          const res = await deleteUser(u.id);
                                           setAccountFeedback(
                                             res.message || (res.success ? `Account for ${u.name} deleted.` : 'Failed to delete account.')
                                           );

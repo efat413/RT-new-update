@@ -2434,24 +2434,35 @@ function localApiDevPlugin(): Plugin {
             const authResult = requireDevAuth(req);
             if (authResult.error) return sendDevError(res, authResult.error);
 
-            const targetUser = devUsers.find((u) => u.id === usrId);
+            const targetUser = devUsers.find((u) => u.id === usrId || u.email?.toLowerCase() === usrId.toLowerCase());
             if (!targetUser) {
               res.statusCode = 404;
-              return res.end(JSON.stringify({ success: false, error: 'User not found' }));
+              return res.end(JSON.stringify({ success: false, error: 'User account not found in database.' }));
             }
             if (targetUser.role === 'super_admin' || devSuperAdminEmails.includes(targetUser.email?.toLowerCase())) {
-              return sendDevError(res, { status: 403, body: { success: false, error: 'Forbidden: Super Administrator account cannot be deleted.' } });
+              return sendDevError(res, { status: 403, body: { success: false, error: 'Forbidden: Super Administrator accounts cannot be deleted.' } });
             }
 
-            const hasUserDel = hasDevPermission(authResult.auth!, 'user.delete');
-            const hasCustDel = targetUser.role === 'customer' && hasDevPermission(authResult.auth!, 'customer.delete');
-            if (!hasUserDel && !hasCustDel) {
-              return sendDevError(res, { status: 403, body: { success: false, error: 'Forbidden: Insufficient permissions to delete this account.' } });
+            if (authResult.auth!.user.id === targetUser.id || authResult.auth!.user.email?.toLowerCase().trim() === targetUser.email.toLowerCase().trim()) {
+              return sendDevError(res, { status: 403, body: { success: false, error: 'Forbidden: You cannot delete your own logged-in account.' } });
             }
 
-            devUsers = devUsers.filter((u) => u.id !== usrId);
+            if (targetUser.role !== 'customer' && authResult.auth!.role !== 'super_admin') {
+              return sendDevError(res, { status: 403, body: { success: false, error: 'Forbidden: Only a Super Administrator can delete administrative accounts.' } });
+            }
+
+            if (targetUser.role === 'customer') {
+              const canDeleteCust = authResult.auth!.role === 'super_admin' || hasDevPermission(authResult.auth!, 'customer.delete') || hasDevPermission(authResult.auth!, 'user.delete');
+              if (!canDeleteCust) {
+                return sendDevError(res, { status: 403, body: { success: false, error: 'Forbidden: Insufficient permissions to delete customer accounts.' } });
+              }
+            }
+
+            devUsers = devUsers.filter((u) => u.id !== targetUser.id && u.email?.toLowerCase() !== targetUser.email?.toLowerCase());
+            devUserPasswordHashes.delete(targetUser.email.toLowerCase());
+
             res.statusCode = 200;
-            return res.end(JSON.stringify({ success: true, message: 'User deleted' }));
+            return res.end(JSON.stringify({ success: true, message: `Account for ${targetUser.email} has been permanently deleted.` }));
           }
         }
 

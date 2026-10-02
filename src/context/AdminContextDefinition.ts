@@ -105,8 +105,9 @@ export interface AdminContextType {
   // Users
   users: UserAccount[];
   setUsers: React.Dispatch<React.SetStateAction<UserAccount[]>>;
-  deleteUser: (userId: string) => { success: boolean; message?: string };
-  deleteCustomer: (targetUser: UserAccount | string) => { success: boolean; message?: string };
+  fetchUsers: () => Promise<UserAccount[]>;
+  deleteUser: (userId: string) => Promise<{ success: boolean; message?: string }>;
+  deleteCustomer: (targetUser: UserAccount | string) => Promise<{ success: boolean; message?: string }>;
   resetCustomerPassword: (emailOrId: string, newPassword: string) => Promise<{ success: boolean; message?: string }> | { success: boolean; message?: string };
   updateUserRoleAndPermissions: (userIdOrEmail: string, role: UserRole, permissions: AdminPermissions) => { success: boolean; message?: string };
 

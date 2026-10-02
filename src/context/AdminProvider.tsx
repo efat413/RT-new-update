@@ -295,6 +295,30 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   });
 
+  const fetchUsers = useCallback(async (): Promise<UserAccount[]> => {
+    if (!isAdminLoggedIn || isAuthInitializing) return [];
+    try {
+      const fetched = await usersApi.getAll();
+      if (Array.isArray(fetched)) {
+        setUsers(fetched);
+        try {
+          localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(fetched));
+        } catch {}
+        return fetched;
+      }
+      return [];
+    } catch (err: any) {
+      console.warn('Failed to fetch users from D1:', err?.message || err);
+      return [];
+    }
+  }, [isAdminLoggedIn, isAuthInitializing]);
+
+  useEffect(() => {
+    if (isAdminLoggedIn && !isAuthInitializing) {
+      fetchUsers();
+    }
+  }, [isAdminLoggedIn, isAuthInitializing, fetchUsers]);
+
   // Financial & Profit Analytics
   const [profitSummary, setProfitSummary] = useState<ProfitAnalyticsSummary | null>(null);
   const [expenses, setExpenses] = useState<Expense[]>([]);
@@ -1099,8 +1123,8 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return { success: true, message: `Permissions updated successfully for ${target.name}.` };
   }, [currentUser, hasPermission, setCurrentUser, users]);
 
-  const deleteUser = useCallback((userIdOrEmail: string): { success: boolean; message?: string } => {
-    if (!hasPermission('canManageAccounts')) {
+  const deleteUser = useCallback(async (userIdOrEmail: string): Promise<{ success: boolean; message?: string }> => {
+    if (!hasPermission('canManageAccounts') && currentUser?.role !== 'super_admin') {
       return { success: false, message: 'Access Denied: You do not have permission to delete accounts.' };
     }
 
@@ -1116,15 +1140,32 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       return { success: false, message: 'You cannot delete your own logged-in account.' };
     }
 
-    const updatedUsers = users.filter((u) => u.id !== target.id && u.email.toLowerCase().trim() !== target.email.toLowerCase().trim());
-    setUsers(updatedUsers);
-    usersApi.delete(target.id).catch(console.error);
+    try {
+      await usersApi.delete(target.id);
 
-    return { success: true, message: `Account "${target.name}" deleted successfully.` };
-  }, [currentUser, hasPermission, users]);
+      // Immediately update local state
+      setUsers((prev) => {
+        const updated = prev.filter((u) => u.id !== target.id && u.email.toLowerCase().trim() !== target.email.toLowerCase().trim());
+        try {
+          localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(updated));
+        } catch {}
+        return updated;
+      });
 
-  const deleteCustomer = useCallback((targetUser: UserAccount | string) => {
-    const emailOrId = typeof targetUser === 'string' ? targetUser : targetUser.email || targetUser.id;
+      // Background re-fetch to ensure complete sync with D1
+      fetchUsers().catch(() => {});
+
+      showNotification('success', 'Account Deleted', `Account "${target.name}" has been permanently deleted.`);
+      return { success: true, message: `Account "${target.name}" deleted successfully.` };
+    } catch (err: any) {
+      const errMsg = err?.message || 'Failed to delete account from database.';
+      showNotification('error', 'Deletion Failed', errMsg);
+      return { success: false, message: errMsg };
+    }
+  }, [currentUser, fetchUsers, hasPermission, showNotification, users]);
+
+  const deleteCustomer = useCallback(async (targetUser: UserAccount | string): Promise<{ success: boolean; message?: string }> => {
+    const emailOrId = typeof targetUser === 'string' ? targetUser : targetUser.id || targetUser.email;
     return deleteUser(emailOrId);
   }, [deleteUser]);
 
@@ -1267,6 +1308,7 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     resetToDefaultSeed,
     users,
     setUsers,
+    fetchUsers,
     deleteUser,
     deleteCustomer,
     resetCustomerPassword,
@@ -1339,6 +1381,7 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     updateSettings,
     resetToDefaultSeed,
     users,
+    fetchUsers,
     deleteUser,
     deleteCustomer,
     resetCustomerPassword,

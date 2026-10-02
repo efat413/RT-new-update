@@ -1905,8 +1905,24 @@ export async function unclaimPasswordResetToken(db: D1Database, tokenId: string)
 }
 
 export async function deleteUserFromD1(db: D1Database, id: string): Promise<boolean> {
-  const res = await db.prepare('DELETE FROM users WHERE id = ?').bind(id).run();
-  return res.success;
+  try {
+    // Safely clear any pending password reset tokens for this user first
+    try {
+      await db.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').bind(id).run();
+    } catch (tokenErr) {
+      console.warn('Notice: Non-fatal error cleaning password reset tokens for user:', tokenErr);
+    }
+
+    const res = await db.prepare('DELETE FROM users WHERE id = ?').bind(id).run();
+    const changes = res.meta?.changes ?? (res as any)?.changes ?? (res as any)?.meta?.rows_written;
+    if (changes !== undefined && changes !== null) {
+      return Boolean(res.success && changes > 0);
+    }
+    return Boolean(res.success);
+  } catch (err) {
+    console.error('Database error in deleteUserFromD1:', err);
+    return false;
+  }
 }
 
 // ==============================================================

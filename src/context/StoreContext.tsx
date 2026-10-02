@@ -121,8 +121,9 @@ const defaultAdminStubs: AdminContextType = {
   // Users
   users: [],
   setUsers: () => {},
-  deleteUser: () => ({ success: false, message: 'Admin context not loaded' }),
-  deleteCustomer: () => ({ success: false, message: 'Admin context not loaded' }),
+  fetchUsers: async () => [],
+  deleteUser: async () => ({ success: false, message: 'Admin context not loaded' }),
+  deleteCustomer: async () => ({ success: false, message: 'Admin context not loaded' }),
   resetCustomerPassword: async () => ({ success: false, message: 'Admin context not loaded' }),
   updateUserRoleAndPermissions: () => ({ success: false, message: 'Admin context not loaded' }),
 

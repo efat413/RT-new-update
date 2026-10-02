@@ -3425,37 +3425,49 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const { auth, errorResponse } = await requireAuth(request, env);
       if (errorResponse) return errorResponse;
 
-      const targetUser = await env.DB.prepare('SELECT id, email, role FROM users WHERE id = ?').bind(usrId).first<{ id: string; email: string; role: string }>();
+      const targetUser = await env.DB.prepare('SELECT id, email, role FROM users WHERE id = ? OR email = ?').bind(usrId, usrId).first<{ id: string; email: string; role: string }>();
       if (!targetUser) {
-        return jsonResponse({ success: false, error: 'User not found in D1.' }, 404);
+        return jsonResponse({ success: false, error: 'User account not found in database.' }, 404);
       }
 
       // The primary master Super Admin account can NEVER be deleted!
-      if (isSuperAdminUserServer(targetUser, env)) {
+      if (isSuperAdminUserServer(targetUser, env) || targetUser.role === 'super_admin') {
         return jsonResponse(
-          { success: false, error: 'Forbidden: The primary Master Super Administrator account cannot be deleted.' },
+          { success: false, error: 'Forbidden: Super Administrator accounts cannot be deleted.' },
           403
         );
       }
 
-      // Non-super admin accounts cannot delete any super_admin account
-      if (targetUser.role === 'super_admin' && auth!.role !== 'super_admin') {
+      // Prevent the currently authenticated user from deleting their own account
+      if (auth!.dbUser.id === targetUser.id || auth!.tokenUser.email?.toLowerCase().trim() === targetUser.email.toLowerCase().trim()) {
         return jsonResponse(
-          { success: false, error: 'Forbidden: Only a Super Administrator can delete admin accounts.' },
+          { success: false, error: 'Forbidden: You cannot delete your own logged-in account.' },
           403
         );
       }
 
-      const hasUserDel = hasPermission(auth!, 'user.delete');
-      const hasCustDel = targetUser.role === 'customer' && hasPermission(auth!, 'customer.delete');
+      // RBAC: Only a Super Administrator can delete administrative accounts (admin / sub_admin)
+      if (targetUser.role !== 'customer' && auth!.role !== 'super_admin') {
+        return jsonResponse(
+          { success: false, error: 'Forbidden: Only a Super Administrator can delete administrative accounts.' },
+          403
+        );
+      }
 
-      if (!hasUserDel && !hasCustDel) {
-        return jsonResponse({ success: false, error: 'Forbidden: Insufficient permissions to delete this account.' }, 403);
+      // Customer account deletion permission check
+      if (targetUser.role === 'customer') {
+        const canDeleteCust = auth!.role === 'super_admin' || hasPermission(auth!, 'customer.delete') || hasPermission(auth!, 'user.delete');
+        if (!canDeleteCust) {
+          return jsonResponse({ success: false, error: 'Forbidden: Insufficient permissions to delete customer accounts.' }, 403);
+        }
       }
 
       try {
-        await deleteUserFromD1(env.DB, usrId);
-        return jsonResponse({ success: true, message: `User deleted from D1.` });
+        const deleteSuccess = await deleteUserFromD1(env.DB, targetUser.id);
+        if (!deleteSuccess) {
+          return jsonResponse({ success: false, error: 'Failed to delete user account from database.' }, 500);
+        }
+        return jsonResponse({ success: true, message: `Account for ${targetUser.email} has been permanently deleted.` });
       } catch (err: any) {
         console.error('Error deleting user:', err);
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
