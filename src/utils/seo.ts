@@ -637,7 +637,9 @@ export function getProductSEOMetadata(
 export function generateOrganizationSchema(settings?: Partial<StoreSettings>) {
   const name = settings?.siteName || DEFAULT_SITE_NAME;
   const phone = settings?.footer?.supportPhone || settings?.phone || '+8801518739561';
-  const address = settings?.footer?.officeAddress || settings?.address || 'House 14, Sector 7, Uttara, Dhaka 1230, Bangladesh';
+  // SEO schema address: fallback represents only Uttara, Dhaka 1230 without street address
+  const fallbackAddress = 'Uttara, Dhaka 1230';
+  const address = fallbackAddress;
   const logo = settings?.logoUrl || DEFAULT_FALLBACK_IMAGE;
 
   const sameAs: string[] = [];
@@ -667,8 +669,8 @@ export function generateOrganizationSchema(settings?: Partial<StoreSettings>) {
     },
     address: {
       '@type': 'PostalAddress',
-      streetAddress: address,
-      addressLocality: 'Dhaka',
+      addressLocality: 'Uttara',
+      addressRegion: 'Dhaka',
       postalCode: '1230',
       addressCountry: 'BD',
     },
