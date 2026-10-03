@@ -500,18 +500,49 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       await productsApi.delete(id);
       setProducts((prev) => prev.filter((prod) => prod.id !== id));
       setFeaturedProducts((prev) => prev.filter((prod) => prod.id !== id));
+      setSingleProduct((prev) => (prev && prev.id === id ? null : prev));
+      setQuickViewProduct((prev) => (prev && prev.id === id ? null : prev));
+      setVideoModalProduct((prev) => (prev && prev.id === id ? null : prev));
+      setCategoryListingProducts((prev) => prev.filter((p) => p.id !== id));
+      setHomepageCategoryProducts((prev) => {
+        let changed = false;
+        const next: Record<string, Product[]> = {};
+        for (const [k, list] of Object.entries(prev) as [string, Product[]][]) {
+          const filtered = list.filter((p) => p.id !== id);
+          if (filtered.length !== list.length) changed = true;
+          next[k] = filtered;
+        }
+        return changed ? next : prev;
+      });
       if (typeof setCart === 'function') {
         setCart((prev) => prev.filter((item) => item.product.id !== id));
       }
-      showNotification('info', 'Product Deleted', 'Product removed from D1 catalog.');
+      if (typeof showNotification === 'function') {
+        showNotification('info', 'Product Deleted', 'Product removed from D1 catalog.');
+      }
       return { success: true };
     } catch (err: any) {
       const errorMsg = err?.message || 'Failed to delete product from D1 database';
-      refreshProductsByIds([id]).catch(() => {});
-      showNotification('error', 'Deletion Failed', errorMsg, 6000);
+      if (typeof refreshProductsByIds === 'function') {
+        refreshProductsByIds([id]).catch(() => {});
+      }
+      if (typeof showNotification === 'function') {
+        showNotification('error', 'Deletion Failed', errorMsg, 6000);
+      }
       return { success: false, error: errorMsg };
     }
-  }, [refreshProductsByIds, setCart, setFeaturedProducts, setProducts, showNotification]);
+  }, [
+    refreshProductsByIds,
+    setCart,
+    setCategoryListingProducts,
+    setFeaturedProducts,
+    setHomepageCategoryProducts,
+    setProducts,
+    setQuickViewProduct,
+    setSingleProduct,
+    setVideoModalProduct,
+    showNotification,
+  ]);
 
   const increaseStock = useCallback(async (productId: string, amount: number): Promise<void> => {
     const current = products.find((p) => p.id === productId);
