@@ -416,14 +416,17 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             : [...prev, canonical]
           : prev.filter((p) => p.id !== id)
       );
+      setSingleProduct((prev) => (prev && prev.id === id ? canonical : prev));
       setQuickViewProduct((prev) => (prev && prev.id === id ? canonical : prev));
       setVideoModalProduct((prev) => {
         if (!prev || prev.id !== id) return prev;
         return canonical.videoUrl && canonical.videoUrl.trim() ? canonical : null;
       });
-      setCart((prev) =>
-        prev.map((item) => (item.product.id === id ? { ...item, product: canonical } : item))
-      );
+      if (typeof setCart === 'function') {
+        setCart((prev) =>
+          prev.map((item) => (item.product.id === id ? { ...item, product: canonical } : item))
+        );
+      }
       showNotification('success', 'Product Updated in D1', `"${canonical.title}" has been updated in the D1 database.`);
       return { success: true, product: canonical };
     } catch (err: any) {
@@ -436,7 +439,7 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       showNotification('error', 'Update Failed', errorMsg, 6000);
       return { success: false, error: errorMsg };
     }
-  }, [setCart, setFeaturedProducts, setProducts, setQuickViewProduct, setVideoModalProduct, showNotification]);
+  }, [setCart, setFeaturedProducts, setProducts, setQuickViewProduct, setSingleProduct, setVideoModalProduct, showNotification]);
 
   const toggleProductFeatured = useCallback(async (
     productId: string,
@@ -497,7 +500,9 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       await productsApi.delete(id);
       setProducts((prev) => prev.filter((prod) => prod.id !== id));
       setFeaturedProducts((prev) => prev.filter((prod) => prod.id !== id));
-      setCart((prev) => prev.filter((item) => item.product.id !== id));
+      if (typeof setCart === 'function') {
+        setCart((prev) => prev.filter((item) => item.product.id !== id));
+      }
       showNotification('info', 'Product Deleted', 'Product removed from D1 catalog.');
       return { success: true };
     } catch (err: any) {
@@ -1053,7 +1058,9 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setUsers(INITIAL_USERS);
       setCurrentUser(null);
       setIsAdminLoggedIn(false);
-      setCart([]);
+      if (typeof setCart === 'function') {
+        setCart([]);
+      }
       setCoupons(INITIAL_COUPONS);
       storeHomepageApi.clearCache();
       try {

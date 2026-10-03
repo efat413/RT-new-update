@@ -5,6 +5,7 @@ import { trackSocialEvent } from '../utils/pixelTracking';
 
 export interface CartContextType {
   cart: CartItem[];
+  setCart: React.Dispatch<React.SetStateAction<CartItem[]>>;
   cartCount: number;
   cartSubtotal: number;
   isCartOpen: boolean;
@@ -202,6 +203,7 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const value = useMemo<CartContextType>(() => ({
     cart,
+    setCart,
     cartCount,
     cartSubtotal,
     isCartOpen,
@@ -213,6 +215,7 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
     quickBuy,
   }), [
     cart,
+    setCart,
     cartCount,
     cartSubtotal,
     isCartOpen,
