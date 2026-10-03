@@ -203,10 +203,10 @@ const ProductCardComponent: React.FC<ProductCardProps> = ({ product, priority = 
               e.stopPropagation();
               setQuickViewProduct(product);
             }}
-            className="pointer-events-auto px-4 py-2 rounded-xl bg-white/95 hover:bg-white text-slate-900 text-xs font-bold shadow-xl flex items-center gap-1.5 backdrop-blur-xs transform translate-y-2 group-hover:translate-y-0 hover:scale-105 active:scale-95 transition-all duration-200 cursor-pointer"
+            className="pointer-events-auto px-4 py-2 rounded-xl bg-transparent hover:bg-transparent text-white text-xs font-bold drop-shadow-md flex items-center gap-1.5 transform translate-y-2 group-hover:translate-y-0 hover:scale-105 active:scale-95 transition-all duration-200 cursor-pointer"
             title="Quick view product details"
           >
-            <Eye className="w-4 h-4 text-rose-600" />
+            <Eye className="w-4 h-4 text-rose-400 drop-shadow-xs" />
             <span>Quick View</span>
           </button>
         </div>
@@ -219,11 +219,11 @@ const ProductCardComponent: React.FC<ProductCardProps> = ({ product, priority = 
             e.stopPropagation();
             setQuickViewProduct(product);
           }}
-          className="sm:hidden absolute bottom-2.5 left-2.5 z-20 px-2.5 py-1 rounded-full bg-white/90 hover:bg-white text-slate-800 text-[10px] font-bold shadow-md flex items-center gap-1 backdrop-blur-xs active:scale-95 transition-transform"
+          className="sm:hidden absolute bottom-2.5 left-2.5 z-20 px-2 py-1 rounded-full bg-transparent hover:bg-transparent text-white text-[10px] font-bold drop-shadow-[0_1px_2px_rgba(0,0,0,0.85)] flex items-center gap-1 active:scale-95 transition-transform"
           title="Quick View"
           aria-label="Quick View"
         >
-          <Eye className="w-3 h-3 text-rose-600" />
+          <Eye className="w-3 h-3 text-rose-400 drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]" />
           <span>Quick View</span>
         </button>
       </div>
