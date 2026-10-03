@@ -160,11 +160,6 @@ const CategoryProductCarouselComponent: React.FC<CategoryProductCarouselProps> =
               {totalItems} items
             </span>
           </div>
-          {category.description && (
-            <p className="text-xs sm:text-sm text-slate-500 mt-1 max-w-xl line-clamp-1 sm:line-clamp-none">
-              {category.description}
-            </p>
-          )}
         </div>
 
         {/* Action Controls: Previous / Next Chevrons + "View All →" Link */}

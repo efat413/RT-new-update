@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Star, ShoppingCart, ShoppingBag, Check, Images, Heart, Share2 } from 'lucide-react';
+import { Star, ShoppingCart, ShoppingBag, Check, Images, Heart, Share2, Eye } from 'lucide-react';
 import { Product } from '../types';
 import { useStore } from '../context/StoreContext';
 import { parseColorOption } from '../utils/productVariants';
@@ -141,7 +141,24 @@ const ProductCardComponent: React.FC<ProductCardProps> = ({ product, priority = 
           </span>
         )}
 
-        {/* Floating Action Buttons: Wishlist & Share Link */}
+        {/* Quick View Button - Appears strictly when hovering the mouse over the image, never sitting over image when idle */}
+        <div className="absolute inset-x-0 bottom-3 z-20 flex justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none group-hover:pointer-events-auto">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setQuickViewProduct(product);
+            }}
+            className="py-1.5 px-3.5 rounded-xl bg-slate-900/90 hover:bg-slate-950 text-white font-bold text-xs flex items-center gap-1.5 shadow-lg backdrop-blur-xs active:scale-95 transition-all cursor-pointer"
+            title="Quick View"
+            aria-label="Quick View"
+          >
+            <Eye className="w-3.5 h-3.5 text-rose-400" />
+            <span>Quick View</span>
+          </button>
+        </div>
+
+        {/* Floating Action Buttons: Wishlist, Quick View & Share Link */}
         <div className="absolute top-2.5 right-2.5 z-20 flex flex-col gap-1.5 items-center">
           <button
             type="button"
@@ -159,6 +176,19 @@ const ProductCardComponent: React.FC<ProductCardProps> = ({ product, priority = 
                 isSavedInWishlist ? 'fill-rose-500 text-rose-500' : ''
               }`}
             />
+          </button>
+
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setQuickViewProduct(product);
+            }}
+            className="w-8 h-8 rounded-full flex items-center justify-center transition-all shadow-xs bg-white/80 hover:bg-white text-slate-500 hover:text-rose-500 opacity-0 group-hover:opacity-100 cursor-pointer"
+            title="Quick View"
+            aria-label="Quick View"
+          >
+            <Eye className="w-3.5 h-3.5" />
           </button>
 
           <button

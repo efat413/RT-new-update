@@ -116,9 +116,6 @@ export const FeaturedProductsCarousel: React.FC<FeaturedProductsCarouselProps> =
               {totalItems} items
             </span>
           </div>
-          <p className="text-xs sm:text-sm text-slate-500 mt-1 max-w-xl">
-            Curated top-selling gadgets, authentic accessories, and customer favorites across all categories.
-          </p>
         </div>
 
         {/* Action Controls: Previous / Next Chevrons + "View All →" Link */}
