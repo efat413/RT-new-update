@@ -69,7 +69,7 @@ export const AdminTopOptionsBar: React.FC<AdminTopOptionsBarProps> = ({
     },
     {
       id: 'products',
-      label: 'Products CRUD',
+      label: 'Product Management',
       icon: Package,
       badge: `${productsCount}`,
       badgeColor: 'bg-slate-700 text-slate-300',

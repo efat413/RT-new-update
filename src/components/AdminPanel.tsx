@@ -499,7 +499,7 @@ const AdminPanelContent: React.FC = () => {
     return () => clearTimeout(timer);
   }, [orderStatusFilter, orderPaymentFilter, orderSearch, orderSortBy, orderPageSize, setOrderPage, setOrderQueryFilters]);
 
-  // 2. Products CRUD filters
+  // 2. Product Management filters
   const [productStockFilter, setProductStockFilter] = useState<'all' | 'in_stock' | 'low_stock' | 'out_of_stock' | 'featured'>('all');
   const [productCategoryFilter, setProductCategoryFilter] = useState<string>('all');
   const [productsSubView, setProductsSubView] = useState<'all' | 'featured'>('all');
@@ -3032,7 +3032,7 @@ const AdminPanelContent: React.FC = () => {
                       }}
                       className="text-xs font-bold text-rose-700 hover:underline cursor-pointer"
                     >
-                      Filter in Products CRUD →
+                      Filter in Product Management →
                     </button>
                   </div>
                 </div>
@@ -3894,11 +3894,11 @@ const AdminPanelContent: React.FC = () => {
         )}
 
         {/* ============================================================ */}
-        {/* TAB 3: PRODUCTS CRUD                                         */}
+        {/* TAB 3: PRODUCT MANAGEMENT                                    */}
         {/* ============================================================ */}
         {activeTab === 'products' && (
           !hasPermission('product.view') ? (
-            renderPermissionRestrictedNotice('product.view', 'Products CRUD & Stock Management')
+            renderPermissionRestrictedNotice('product.view', 'Product Management & Stock Management')
           ) : (
           <div className="space-y-6 animate-in fade-in duration-200">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">

@@ -108,7 +108,7 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
     },
     {
       id: 'products',
-      label: 'Products CRUD',
+      label: 'Product Management',
       icon: Package,
       badge: productsCount,
       color: 'amber',
