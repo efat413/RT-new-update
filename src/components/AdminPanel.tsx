@@ -144,6 +144,42 @@ import { formatWhatsAppLink, normalizeWhatsAppNumber } from '../utils/phone';
 import { copyToClipboardSafe } from '../utils/clipboard';
 import { AdminProvider } from '../context/AdminProvider';
 
+interface ConfidentialProfitBadgeProps {
+  profitVal: number;
+}
+
+const ConfidentialProfitBadge: React.FC<ConfidentialProfitBadgeProps> = ({ profitVal }) => {
+  const [isVisible, setIsVisible] = useState(true);
+
+  const toggleVisibility = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsVisible((prev) => !prev);
+  };
+
+  return (
+    <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1 font-mono select-none">
+      <TrendingUp className="w-3 h-3 text-emerald-600 shrink-0" />
+      <button
+        type="button"
+        onClick={toggleVisibility}
+        className="p-0.5 text-emerald-700 hover:text-emerald-950 hover:bg-emerald-200/70 rounded focus:outline-hidden focus:ring-1 focus:ring-emerald-500 transition-colors inline-flex items-center justify-center shrink-0 cursor-pointer"
+        title={isVisible ? 'Hide profit' : 'Show profit'}
+        aria-label={isVisible ? 'Hide profit' : 'Show profit'}
+      >
+        {isVisible ? (
+          <EyeOff className="w-3 h-3 text-emerald-700" />
+        ) : (
+          <Eye className="w-3 h-3 text-emerald-600" />
+        )}
+      </button>
+      <span>
+        Profit: {isVisible ? `৳${profitVal.toLocaleString()}` : '••••'}
+      </span>
+    </span>
+  );
+};
+
 const AdminPanelContent: React.FC = () => {
   const {
     products,
@@ -4303,10 +4339,7 @@ const AdminPanelContent: React.FC = () => {
                                 <span className="text-[11px] text-slate-500 font-medium">
                                   Cost: <strong className="text-slate-800 font-semibold font-mono">৳{costVal.toLocaleString()}</strong>
                                 </span>
-                                <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1 font-mono">
-                                  <TrendingUp className="w-3 h-3 text-emerald-600" />
-                                  Profit: ৳{profitVal.toLocaleString()}
-                                </span>
+                                <ConfidentialProfitBadge profitVal={profitVal} />
                               </div>
                             );
                           })()}
