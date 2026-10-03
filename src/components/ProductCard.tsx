@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Star, ShoppingCart, ShoppingBag, Eye, Check, Images, Heart, Share2 } from 'lucide-react';
+import { Star, ShoppingCart, ShoppingBag, Check, Images, Heart, Share2 } from 'lucide-react';
 import { Product } from '../types';
 import { useStore } from '../context/StoreContext';
 import { parseColorOption } from '../utils/productVariants';
@@ -193,39 +193,6 @@ const ProductCardComponent: React.FC<ProductCardProps> = ({ product, priority = 
             </span>
           )}
         </div>
-
-        {/* Quick View Button on hover (Desktop) */}
-        <div className="absolute inset-0 bg-slate-900/30 opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center justify-center p-3 pointer-events-none">
-          <button
-            type="button"
-            id={`quick-view-btn-${product.id}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              setQuickViewProduct(product);
-            }}
-            className="pointer-events-auto px-4 py-2 rounded-xl bg-transparent hover:bg-transparent text-white text-xs font-bold drop-shadow-md flex items-center gap-1.5 transform translate-y-2 group-hover:translate-y-0 hover:scale-105 active:scale-95 transition-all duration-200 cursor-pointer"
-            title="Quick view product details"
-          >
-            <Eye className="w-4 h-4 text-rose-400 drop-shadow-xs" />
-            <span>Quick View</span>
-          </button>
-        </div>
-
-        {/* Mobile Quick View Action Badge (Visible on touch/small screens) */}
-        <button
-          type="button"
-          id={`mobile-quick-view-btn-${product.id}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            setQuickViewProduct(product);
-          }}
-          className="sm:hidden absolute bottom-2.5 left-2.5 z-20 px-2 py-1 rounded-full bg-transparent hover:bg-transparent text-white text-[10px] font-bold drop-shadow-[0_1px_2px_rgba(0,0,0,0.85)] flex items-center gap-1 active:scale-95 transition-transform"
-          title="Quick View"
-          aria-label="Quick View"
-        >
-          <Eye className="w-3 h-3 text-rose-400 drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]" />
-          <span>Quick View</span>
-        </button>
       </div>
 
       {/* Content */}
@@ -266,11 +233,6 @@ const ProductCardComponent: React.FC<ProductCardProps> = ({ product, priority = 
               {product.title}
             </h3>
           </a>
-
-          {/* Description snippet */}
-          <p className="text-[11px] sm:text-xs text-slate-500 mt-1 line-clamp-1 sm:line-clamp-2 leading-tight sm:leading-relaxed hidden xs:block">
-            {product.description}
-          </p>
 
           {/* Specific Colors preview on product card so viewers easily identify them */}
           {product.colors && product.colors.length > 0 && (
