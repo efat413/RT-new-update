@@ -2010,12 +2010,21 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           user &&
           (user.role === 'admin' || user.role === 'sub_admin' || user.role === 'super_admin')
         );
-        const canViewBuyingPrice = Boolean(!authRes.errorResponse && user && hasPermission(user, 'product.view_buying_price'));
-        const canViewProfit = Boolean(!authRes.errorResponse && user && hasPermission(user, 'product.view_profit'));
+        // Root cause remediation: Ensure Super Admin and permission aliases are fully recognized
+        const canViewBuyingPrice = Boolean(
+          !authRes.errorResponse &&
+          user &&
+          (isSuperAdmin || hasPermission(user, 'product.view_buying_price') || hasPermission(user, 'product.buying_price'))
+        );
+        const canViewProfit = Boolean(
+          !authRes.errorResponse &&
+          user &&
+          (isSuperAdmin || hasPermission(user, 'product.view_profit') || hasPermission(user, 'report.profit'))
+        );
         const canManageProducts = Boolean(
           !authRes.errorResponse &&
           user &&
-          (hasPermission(user, 'product.create') || hasPermission(user, 'product.update') || hasPermission(user, 'product.view'))
+          (isSuperAdmin || hasPermission(user, 'product.create') || hasPermission(user, 'product.update') || hasPermission(user, 'product.view'))
         );
         const isPrivileged = isSuperAdmin || isStaff || canViewBuyingPrice || canViewProfit || canManageProducts;
         const includeInactive = Boolean(isPrivileged && (url.searchParams.get('includeInactive') === 'true' || url.searchParams.get('all') === 'true'));
@@ -2031,8 +2040,20 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         if (isPrivileged) {
           // Authorized Admin / Staff Request:
           // If no page/limit specified, return full catalog for admin product management & inventory auditing
+          // ROOT CAUSE FIX: includeBuyingPrice was previously omitted from the filter object passed to
+          // getAllProducts / getPaginatedProducts, causing buildSelectProductColumns to omit the 'buying_price'
+          // column from the SQL query. As a result, row.buying_price was undefined, stripping buyingPrice
+          // from the products returned to the admin dashboard!
+          const shouldIncludeBuyingPrice = isSuperAdmin || canViewBuyingPrice;
           if (pageParam === null && limitParam === null) {
-            const products = await getAllProducts(env.DB, { category, search, featured, sortBy, includeInactive });
+            const products = await getAllProducts(env.DB, {
+              category,
+              search,
+              featured,
+              sortBy,
+              includeInactive,
+              includeBuyingPrice: shouldIncludeBuyingPrice,
+            });
             const safeProducts = products.map((p) => sanitizeProductForRole(p, { isSuperAdmin, canViewBuyingPrice, canViewProfit }));
             responsePayload = {
               success: true,
@@ -2047,7 +2068,16 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
             const page = pageParam ? Math.max(1, parseInt(pageParam, 10) || 1) : 1;
             const parsedLimit = limitParam ? parseInt(limitParam, 10) : 100;
             const limit = Math.min(MAX_ADMIN_LIMIT, Math.max(1, isNaN(parsedLimit) ? 100 : parsedLimit));
-            const paginated = await getPaginatedProducts(env.DB, { category, search, featured, page, limit, sortBy, includeInactive });
+            const paginated = await getPaginatedProducts(env.DB, {
+              category,
+              search,
+              featured,
+              page,
+              limit,
+              sortBy,
+              includeInactive,
+              includeBuyingPrice: shouldIncludeBuyingPrice,
+            });
             const safeProducts = paginated.products.map((p) => sanitizeProductForRole(p, { isSuperAdmin, canViewBuyingPrice, canViewProfit }));
             responsePayload = {
               success: true,
@@ -2125,8 +2155,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
         const created = await insertProduct(env.DB, productData);
         const isSuperAdmin = auth!.role === 'super_admin';
-        const canViewBuyingPrice = hasPermission(auth!, 'product.view_buying_price');
-        const canViewProfit = hasPermission(auth!, 'product.view_profit');
+        const canViewBuyingPrice = isSuperAdmin || hasPermission(auth!, 'product.view_buying_price') || hasPermission(auth!, 'product.buying_price');
+        const canViewProfit = isSuperAdmin || hasPermission(auth!, 'product.view_profit') || hasPermission(auth!, 'report.profit');
 
         return jsonResponse(
           { success: true, product: sanitizeProductForRole(created, { isSuperAdmin, canViewBuyingPrice, canViewProfit }) },
@@ -2159,8 +2189,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
         const updated = await setProductFeaturedInD1(env.DB, prodId, isFeatured, featuredSortOrder);
         const isSuperAdmin = auth!.role === 'super_admin';
-        const canViewBuyingPrice = hasPermission(auth!, 'product.view_buying_price');
-        const canViewProfit = hasPermission(auth!, 'product.view_profit');
+        const canViewBuyingPrice = isSuperAdmin || hasPermission(auth!, 'product.view_buying_price') || hasPermission(auth!, 'product.buying_price');
+        const canViewProfit = isSuperAdmin || hasPermission(auth!, 'product.view_profit') || hasPermission(auth!, 'report.profit');
 
         return jsonResponse({
           success: true,
@@ -2185,12 +2215,24 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         // Security check: ONLY Super Admin or authorized users receive Buying Price & Unit Profit!
         const authRes = await requireAuth(request, env);
         const isSuperAdmin = Boolean(!authRes.errorResponse && authRes.auth?.role === 'super_admin');
-        const canViewBuyingPrice = Boolean(!authRes.errorResponse && authRes.auth && hasPermission(authRes.auth, 'product.view_buying_price'));
-        const canViewProfit = Boolean(!authRes.errorResponse && authRes.auth && hasPermission(authRes.auth, 'product.view_profit'));
-        const canManageProducts = Boolean(!authRes.errorResponse && authRes.auth && (hasPermission(authRes.auth, 'product.create') || hasPermission(authRes.auth, 'product.update')));
+        const canViewBuyingPrice = Boolean(
+          !authRes.errorResponse &&
+          authRes.auth &&
+          (isSuperAdmin || hasPermission(authRes.auth, 'product.view_buying_price') || hasPermission(authRes.auth, 'product.buying_price'))
+        );
+        const canViewProfit = Boolean(
+          !authRes.errorResponse &&
+          authRes.auth &&
+          (isSuperAdmin || hasPermission(authRes.auth, 'product.view_profit') || hasPermission(authRes.auth, 'report.profit'))
+        );
+        const canManageProducts = Boolean(
+          !authRes.errorResponse &&
+          authRes.auth &&
+          (isSuperAdmin || hasPermission(authRes.auth, 'product.create') || hasPermission(authRes.auth, 'product.update'))
+        );
         const isPrivileged = isSuperAdmin || canViewBuyingPrice || canViewProfit || canManageProducts;
 
-        const product = await getProductById(env.DB, prodId, { includeBuyingPrice: isPrivileged });
+        const product = await getProductById(env.DB, prodId, { includeBuyingPrice: isSuperAdmin || canViewBuyingPrice || isPrivileged });
         if (!product) return jsonResponse({ success: false, error: 'Product not found' }, 404);
 
         // Public single-product endpoint: Inactive/deleted products must not be publicly accessible
@@ -2235,8 +2277,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
         const updated = await updateProductInD1(env.DB, prodId, updates);
         const isSuperAdmin = auth!.role === 'super_admin';
-        const canViewBuyingPrice = hasPermission(auth!, 'product.view_buying_price');
-        const canViewProfit = hasPermission(auth!, 'product.view_profit');
+        const canViewBuyingPrice = isSuperAdmin || hasPermission(auth!, 'product.view_buying_price') || hasPermission(auth!, 'product.buying_price');
+        const canViewProfit = isSuperAdmin || hasPermission(auth!, 'product.view_profit') || hasPermission(auth!, 'report.profit');
 
         return jsonResponse({
           success: true,

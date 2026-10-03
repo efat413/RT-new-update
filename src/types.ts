@@ -4,7 +4,9 @@ export interface Product {
   price: number;
   originalPrice?: number;
   buyingPrice?: number; // Super Admin only
+  buying_price?: number; // Alias for buyingPrice for seamless DB/API mapping
   unitProfit?: number; // Calculated helper: price - buyingPrice (Super Admin only)
+  unit_profit?: number; // Alias for unitProfit for seamless DB/API mapping
   categoryId: string;
   description: string;
   imageUrl: string;

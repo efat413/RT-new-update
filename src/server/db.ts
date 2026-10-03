@@ -183,8 +183,12 @@ export function sanitizeProductForRole(
   const canViewProfit = isSuper || (typeof roleOrOptions === 'object' && Boolean(roleOrOptions.canViewProfit));
 
   const price = Number(product.price) || 0;
-  const buyingPrice = canViewBuyingPrice && product.buyingPrice != null ? Number(product.buyingPrice) : undefined;
-  const unitProfit = canViewProfit && product.buyingPrice != null ? Math.max(0, price - Number(product.buyingPrice)) : undefined;
+  // Root cause remediation: Support both camelCase buyingPrice and snake_case buying_price
+  const rawBuyingPrice = product.buyingPrice != null
+    ? product.buyingPrice
+    : ((product as any).buying_price != null ? (product as any).buying_price : undefined);
+  const buyingPrice = canViewBuyingPrice && rawBuyingPrice != null ? Number(rawBuyingPrice) : undefined;
+  const unitProfit = canViewProfit && rawBuyingPrice != null ? Math.max(0, price - Number(rawBuyingPrice)) : undefined;
 
   const safeProduct: Product = {
     ...product,
@@ -750,8 +754,12 @@ export async function insertProduct(db: D1Database, input: any): Promise<Product
   const originalPrice = input.originalPrice != null && !isNaN(Number(input.originalPrice))
     ? Math.max(0, Number(input.originalPrice))
     : (input.oldPrice != null && !isNaN(Number(input.oldPrice)) ? Math.max(0, Number(input.oldPrice)) : 0);
-  const buyingPrice = input.buyingPrice !== undefined && input.buyingPrice !== null && !isNaN(Number(input.buyingPrice))
-    ? Math.max(0, Number(input.buyingPrice))
+  // Root cause remediation: Check both camelCase buyingPrice and snake_case buying_price
+  const rawInputBuyingPrice = input.buyingPrice !== undefined && input.buyingPrice !== null
+    ? input.buyingPrice
+    : ((input as any).buying_price !== undefined && (input as any).buying_price !== null ? (input as any).buying_price : null);
+  const buyingPrice = rawInputBuyingPrice !== null && !isNaN(Number(rawInputBuyingPrice))
+    ? Math.max(0, Number(rawInputBuyingPrice))
     : 0;
   const categoryId = (typeof input.categoryId === 'string' && input.categoryId.trim())
     || (typeof input.category === 'string' && input.category.trim())
@@ -822,7 +830,7 @@ export async function insertProduct(db: D1Database, input: any): Promise<Product
     throw new Error(`D1 INSERT INTO products failed: ${insertErr?.message || insertErr}`);
   }
 
-  const created = await getProductById(db, id);
+  const created = await getProductById(db, id, { includeBuyingPrice: true });
   if (!created) throw new Error('Failed to retrieve newly created product from D1');
   return created;
 }
@@ -832,7 +840,7 @@ export async function updateProductInD1(
   id: string,
   updates: Partial<Product>
 ): Promise<Product> {
-  const existing = await getProductById(db, id);
+  const existing = await getProductById(db, id, { includeBuyingPrice: true });
   if (!existing) {
     throw new Error('Product not found.');
   }
@@ -842,7 +850,13 @@ export async function updateProductInD1(
   const title = updates.title !== undefined ? updates.title.trim() : existing.title;
   const price = updates.price !== undefined ? Math.max(0, Number(updates.price)) : existing.price;
   const originalPrice = updates.originalPrice !== undefined ? Math.max(0, Number(updates.originalPrice)) : (existing.originalPrice ?? 0);
-  const buyingPrice = updates.buyingPrice !== undefined && updates.buyingPrice !== null ? Math.max(0, Number(updates.buyingPrice)) : (existing.buyingPrice ?? 0);
+  // Root cause remediation: Support both camelCase updates.buyingPrice and snake_case updates.buying_price
+  const rawUpdateBuyingPrice = updates.buyingPrice !== undefined && updates.buyingPrice !== null
+    ? updates.buyingPrice
+    : ((updates as any).buying_price !== undefined && (updates as any).buying_price !== null ? (updates as any).buying_price : undefined);
+  const buyingPrice = rawUpdateBuyingPrice !== undefined && !isNaN(Number(rawUpdateBuyingPrice))
+    ? Math.max(0, Number(rawUpdateBuyingPrice))
+    : (existing.buyingPrice ?? (existing as any).buying_price ?? 0);
   const categoryId = updates.categoryId !== undefined ? updates.categoryId : existing.categoryId;
   const description = updates.description !== undefined ? updates.description : existing.description;
   const imageUrl = updates.imageUrl !== undefined ? updates.imageUrl : existing.imageUrl;
@@ -897,7 +911,7 @@ export async function updateProductInD1(
     throw new Error(`D1 UPDATE products failed: ${err?.message || err}`);
   }
 
-  const updated = await getProductById(db, id);
+  const updated = await getProductById(db, id, { includeBuyingPrice: true });
   if (!updated) throw new Error('Failed to retrieve updated product');
   return updated;
 }

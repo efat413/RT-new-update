@@ -535,11 +535,12 @@ function localApiDevPlugin(): Plugin {
     const canProfit = typeof options === 'boolean' ? options : Boolean(options.isSuperAdmin || options.canViewProfit);
 
     const price = Number(p.price) || 0;
-    const buyingPrice = p.buyingPrice != null ? Number(p.buyingPrice) : Math.round(price * 0.6);
-    const unitProfit = Math.max(0, price - buyingPrice);
+    const rawBp = p.buyingPrice != null ? p.buyingPrice : (p.buying_price != null ? p.buying_price : null);
+    const buyingPrice = rawBp != null && !isNaN(Number(rawBp)) ? Number(rawBp) : undefined;
+    const unitProfit = buyingPrice !== undefined ? Math.max(0, price - buyingPrice) : undefined;
 
     const result = { ...p };
-    if (canBuying) {
+    if (canBuying && buyingPrice !== undefined) {
       result.buyingPrice = buyingPrice;
     } else {
       delete result.buyingPrice;
@@ -1774,9 +1775,12 @@ function localApiDevPlugin(): Plugin {
               const canViewProfit = isSuper || hasDevPermission(authResult.auth!, 'product.view_profit');
               const product = body.product || body;
               const price = Number(product.price) || 0;
+              const rawInputBp = product.buyingPrice !== undefined && product.buyingPrice !== null
+                ? product.buyingPrice
+                : (product.buying_price !== undefined && product.buying_price !== null ? product.buying_price : null);
               const buyingPrice = canManageBuyingPrice
-                ? (product.buyingPrice !== undefined && product.buyingPrice !== null ? Math.max(0, Number(product.buyingPrice)) : Math.round(price * 0.6))
-                : Math.round(price * 0.6);
+                ? (rawInputBp !== null && rawInputBp !== '' && !isNaN(Number(rawInputBp)) ? Math.max(0, Number(rawInputBp)) : 0)
+                : 0;
 
               const newProd = {
                 id: product.id || `prod-${Date.now()}`,
@@ -1893,6 +1897,11 @@ function localApiDevPlugin(): Plugin {
                 if (!canManageBuying) {
                   delete updates.buyingPrice;
                   delete updates.buying_price;
+                } else if (updates.buyingPrice !== undefined || updates.buying_price !== undefined) {
+                  const bVal = updates.buyingPrice !== undefined ? updates.buyingPrice : updates.buying_price;
+                  if (bVal !== null && bVal !== '' && !isNaN(Number(bVal))) {
+                    updates.buyingPrice = Math.max(0, Number(bVal));
+                  }
                 }
                 if ('videoUrl' in updates) {
                   updates.videoUrl = updates.videoUrl ? String(updates.videoUrl).trim() : undefined;

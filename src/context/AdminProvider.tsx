@@ -391,9 +391,18 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   ): Promise<{ success: boolean; product?: Product; error?: string }> => {
     try {
       const canonical = await productsApi.create(productData);
-      setProducts((prev) => [canonical, ...prev.filter((p) => p.id !== canonical.id)]);
-      showNotification('success', 'Product Created in D1', `"${canonical.title}" has been saved to the D1 database.`);
-      return { success: true, product: canonical };
+      const mergedCanonical: Product = {
+        ...canonical,
+        buyingPrice: canonical.buyingPrice ?? productData.buyingPrice,
+        unitProfit: canonical.unitProfit ?? (
+          (canonical.buyingPrice ?? productData.buyingPrice) != null
+            ? Math.max(0, canonical.price - Number(canonical.buyingPrice ?? productData.buyingPrice))
+            : undefined
+        ),
+      };
+      setProducts((prev) => [mergedCanonical, ...prev.filter((p) => p.id !== mergedCanonical.id)]);
+      showNotification('success', 'Product Created in D1', `"${mergedCanonical.title}" has been saved to the D1 database.`);
+      return { success: true, product: mergedCanonical };
     } catch (err: any) {
       const errorMsg = err?.message || 'Failed to create product in D1 database';
       console.error('D1 addProduct error:', err);
@@ -408,27 +417,36 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   ): Promise<{ success: boolean; product?: Product; error?: string }> => {
     try {
       const canonical = await productsApi.update(id, updates);
-      setProducts((prev) => prev.map((prod) => (prod.id === id ? canonical : prod)));
+      const mergedCanonical: Product = {
+        ...canonical,
+        buyingPrice: canonical.buyingPrice ?? updates.buyingPrice,
+        unitProfit: canonical.unitProfit ?? (
+          (canonical.buyingPrice ?? updates.buyingPrice) != null
+            ? Math.max(0, canonical.price - Number(canonical.buyingPrice ?? updates.buyingPrice))
+            : undefined
+        ),
+      };
+      setProducts((prev) => prev.map((prod) => (prod.id === id ? mergedCanonical : prod)));
       setFeaturedProducts((prev) =>
-        canonical.featured
+        mergedCanonical.featured
           ? prev.some((p) => p.id === id)
-            ? prev.map((p) => (p.id === id ? canonical : p))
-            : [...prev, canonical]
+            ? prev.map((p) => (p.id === id ? mergedCanonical : p))
+            : [...prev, mergedCanonical]
           : prev.filter((p) => p.id !== id)
       );
-      setSingleProduct((prev) => (prev && prev.id === id ? canonical : prev));
-      setQuickViewProduct((prev) => (prev && prev.id === id ? canonical : prev));
+      setSingleProduct((prev) => (prev && prev.id === id ? mergedCanonical : prev));
+      setQuickViewProduct((prev) => (prev && prev.id === id ? mergedCanonical : prev));
       setVideoModalProduct((prev) => {
         if (!prev || prev.id !== id) return prev;
-        return canonical.videoUrl && canonical.videoUrl.trim() ? canonical : null;
+        return mergedCanonical.videoUrl && mergedCanonical.videoUrl.trim() ? mergedCanonical : null;
       });
       if (typeof setCart === 'function') {
         setCart((prev) =>
-          prev.map((item) => (item.product.id === id ? { ...item, product: canonical } : item))
+          prev.map((item) => (item.product.id === id ? { ...item, product: mergedCanonical } : item))
         );
       }
-      showNotification('success', 'Product Updated in D1', `"${canonical.title}" has been updated in the D1 database.`);
-      return { success: true, product: canonical };
+      showNotification('success', 'Product Updated in D1', `"${mergedCanonical.title}" has been updated in the D1 database.`);
+      return { success: true, product: mergedCanonical };
     } catch (err: any) {
       const errorMsg = err?.message || 'Failed to update product in D1 database';
       console.error('D1 updateProduct error:', err);

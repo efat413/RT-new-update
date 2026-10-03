@@ -138,7 +138,7 @@ const AdminTabFallback: React.FC = () => (
     <span className="text-xs font-medium text-slate-500">Loading module...</span>
   </div>
 );
-import { uploadApi, profitAnalyticsApi } from '../services/storeApi';
+import { uploadApi, profitAnalyticsApi, productsApi } from '../services/storeApi';
 import { orderApi } from '../services/orderApi';
 import { formatWhatsAppLink, normalizeWhatsAppNumber } from '../utils/phone';
 import { copyToClipboardSafe } from '../utils/clipboard';
@@ -256,6 +256,8 @@ const AdminPanelContent: React.FC = () => {
   const [prodPrice, setProdPrice] = useState<number | string>(0);
   const [prodOriginalPrice, setProdOriginalPrice] = useState<number>(0);
   const [prodBuyingPrice, setProdBuyingPrice] = useState<number | string>('');
+  const [showBuyingPrice, setShowBuyingPrice] = useState(true);
+  const [showUnitProfit, setShowUnitProfit] = useState(true);
   const [prodCategory, setProdCategory] = useState('');
   const [prodDescription, setProdDescription] = useState('');
   const [prodImage, setProdImage] = useState('');
@@ -1110,7 +1112,31 @@ const AdminPanelContent: React.FC = () => {
     setProdTitle(product.title);
     setProdPrice(product.price);
     setProdOriginalPrice(product.originalPrice || 0);
-    setProdBuyingPrice(product.buyingPrice != null ? product.buyingPrice : '');
+
+    // Root cause fix & debugging:
+    // Support both camelCase (buyingPrice) and snake_case (buying_price) representations.
+    // If the product in the local table was loaded before authentication was elevated,
+    // also fetch the fresh single-product details asynchronously to ensure the persisted
+    // buying price is reliably populated into the edit form state.
+    const initialBuyingPrice = product.buyingPrice != null
+      ? product.buyingPrice
+      : ((product as any).buying_price != null ? (product as any).buying_price : '');
+    setProdBuyingPrice(initialBuyingPrice);
+
+    if (isSuperAdmin || hasPermission('product.view_buying_price') || hasPermission('product.manage_buying_price')) {
+      productsApi.getById(product.id).then((freshProduct) => {
+        if (freshProduct) {
+          const freshBp = freshProduct.buyingPrice != null
+            ? freshProduct.buyingPrice
+            : ((freshProduct as any).buying_price != null ? (freshProduct as any).buying_price : null);
+          if (freshBp != null) {
+            setProdBuyingPrice(freshBp);
+            setEditingProduct((prev) => (prev && prev.id === product.id ? { ...prev, buyingPrice: freshBp } : prev));
+          }
+        }
+      }).catch(() => {});
+    }
+
     setProdCategory(product.categoryId);
     setProdDescription(product.description);
     setShowDescPreview(false);
@@ -1309,8 +1335,9 @@ const AdminPanelContent: React.FC = () => {
         : [];
     const allImages = [primaryImg, ...validGallery];
 
+    const canManageBuying = isSuperAdmin || hasPermission('product.manage_buying_price');
     const buyingPriceVal =
-      isSuperAdmin && prodBuyingPrice !== '' && !isNaN(Number(prodBuyingPrice))
+      canManageBuying && prodBuyingPrice !== '' && !isNaN(Number(prodBuyingPrice))
         ? Math.max(0, Number(prodBuyingPrice))
         : undefined;
 
@@ -4264,17 +4291,23 @@ const AdminPanelContent: React.FC = () => {
                           )}
 
                           {/* Super Admin Confidential Cost & Unit Profit Badge */}
-                          {isSuperAdmin && product.buyingPrice !== undefined && (
-                            <div className="pt-2 mt-1 border-t border-slate-100 flex items-center justify-between text-xs">
-                              <span className="text-[11px] text-slate-500 font-medium">
-                                Cost: <strong className="text-slate-800 font-semibold font-mono">৳{product.buyingPrice.toLocaleString()}</strong>
-                              </span>
-                              <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1 font-mono">
-                                <TrendingUp className="w-3 h-3 text-emerald-600" />
-                                Profit: ৳{(product.unitProfit !== undefined ? product.unitProfit : Math.max(0, product.price - product.buyingPrice)).toLocaleString()}
-                              </span>
-                            </div>
-                          )}
+                          {isSuperAdmin && (product.buyingPrice !== undefined || (product as any).buying_price !== undefined) && (() => {
+                            const costVal = product.buyingPrice !== undefined ? Number(product.buyingPrice) : Number((product as any).buying_price);
+                            const profitVal = product.unitProfit !== undefined
+                              ? Number(product.unitProfit)
+                              : ((product as any).unit_profit !== undefined ? Number((product as any).unit_profit) : Math.max(0, product.price - costVal));
+                            return (
+                              <div className="pt-2 mt-1 border-t border-slate-100 flex items-center justify-between text-xs">
+                                <span className="text-[11px] text-slate-500 font-medium">
+                                  Cost: <strong className="text-slate-800 font-semibold font-mono">৳{costVal.toLocaleString()}</strong>
+                                </span>
+                                <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1 font-mono">
+                                  <TrendingUp className="w-3 h-3 text-emerald-600" />
+                                  Profit: ৳{profitVal.toLocaleString()}
+                                </span>
+                              </div>
+                            );
+                          })()}
                         </div>
                       </div>
 
@@ -7370,12 +7403,28 @@ const AdminPanelContent: React.FC = () => {
                     </div>
                     <div className="grid grid-cols-2 gap-3 pt-1">
                       <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1">
-                          Buying Price / Cost Price (৳)
-                        </label>
+                        <div className="flex items-center justify-between mb-1">
+                          <label htmlFor="product-modal-buying-price" className="block text-xs font-bold text-slate-700">
+                            Buying Price / Cost Price (৳)
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => setShowBuyingPrice((prev) => !prev)}
+                            className="p-1 text-slate-400 hover:text-emerald-700 hover:bg-emerald-100/60 rounded-md transition-colors inline-flex items-center"
+                            title={showBuyingPrice ? 'Hide Buying Price' : 'Show Buying Price'}
+                            aria-label={showBuyingPrice ? 'Hide Buying Price' : 'Show Buying Price'}
+                          >
+                            {showBuyingPrice ? (
+                              <EyeOff className="w-3.5 h-3.5 text-slate-600" />
+                            ) : (
+                              <Eye className="w-3.5 h-3.5 text-slate-500" />
+                            )}
+                          </button>
+                        </div>
                         <input
                           id="product-modal-buying-price"
-                          type="number"
+                          type={showBuyingPrice ? 'number' : 'password'}
+                          inputMode="numeric"
                           min="0"
                           step="any"
                           value={prodBuyingPrice}
@@ -7385,19 +7434,40 @@ const AdminPanelContent: React.FC = () => {
                         />
                       </div>
                       <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1">
-                          Unit Profit (Auto Calculated)
-                        </label>
-                        <div className="px-3 py-2 bg-emerald-100/60 border border-emerald-200 rounded-xl text-xs font-bold text-emerald-900 flex items-center justify-between">
-                          <span>
-                            ৳ {prodBuyingPrice !== '' && !isNaN(Number(prodBuyingPrice))
-                              ? Math.max(0, Number(prodPrice) - Number(prodBuyingPrice)).toLocaleString()
-                              : '—'}
-                          </span>
-                          {prodBuyingPrice !== '' && !isNaN(Number(prodBuyingPrice)) && Number(prodBuyingPrice) > 0 && Number(prodPrice) > 0 && (
-                            <span className="text-[10px] font-semibold text-emerald-700">
-                              ({Math.round(((Number(prodPrice) - Number(prodBuyingPrice)) / Number(prodPrice)) * 100)}% margin)
-                            </span>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="block text-xs font-bold text-slate-700">
+                            Unit Profit (Auto Calculated)
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => setShowUnitProfit((prev) => !prev)}
+                            className="p-1 text-slate-400 hover:text-emerald-700 hover:bg-emerald-100/60 rounded-md transition-colors inline-flex items-center"
+                            title={showUnitProfit ? 'Hide Unit Profit' : 'Show Unit Profit'}
+                            aria-label={showUnitProfit ? 'Hide Unit Profit' : 'Show Unit Profit'}
+                          >
+                            {showUnitProfit ? (
+                              <EyeOff className="w-3.5 h-3.5 text-slate-600" />
+                            ) : (
+                              <Eye className="w-3.5 h-3.5 text-slate-500" />
+                            )}
+                          </button>
+                        </div>
+                        <div className="px-3 py-2 bg-emerald-100/60 border border-emerald-200 rounded-xl text-xs font-bold text-emerald-900 flex items-center justify-between min-h-[38px]">
+                          {showUnitProfit ? (
+                            <>
+                              <span>
+                                ৳ {prodBuyingPrice !== '' && !isNaN(Number(prodBuyingPrice))
+                                  ? Math.max(0, Number(prodPrice) - Number(prodBuyingPrice)).toLocaleString()
+                                  : '—'}
+                              </span>
+                              {prodBuyingPrice !== '' && !isNaN(Number(prodBuyingPrice)) && Number(prodBuyingPrice) > 0 && Number(prodPrice) > 0 && (
+                                <span className="text-[10px] font-semibold text-emerald-700">
+                                  ({Math.round(((Number(prodPrice) - Number(prodBuyingPrice)) / Number(prodPrice)) * 100)}% margin)
+                                </span>
+                              )}
+                            </>
+                          ) : (
+                            <span className="font-mono tracking-widest text-slate-500">••••••</span>
                           )}
                         </div>
                       </div>
