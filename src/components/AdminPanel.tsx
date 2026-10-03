@@ -149,7 +149,7 @@ interface ConfidentialProfitBadgeProps {
 }
 
 const ConfidentialProfitBadge: React.FC<ConfidentialProfitBadgeProps> = ({ profitVal }) => {
-  const [isVisible, setIsVisible] = useState(true);
+  const [isVisible, setIsVisible] = useState(false);
 
   const toggleVisibility = (e: React.MouseEvent<HTMLButtonElement>) => {
     e.preventDefault();
@@ -292,7 +292,7 @@ const AdminPanelContent: React.FC = () => {
   const [prodPrice, setProdPrice] = useState<number | string>(0);
   const [prodOriginalPrice, setProdOriginalPrice] = useState<number>(0);
   const [prodBuyingPrice, setProdBuyingPrice] = useState<number | string>('');
-  const [showBuyingPrice, setShowBuyingPrice] = useState(true);
+  const [showBuyingPrice, setShowBuyingPrice] = useState(false);
   const [showUnitProfit, setShowUnitProfit] = useState(false);
   const [prodCategory, setProdCategory] = useState('');
   const [prodDescription, setProdDescription] = useState('');
@@ -1108,6 +1108,7 @@ const AdminPanelContent: React.FC = () => {
     setProdPrice(1000);
     setProdOriginalPrice(1300);
     setProdBuyingPrice('');
+    setShowBuyingPrice(false);
     setShowUnitProfit(false);
     setProdCategory(categories[0]?.id || '');
     setProdDescription('');
@@ -1159,6 +1160,7 @@ const AdminPanelContent: React.FC = () => {
       ? product.buyingPrice
       : ((product as any).buying_price != null ? (product as any).buying_price : '');
     setProdBuyingPrice(initialBuyingPrice);
+    setShowBuyingPrice(false);
     setShowUnitProfit(false);
 
     if (isSuperAdmin || hasPermission('product.view_buying_price') || hasPermission('product.manage_buying_price')) {
