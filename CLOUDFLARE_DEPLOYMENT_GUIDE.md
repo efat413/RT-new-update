@@ -135,4 +135,26 @@ If you have an existing D1 database where credentials were previously saved in `
    - Or apply migration 0014: `npx wrangler d1 migrations apply rongdhonu-db --remote`
 4. The cleanup removes `steadfastApiKey` and `steadfastSecretKey` from D1 `settings_json` while preserving all other store branding and preferences.
 
+---
+
+## ⚡ Optimizing Cloudflare "Initializing build environment..."
+
+Cloudflare Pages and Cloudflare Workers Builds initialize a containerized environment before running the build command. The following optimizations have been configured to make this initialization fast, deterministic, and reliable:
+
+1. **`.node-version` & `.nvmrc`**:
+   - Pinned to `22` to match `package.json` `"engines": { "node": ">=20.0.0" }`.
+   - Prevents Cloudflare from defaulting to older Node versions or spending time resolving dynamic versions.
+
+2. **`package-lock.json`**:
+   - Generated a deterministic dependency tree.
+   - Allows Cloudflare and CI to install packages via `npm ci` without recalculating dependency trees on every build.
+
+3. **`.npmrc` (CI Build Optimization)**:
+   - Configured with `progress=false`, `audit=false`, `fund=false`, and `prefer-offline=true`.
+   - Disables terminal progress bars and security audits during automated container builds, significantly speeding up package extraction.
+
+4. **`wrangler.json` Build Scope**:
+   - Configured `"build.watch_dir": "src"` to prevent unnecessary triggers and isolate build monitoring to the application source code.
+
+
 
