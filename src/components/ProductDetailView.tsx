@@ -951,24 +951,6 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
           {activeTab === 'overview' && (
             <div className="pt-6 max-w-3xl space-y-6">
               <FormattedDescription content={product.description} />
-
-              {product.specs && product.specs.length > 0 && (
-                <div className="pt-2">
-                  <h3 className="text-sm font-bold text-slate-900 mb-3">Specifications</h3>
-                  <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-2xs divide-y divide-slate-100">
-                    {product.specs.map((spec, sIdx) => {
-                      const [key, ...rest] = spec.split(':');
-                      const value = rest.join(':');
-                      return (
-                        <div key={sIdx} className="grid grid-cols-3 p-3 sm:p-4 text-xs">
-                          <span className="font-bold text-slate-700">{key.trim()}</span>
-                          <span className="col-span-2 text-slate-600">{value ? value.trim() : spec}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
             </div>
           )}
 
