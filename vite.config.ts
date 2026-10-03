@@ -132,10 +132,10 @@ function localApiDevPlugin(): Plugin {
 
   const devSuperAdminEmails: string[] = configuredSuperAdminEmails.length > 0
     ? configuredSuperAdminEmails
-    : ['cmt413uec@gmail.com'];
+    : ['cmt413uec@gmail.com', 'dev-superadmin@local.test'];
 
   const devSuperAdminAccounts: any[] = devSuperAdminEmails.map((email, idx) => ({
-    id: configuredSuperAdminUserIds[idx] || `super-admin-${idx + 1}`,
+    id: configuredSuperAdminUserIds[idx] || (email === 'dev-superadmin@local.test' ? 'dev-super-admin-1' : `super-admin-${idx + 1}`),
     name: 'Super Administrator',
     email: email,
     role: 'super_admin',
@@ -150,8 +150,19 @@ function localApiDevPlugin(): Plugin {
     createdAt: '2026-01-01T00:00:00.000Z',
   }));
 
+  const devStaffAccount = {
+    id: 'user-subadmin-staff',
+    name: 'Sub Admin Staff',
+    email: 'staff@rongdhonutrade.com',
+    role: 'sub_admin',
+    permissions: {},
+    phone: '01700000001',
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+
   let devUsers: any[] = [
     ...devSuperAdminAccounts,
+    devStaffAccount,
     ...INITIAL_USERS.filter((u) => u.role !== 'super_admin'),
   ];
 
