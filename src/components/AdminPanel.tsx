@@ -257,7 +257,7 @@ const AdminPanelContent: React.FC = () => {
   const [prodOriginalPrice, setProdOriginalPrice] = useState<number>(0);
   const [prodBuyingPrice, setProdBuyingPrice] = useState<number | string>('');
   const [showBuyingPrice, setShowBuyingPrice] = useState(true);
-  const [showUnitProfit, setShowUnitProfit] = useState(true);
+  const [showUnitProfit, setShowUnitProfit] = useState(false);
   const [prodCategory, setProdCategory] = useState('');
   const [prodDescription, setProdDescription] = useState('');
   const [prodImage, setProdImage] = useState('');
@@ -1072,6 +1072,7 @@ const AdminPanelContent: React.FC = () => {
     setProdPrice(1000);
     setProdOriginalPrice(1300);
     setProdBuyingPrice('');
+    setShowUnitProfit(false);
     setProdCategory(categories[0]?.id || '');
     setProdDescription('');
     setShowDescPreview(false);
@@ -1122,6 +1123,7 @@ const AdminPanelContent: React.FC = () => {
       ? product.buyingPrice
       : ((product as any).buying_price != null ? (product as any).buying_price : '');
     setProdBuyingPrice(initialBuyingPrice);
+    setShowUnitProfit(false);
 
     if (isSuperAdmin || hasPermission('product.view_buying_price') || hasPermission('product.manage_buying_price')) {
       productsApi.getById(product.id).then((freshProduct) => {
@@ -7436,14 +7438,14 @@ const AdminPanelContent: React.FC = () => {
                       <div>
                         <div className="flex items-center justify-between mb-1">
                           <label className="block text-xs font-bold text-slate-700">
-                            Unit Profit (Auto Calculated)
+                            Unit Profit / Profit Amount (Auto Calculated)
                           </label>
                           <button
                             type="button"
                             onClick={() => setShowUnitProfit((prev) => !prev)}
                             className="p-1 text-slate-400 hover:text-emerald-700 hover:bg-emerald-100/60 rounded-md transition-colors inline-flex items-center"
-                            title={showUnitProfit ? 'Hide Unit Profit' : 'Show Unit Profit'}
-                            aria-label={showUnitProfit ? 'Hide Unit Profit' : 'Show Unit Profit'}
+                            title={showUnitProfit ? 'Hide Profit Amount' : 'Show Profit Amount'}
+                            aria-label={showUnitProfit ? 'Hide Profit Amount' : 'Show Profit Amount'}
                           >
                             {showUnitProfit ? (
                               <EyeOff className="w-3.5 h-3.5 text-slate-600" />
@@ -7467,7 +7469,7 @@ const AdminPanelContent: React.FC = () => {
                               )}
                             </>
                           ) : (
-                            <span className="font-mono tracking-widest text-slate-500">••••••</span>
+                            <span className="font-mono tracking-widest text-slate-500 font-semibold select-none">৳ ••••••</span>
                           )}
                         </div>
                       </div>
