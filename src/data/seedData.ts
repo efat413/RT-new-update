@@ -372,8 +372,6 @@ export const INITIAL_ORDERS: Order[] = [
       consignmentId: 'CSG-STF-99014',
       bookedAt: '2026-03-13T08:30:00.000Z',
     },
-    customerIp: '103.145.24.42',
-    isIpBlocked: false,
     createdAt: '2026-03-13T08:15:00.000Z',
   },
   {
@@ -405,8 +403,6 @@ export const INITIAL_ORDERS: Order[] = [
       transactionId: 'DBBL-TXN-771900',
     },
     shippingStatus: 'Processing',
-    customerIp: '103.112.54.18',
-    isIpBlocked: false,
     createdAt: '2026-03-13T09:45:00.000Z',
   },
   {
@@ -431,8 +427,6 @@ export const INITIAL_ORDERS: Order[] = [
     paymentMethod: 'cod',
     paymentStatus: 'DUE',
     shippingStatus: 'Pending',
-    customerIp: '103.205.71.95',
-    isIpBlocked: false,
     createdAt: '2026-03-13T10:15:00.000Z',
   }
 ];

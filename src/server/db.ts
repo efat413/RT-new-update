@@ -25,7 +25,6 @@ import {
   UserRow,
   ExpenseRow,
   PasswordResetTokenRow,
-  BlockedIpRow,
 } from './types';
 import {
   INITIAL_SETTINGS,
@@ -80,86 +79,6 @@ export async function getProductTableColumns(db: D1Database): Promise<Set<string
     'image_url', 'images_json', 'stock', 'featured', 'rating', 'reviews_count',
     'specs_json', 'sizes_json', 'colors_json', 'sku', 'status', 'created_at', 'updated_at'
   ]);
-}
-
-let cachedOrderTableColumns: Set<string> | null = null;
-
-export const EXPECTED_ORDER_COLUMNS = [
-  'id',
-  'order_number',
-  'user_id',
-  'user_email',
-  'customer_name',
-  'customer_phone',
-  'customer_address',
-  'customer_district',
-  'customer_zone',
-  'customer_notes',
-  'items_json',
-  'subtotal',
-  'delivery_fee',
-  'total_amount',
-  'coupon_code',
-  'discount_amount',
-  'payment_method',
-  'payment_status',
-  'transaction_id',
-  'shipping_status',
-  'courier_name',
-  'courier_waybill',
-  'consignment_id',
-  'courier_status',
-  'courier_booking_json',
-  'dbbl_details_json',
-  'card_details_json',
-  'last_courier_sync',
-  'total_cost',
-  'total_profit',
-  'customer_ip',
-  'created_at',
-  'updated_at',
-] as const;
-
-export async function getOrderTableColumns(db: D1Database, forceRefresh = false): Promise<Set<string>> {
-  if (!forceRefresh && cachedOrderTableColumns && cachedOrderTableColumns.size > 0) {
-    return cachedOrderTableColumns;
-  }
-  try {
-    const res = await db.prepare("SELECT name FROM pragma_table_info('orders')").all<{ name: string }>();
-    if (res.results && res.results.length > 0) {
-      cachedOrderTableColumns = new Set(res.results.map((r) => r.name.toLowerCase()));
-      return cachedOrderTableColumns;
-    }
-  } catch (err) {
-    console.warn('[D1] Could not query pragma_table_info for orders:', err);
-  }
-  return new Set([
-    'id', 'order_number', 'user_id', 'user_email',
-    'customer_name', 'customer_phone', 'customer_address', 'customer_district', 'customer_zone', 'customer_notes',
-    'items_json', 'subtotal', 'delivery_fee', 'total_amount', 'coupon_code', 'discount_amount',
-    'payment_method', 'payment_status', 'transaction_id',
-    'shipping_status', 'courier_name', 'courier_waybill', 'consignment_id', 'courier_status',
-    'courier_booking_json', 'dbbl_details_json', 'card_details_json', 'last_courier_sync',
-    'total_cost', 'total_profit', 'customer_ip', 'created_at', 'updated_at'
-  ]);
-}
-
-/**
- * Preflight schema verification for orders table (Requirement 5).
- * Inspects PRAGMA table_info('orders') and checks for missing expected columns.
- * Logs [ORDER_SCHEMA_MISMATCH] server-side if any expected columns are missing.
- * Does NOT perform dangerous runtime ALTER TABLE migrations during customer checkout requests.
- */
-export async function verifyOrderTableSchema(db: D1Database, forceRefresh = false): Promise<{
-  availableColumns: Set<string>;
-  missingColumns: string[];
-}> {
-  const available = await getOrderTableColumns(db, forceRefresh);
-  const missing = EXPECTED_ORDER_COLUMNS.filter((col) => !available.has(col));
-  if (missing.length > 0) {
-    console.error(`[ORDER_SCHEMA_MISMATCH]\nMissing columns:\n${missing.join(', ')}`);
-  }
-  return { availableColumns: available, missingColumns: missing };
 }
 
 /**
@@ -249,7 +168,6 @@ export interface SanitizationOptions {
   isSuperAdmin?: boolean;
   canViewBuyingPrice?: boolean;
   canViewProfit?: boolean;
-  canViewIp?: boolean;
 }
 
 /**
@@ -314,7 +232,6 @@ export function sanitizeOrderForRole(
   const isSuper = typeof roleOrOptions === 'boolean' ? roleOrOptions : Boolean(roleOrOptions?.isSuperAdmin);
   const canViewBuyingPrice = isSuper || (typeof roleOrOptions === 'object' && Boolean(roleOrOptions.canViewBuyingPrice));
   const canViewProfit = isSuper || (typeof roleOrOptions === 'object' && Boolean(roleOrOptions.canViewProfit));
-  const canViewIp = isSuper || (typeof roleOrOptions === 'object' && Boolean(roleOrOptions.canViewIp));
 
   const safeItems = (order.items || []).map((item) => {
     const safeProduct = sanitizeProductForRole(item.product, { isSuperAdmin: isSuper, canViewBuyingPrice, canViewProfit });
@@ -363,16 +280,6 @@ export function sanitizeOrderForRole(
     delete safeOrder.netProfit;
     delete safeOrder.net_profit;
     delete safeOrder.profit;
-  }
-
-  if (canViewIp) {
-    if (order.customerIp) safeOrder.customerIp = order.customerIp;
-    if (order.isIpBlocked !== undefined) safeOrder.isIpBlocked = Boolean(order.isIpBlocked);
-  } else {
-    delete safeOrder.customerIp;
-    delete safeOrder.customer_ip;
-    delete safeOrder.isIpBlocked;
-    delete safeOrder.is_ip_blocked;
   }
 
   return safeOrder as Order;
@@ -2405,7 +2312,6 @@ export function rowToOrder(row: OrderRow): Order {
     lastCourierSync: row.last_courier_sync || undefined,
     totalCost: row.total_cost != null ? Number(row.total_cost) : (items.reduce((s: number, it: any) => s + (Number(it.productCost) || (Number(it.buyingPriceSnapshot || it.product?.buyingPrice || 0) * (Number(it.quantity) || 1))), 0)),
     totalGrossProfit: row.total_profit != null ? Number(row.total_profit) : Math.max(0, (Number(row.subtotal) || 0) - (row.total_cost != null ? Number(row.total_cost) : (items.reduce((s: number, it: any) => s + (Number(it.productCost) || (Number(it.buyingPriceSnapshot || it.product?.buyingPrice || 0) * (Number(it.quantity) || 1))), 0)))),
-    customerIp: (row as any).customer_ip || undefined,
     createdAt: row.created_at,
   };
 }
@@ -2909,8 +2815,28 @@ export async function insertOrder(db: D1Database, order: Order): Promise<Order> 
     customerFullAddress = `${customerFullAddress}, ${order.customer.area.trim()}`;
   }
 
-  // 9. Preflight Schema Verification & Dynamic Column Mapping (Requirement 5 & 7)
-  const { availableColumns: orderCols } = await verifyOrderTableSchema(db);
+  // 9. Construct atomic D1 batch transaction (order insertion + stock deductions)
+  const insertSql = `
+    INSERT INTO orders (
+      id, order_number, user_id, user_email,
+      customer_name, customer_phone, customer_address, customer_district, customer_zone, customer_notes,
+      items_json, subtotal, delivery_fee, total_amount, coupon_code, discount_amount,
+      payment_method, payment_status, transaction_id,
+      shipping_status, courier_name, courier_waybill, consignment_id, courier_status,
+      courier_booking_json, dbbl_details_json, card_details_json, last_courier_sync,
+      total_cost, total_profit,
+      created_at, updated_at
+    ) VALUES (
+      ?, ?, ?, ?,
+      ?, ?, ?, ?, ?, ?,
+      ?, ?, ?, ?, ?, ?,
+      ?, ?, ?,
+      ?, ?, ?, ?, ?,
+      ?, ?, ?, ?,
+      ?, ?,
+      ?, CURRENT_TIMESTAMP
+    );
+  `;
 
   const stockStatements = verifiedItems.map((it) => {
     const qty = Number(it.quantity) || 1;
@@ -2926,65 +2852,41 @@ export async function insertOrder(db: D1Database, order: Order): Promise<Order> 
   let collisionRetries = 0;
 
   while (!batchSuccess && collisionRetries < maxRetries) {
-    // Dynamically pair column names and bind values based on verified table schema
-    // Guarantees 100% exact 1-to-1 match between SQL placeholders and .bind() parameters
-    const insertFields: Array<{ col: string; val: any }> = [
-      { col: 'id', val: orderId },
-      { col: 'order_number', val: currentOrderNumber },
-      { col: 'user_id', val: order.userId || null },
-      { col: 'user_email', val: order.userEmail || null },
-      { col: 'customer_name', val: order.customer.fullName.trim() },
-      { col: 'customer_phone', val: cleanCustomerPhone },
-      { col: 'customer_address', val: customerFullAddress },
-      { col: 'customer_district', val: order.customer.district || null },
-      { col: 'customer_zone', val: deliveryZone },
-      { col: 'customer_notes', val: order.customer.notes || null },
-      { col: 'items_json', val: JSON.stringify(verifiedItems) },
-      { col: 'subtotal', val: authoritativeSubtotal },
-      { col: 'delivery_fee', val: authoritativeDeliveryFee },
-      { col: 'total_amount', val: authoritativeTotalAmount },
-      { col: 'coupon_code', val: finalCouponCode },
-      { col: 'discount_amount', val: authoritativeDiscount },
-      { col: 'payment_method', val: paymentMethod },
-      { col: 'payment_status', val: paymentStatus },
-      { col: 'transaction_id', val: order.transactionId || null },
-      { col: 'shipping_status', val: shippingStatus },
-      { col: 'courier_name', val: null },
-      { col: 'courier_waybill', val: null },
-      { col: 'consignment_id', val: null },
-      { col: 'courier_status', val: null },
-      { col: 'courier_booking_json', val: null },
-      { col: 'dbbl_details_json', val: order.dbblDetails ? JSON.stringify(order.dbblDetails) : null },
-      { col: 'card_details_json', val: null },
-      { col: 'last_courier_sync', val: null },
-    ];
-
-    if (orderCols.has('total_cost')) {
-      insertFields.push({ col: 'total_cost', val: totalOrderCost });
-    }
-    if (orderCols.has('total_profit')) {
-      insertFields.push({ col: 'total_profit', val: totalGrossProfit });
-    }
-    if (orderCols.has('customer_ip')) {
-      insertFields.push({ col: 'customer_ip', val: order.customerIp || null });
-    }
-    insertFields.push({ col: 'created_at', val: order.createdAt || new Date().toISOString() });
-
-    const colNames = insertFields.map((f) => f.col).join(', ');
-    const placeholders = insertFields.map(() => '?').join(', ');
-    const bindParams = insertFields.map((f) => f.val);
-
-    const activeInsertSql = `
-      INSERT INTO orders (
-        ${colNames},
-        updated_at
-      ) VALUES (
-        ${placeholders},
-        CURRENT_TIMESTAMP
-      )
-    `;
-
-    const orderInsertStmt = db.prepare(activeInsertSql).bind(...bindParams);
+    const orderInsertStmt = db
+      .prepare(insertSql)
+      .bind(
+        orderId,
+        currentOrderNumber,
+        order.userId || null,
+        order.userEmail || null,
+        order.customer.fullName.trim(),
+        cleanCustomerPhone,
+        customerFullAddress,
+        order.customer.district || null,
+        deliveryZone,
+        order.customer.notes || null,
+        JSON.stringify(verifiedItems),
+        authoritativeSubtotal,
+        authoritativeDeliveryFee,
+        authoritativeTotalAmount,
+        finalCouponCode,
+        authoritativeDiscount,
+        paymentMethod,
+        paymentStatus,
+        order.transactionId || null,
+        shippingStatus,
+        null, // Courier name initial null
+        null, // Courier waybill initial null
+        null, // Consignment ID initial null
+        null, // Courier status initial null
+        null,
+        order.dbblDetails ? JSON.stringify(order.dbblDetails) : null,
+        null,
+        null,
+        totalOrderCost,
+        totalGrossProfit,
+        order.createdAt || new Date().toISOString()
+      );
 
     try {
       const batchResults = await db.batch([orderInsertStmt, ...stockStatements]);
@@ -3000,7 +2902,7 @@ export async function insertOrder(db: D1Database, order: Order): Promise<Order> 
           throw new Error('One or more items in your cart sold out during checkout. Please refresh your cart.');
         }
         console.error('Database transaction error during order placement batch:', errorText);
-        throw new Error(`Database transaction failed during order placement: ${errorText}`);
+        throw new Error('Database transaction failed during order placement.');
       }
 
       // Verify that every stock update statement actually affected exactly 1 row
@@ -3782,123 +3684,3 @@ export async function checkAndRecordWebhookFingerprint(
     return { isReplay: false };
   }
 }
-
-// ==============================================================
-// 13. BLOCKED IPS DATABASE OPERATIONS (Server-Authoritative IP Blocklist)
-// ==============================================================
-
-/**
- * Validates IP address format (IPv4, IPv6, localhost, loopback) to prevent SQL injection or arbitrary data
- */
-export function isValidIpAddress(ip: string): boolean {
-  if (!ip || typeof ip !== 'string') return false;
-  const clean = ip.trim();
-  // IPv4 standard format: e.g. 192.168.1.1
-  const ipv4Regex = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
-  if (ipv4Regex.test(clean)) return true;
-  // IPv6 format check: e.g. 2001:db8::1 or standard colon separation
-  if (clean.includes(':') && /^[0-9a-fA-F:]+$/.test(clean) && clean.length >= 2 && clean.length <= 45) {
-    return true;
-  }
-  // Local development / loopback fallbacks
-  if (clean === 'localhost' || clean === '127.0.0.1' || clean === '::1' || clean.startsWith('cf-ray-')) {
-    return true;
-  }
-  return false;
-}
-
-/**
- * Checks whether an IP address is present in the D1 blocked_ips table
- */
-export async function isIpAddressBlocked(db: D1Database, ip: string): Promise<boolean> {
-  if (!ip || !ip.trim()) return false;
-  try {
-    const row = await db
-      .prepare('SELECT id FROM blocked_ips WHERE ip_address = ? LIMIT 1')
-      .bind(ip.trim())
-      .first<{ id: string }>();
-    return Boolean(row);
-  } catch (err: any) {
-    return false;
-  }
-}
-
-/**
- * Retrieves details for a specific blocked IP record from D1
- */
-export async function getBlockedIpDetails(db: D1Database, ip: string): Promise<BlockedIpRow | null> {
-  if (!ip || !ip.trim()) return null;
-  try {
-    return await db
-      .prepare('SELECT * FROM blocked_ips WHERE ip_address = ? LIMIT 1')
-      .bind(ip.trim())
-      .first<BlockedIpRow>();
-  } catch (err) {
-    console.error('Error fetching blocked_ip in D1:', err);
-    return null;
-  }
-}
-
-/**
- * Retrieves all blocked IP records from D1 (ordered by newest first)
- */
-export async function getAllBlockedIps(db: D1Database): Promise<BlockedIpRow[]> {
-  try {
-    const res = await db
-      .prepare('SELECT * FROM blocked_ips ORDER BY blocked_at DESC')
-      .all<BlockedIpRow>();
-    return res.results || [];
-  } catch (err) {
-    return [];
-  }
-}
-
-/**
- * Blocks an IP address server-side in D1
- */
-export async function blockIpAddress(
-  db: D1Database,
-  ip: string,
-  options: { reason?: string; blockedBy?: string }
-): Promise<BlockedIpRow> {
-  const cleanIp = ip.trim();
-  const id = `blk-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-  const now = new Date().toISOString();
-  await db
-    .prepare(`
-      INSERT INTO blocked_ips (id, ip_address, reason, blocked_by, blocked_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(ip_address) DO UPDATE SET
-        reason = excluded.reason,
-        blocked_by = excluded.blocked_by,
-        updated_at = excluded.updated_at
-    `)
-    .bind(
-      id,
-      cleanIp,
-      options.reason?.trim() || null,
-      options.blockedBy?.trim() || null,
-      now,
-      now
-    )
-    .run();
-
-  const saved = await getBlockedIpDetails(db, cleanIp);
-  if (!saved) {
-    throw new Error('Failed to retrieve blocked IP entry from D1 after insert.');
-  }
-  return saved;
-}
-
-/**
- * Unblocks an IP address server-side in D1
- */
-export async function unblockIpAddress(db: D1Database, ip: string): Promise<boolean> {
-  const cleanIp = ip.trim();
-  const res = await db
-    .prepare('DELETE FROM blocked_ips WHERE ip_address = ?')
-    .bind(cleanIp)
-    .run();
-  return Boolean(res.success);
-}
-

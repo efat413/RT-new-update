@@ -20,10 +20,6 @@ export const PERMISSION_KEYS = [
   'order.status_change',
   'order.cancel',
   'order.delete',
-  'orders.view_ip',
-  'orders.block_ip',
-  'order.view_ip',
-  'order.block_ip',
 
   // Customer Permissions
   'customer.view',
@@ -227,42 +223,6 @@ export const PERMISSIONS_METADATA: Record<PermissionKey, PermissionMetadata> = {
     superAdminOnly: false,
     sensitive: false,
     dangerous: true,
-  },
-  'orders.view_ip': {
-    key: 'orders.view_ip',
-    group: 'Order',
-    displayName: 'View customer IP addresses',
-    description: 'View customer originating IP addresses on order details.',
-    superAdminOnly: false,
-    sensitive: true,
-    dangerous: false,
-  },
-  'orders.block_ip': {
-    key: 'orders.block_ip',
-    group: 'Order',
-    displayName: 'Block/Unblock customer IP addresses',
-    description: 'Block or unblock customer IP addresses from placing orders.',
-    superAdminOnly: false,
-    sensitive: true,
-    dangerous: false,
-  },
-  'order.view_ip': {
-    key: 'order.view_ip',
-    group: 'Order',
-    displayName: 'View customer IP addresses',
-    description: 'View customer originating IP addresses on order details.',
-    superAdminOnly: false,
-    sensitive: true,
-    dangerous: false,
-  },
-  'order.block_ip': {
-    key: 'order.block_ip',
-    group: 'Order',
-    displayName: 'Block/Unblock customer IP addresses',
-    description: 'Block or unblock customer IP addresses from placing orders.',
-    superAdminOnly: false,
-    sensitive: true,
-    dangerous: false,
   },
 
   // Customer
@@ -509,10 +469,6 @@ export const DEFAULT_ADMIN_1_PERMISSIONS: Readonly<Record<PermissionKey, boolean
   'order.status_change': true,
   'order.cancel': true,
   'order.delete': false,
-  'orders.view_ip': false,
-  'orders.block_ip': false,
-  'order.view_ip': false,
-  'order.block_ip': false,
 
   'customer.view': true,
   'customer.manage': true,
@@ -566,10 +522,6 @@ export const DEFAULT_ADMIN_2_PERMISSIONS: Readonly<Record<PermissionKey, boolean
   'order.status_change': true,
   'order.cancel': false,
   'order.delete': false,
-  'orders.view_ip': false,
-  'orders.block_ip': false,
-  'order.view_ip': false,
-  'order.block_ip': false,
 
   'customer.view': false,
   'customer.manage': false,
@@ -621,10 +573,6 @@ export const DEFAULT_SUB_ADMIN_PERMISSIONS: Readonly<Record<PermissionKey, boole
   'order.status_change': false,
   'order.cancel': false,
   'order.delete': false,
-  'orders.view_ip': false,
-  'orders.block_ip': false,
-  'order.view_ip': false,
-  'order.block_ip': false,
 
   'customer.view': false,
   'customer.manage': false,
@@ -792,16 +740,6 @@ export function resolveUserPermissions(
     const hasProfit = Boolean(parsed['report.profit'] || parsed['product.view_profit']);
     base['report.profit'] = hasProfit;
     base['product.view_profit'] = hasProfit;
-  }
-  if ('orders.view_ip' in parsed || 'order.view_ip' in parsed) {
-    const hasViewIp = Boolean(parsed['orders.view_ip'] || parsed['order.view_ip']);
-    base['orders.view_ip'] = hasViewIp;
-    base['order.view_ip'] = hasViewIp;
-  }
-  if ('orders.block_ip' in parsed || 'order.block_ip' in parsed) {
-    const hasBlockIp = Boolean(parsed['orders.block_ip'] || parsed['order.block_ip']);
-    base['orders.block_ip'] = hasBlockIp;
-    base['order.block_ip'] = hasBlockIp;
   }
 
   // STRICT PRIVILEGE RESTRICTION:

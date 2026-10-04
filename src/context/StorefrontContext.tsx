@@ -1044,14 +1044,13 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     const res = await orderApi.createOrder(newOrder, idempotencyKey);
     if (!res.success) {
-      const displayError = res.error || 'Unable to place the order right now. Please try again.';
       showNotification(
         'error',
         'Order Placement Failed',
-        displayError,
+        res.error || 'Could not save order to database. Please check connection and try again.',
         6000
       );
-      throw new Error(displayError);
+      throw new Error(res.error || 'Failed to save order');
     }
 
     const canonicalOrder: Order = res.order || newOrder;

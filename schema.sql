@@ -170,7 +170,6 @@ CREATE TABLE IF NOT EXISTS orders (
   dbbl_details_json TEXT,
   card_details_json TEXT,
   last_courier_sync TEXT,
-  customer_ip TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -182,20 +181,6 @@ CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at);
 CREATE INDEX IF NOT EXISTS idx_orders_shipping_status_created_at ON orders(shipping_status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_orders_payment_status_created_at ON orders(payment_status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_orders_payment_method_created_at ON orders(payment_method, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_orders_customer_ip ON orders(customer_ip);
-
--- 8A. BLOCKED IPS TABLE (Server-Authoritative IP Blocklist)
-CREATE TABLE IF NOT EXISTS blocked_ips (
-  id TEXT PRIMARY KEY,
-  ip_address TEXT NOT NULL UNIQUE,
-  reason TEXT,
-  blocked_by TEXT,
-  blocked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_blocked_ips_address ON blocked_ips(ip_address);
-CREATE INDEX IF NOT EXISTS idx_blocked_ips_blocked_at ON blocked_ips(blocked_at);
 
 -- 8B. EXPENSES TABLE (Super Admin Profit Analytics & Expense Tracking)
 CREATE TABLE IF NOT EXISTS expenses (

@@ -79,13 +79,6 @@ import {
   getPaginatedAuditLogsFromD1,
   findOrderByCourierIdentifier,
   checkAndRecordWebhookFingerprint,
-  // Blocked IPs & IP Tracking
-  isIpAddressBlocked,
-  isValidIpAddress,
-  getBlockedIpDetails,
-  getAllBlockedIps,
-  blockIpAddress,
-  unblockIpAddress,
 } from './db';
 import {
   Order,
@@ -381,22 +374,22 @@ export function getClientIp(request: Request, isDev?: boolean): string {
   // 1. Authoritative Cloudflare edge header (set securely by Cloudflare network in production)
   const cfIp = request.headers.get('cf-connecting-ip');
   if (cfIp && cfIp.trim()) {
-    return cfIp.trim().replace(/^::ffff:/, '');
+    return cfIp.trim();
   }
   const trueClientIp = request.headers.get('true-client-ip');
   if (trueClientIp && trueClientIp.trim()) {
-    return trueClientIp.trim().replace(/^::ffff:/, '');
+    return trueClientIp.trim();
   }
 
   // 2. Safe local development / testing fallback (only allowed when isDev is explicitly true)
   if (isDev) {
     const xff = request.headers.get('x-forwarded-for');
     if (xff && xff.trim()) {
-      return xff.split(',')[0].trim().replace(/^::ffff:/, '');
+      return xff.split(',')[0].trim();
     }
     const realIp = request.headers.get('x-real-ip');
     if (realIp && realIp.trim()) {
-      return realIp.trim().replace(/^::ffff:/, '');
+      return realIp.trim();
     }
     return '127.0.0.1';
   }
@@ -480,15 +473,9 @@ async function checkRateLimit(
           await db.prepare('DELETE FROM rate_limits WHERE key = ?').bind(key).run().catch(() => {});
         }
       }
-    } catch (err: any) {
-      const errMsg = err?.message || String(err);
-      if (errMsg.includes('no such table') || errMsg.includes('rate_limits')) {
-        console.error('[RATE_LIMIT_SCHEMA_MISMATCH] rate_limits table missing in D1:', errMsg);
-        // Fall back to Tier 1 in-memory limiter without blocking all legitimate checkouts
-        return { allowed: true };
-      }
+    } catch (err) {
       console.error('[RateLimit Error] Rate limits table check failed in D1:', err);
-      // Security: Non-schema transient errors default to safe rate limit wait
+      // Security: Rate-limit failures must not silently result in allowed: true
       return { allowed: false, remainingSeconds: 60 };
     }
   }
@@ -3682,22 +3669,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const isSuperAdmin = auth!.role === 'super_admin';
       const canViewBuyingPrice = hasPermission(auth!, 'product.view_buying_price') || isSuperAdmin;
       const canViewProfit = hasPermission(auth!, 'report.profit') || hasPermission(auth!, 'product.view_profit') || isSuperAdmin;
-      const canViewIp = hasPermission(auth!, 'orders.view_ip') || hasPermission(auth!, 'order.view_ip') || isSuperAdmin;
-
-      let blockedIpSet = new Set<string>();
-      if (canViewIp && env.DB) {
-        try {
-          const blockedRows = await getAllBlockedIps(env.DB);
-          blockedIpSet = new Set(blockedRows.map((r) => r.ip_address));
-        } catch {}
-      }
-
-      const safeOrders = paginated.orders.map((o) => {
-        if (canViewIp && o.customerIp) {
-          o.isIpBlocked = blockedIpSet.has(o.customerIp);
-        }
-        return sanitizeOrderForRole(o, { isSuperAdmin, canViewBuyingPrice, canViewProfit, canViewIp });
-      });
+      const safeOrders = paginated.orders.map((o) =>
+        sanitizeOrderForRole(o, { isSuperAdmin, canViewBuyingPrice, canViewProfit })
+      );
 
       return jsonResponse({
         success: true,
@@ -3718,33 +3692,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
   }
 
   if (path === '/api/orders' && method === 'POST') {
-    let stage = 'init';
-    let orderId = '';
-    let orderNumber = '';
-    let productCount = 0;
-    let paymentMethod = 'COD';
-
     try {
-      stage = 'abuse_checks';
       cleanupOrderAbuseMaps();
       const isDev = isDevEnvironment(env);
       const clientIp = getClientIp(request, isDev);
-
-      // 0. Server-Side IP Blocklist Enforcement (Requirement 7)
-      // Check D1 blocked_ips table BEFORE processing order request.
-      if (clientIp && env.DB) {
-        const isBlocked = await isIpAddressBlocked(env.DB, clientIp);
-        if (isBlocked) {
-          // Reject order server-side with a safe, generic message (do not leak block details to client)
-          return jsonResponse(
-            {
-              success: false,
-              error: 'Order could not be processed. Please contact support.',
-            },
-            403
-          );
-        }
-      }
 
       // 1. Abuse Protection: Short burst protection (maximum 2 order submissions in 10 seconds per IP)
       const burstCheck = await checkRateLimit(`order_burst:${clientIp}`, 2, 10, env.DB);
@@ -3784,7 +3735,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         );
       }
 
-      stage = 'parse_payload';
       const body = (await request.json().catch(() => ({}))) as any;
       const orderData: Order = body.order || body;
 
@@ -3792,12 +3742,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         return jsonResponse({ success: false, error: 'Invalid order payload.' }, 400);
       }
 
-      productCount = Array.isArray(orderData.items) ? orderData.items.length : 0;
-      paymentMethod = orderData.paymentMethod || 'COD';
-      orderId = (orderData.id || '').trim();
-      orderNumber = (orderData.orderNumber || '').trim();
-
-      stage = 'identity_resolution';
       // Authoritative Identity Determination:
       // If user is authenticated, derive userId & userEmail authoritatively from verified token.
       // If user is guest/unauthenticated, strip client-supplied userId and userEmail to prevent account impersonation.
@@ -3820,7 +3764,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         orderData.userEmail = undefined;
       }
 
-      stage = 'customer_validation';
       if (!orderData.customer?.fullName || !orderData.customer?.phone || !orderData.customer?.fullAddress) {
         return jsonResponse({ success: false, error: 'Missing required customer delivery information.' }, 400);
       }
@@ -3830,7 +3773,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         return jsonResponse({ success: false, error: 'A valid 11-digit Bangladeshi contact phone number is required.' }, 400);
       }
 
-      stage = 'phone_rate_limits';
       // 2b. Abuse Protection: Phone-based throttling (burst protection: max 2 in 60s; sustained: max 6 in 1 hour)
       const phoneBurstCheck = await checkRateLimit(`order_ph_burst:${cleanPhone}`, 2, 60, env.DB);
       if (!phoneBurstCheck.allowed) {
@@ -3860,7 +3802,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         );
       }
 
-      stage = 'idempotency_check';
       // 3. Duplicate & Idempotency Protection: Client-provided idempotency key with persistent D1 storage
       const idempotencyKey = (
         request.headers.get('idempotency-key') ||
@@ -3887,13 +3828,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
                 });
               }
             }
-          } catch (idemErr: any) {
-            const errStr = idemErr?.message || String(idemErr);
-            if (errStr.includes('no such table')) {
-              console.error('[IDEMPOTENCY_SCHEMA_MISMATCH] order_idempotency table missing in D1:', errStr);
-            } else {
-              console.error('[Idempotency Error] Error checking D1 order_idempotency:', idemErr);
-            }
+          } catch (idemErr) {
+            console.error('[Idempotency Error] Error checking D1 order_idempotency:', idemErr);
           }
         }
 
@@ -3912,7 +3848,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         }
       }
 
-      stage = 'duplicate_click_check';
       // 4. Duplicate Click Protection: Rapid double-click within 15 seconds from same phone & IP
       const itemsCount = Array.isArray(orderData.items) ? orderData.items.length : 0;
       const doubleClickFingerprint = `${clientIp}:${cleanPhone}:${itemsCount}`;
@@ -3929,14 +3864,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         );
       }
 
-      stage = 'insert_order_and_stock_batch';
       // 5. Server-side authoritative validation, pricing calculation & stock deduction via insertOrder
-      orderData.customerIp = clientIp;
-      delete (orderData as any).customer_ip;
-
       const saved = await insertOrder(env.DB, orderData);
-      orderId = saved.id;
-      orderNumber = saved.orderNumber;
 
       // Record rate limit attempts for phone throttling
       await Promise.all([
@@ -3944,7 +3873,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         recordFailedAttempt(`order_ph_hour:${cleanPhone}`, 6, 3600, env.DB),
       ]);
 
-      stage = 'idempotency_cache';
       // Cache for idempotency & rapid duplicate avoidance (both persistent D1 and memory)
       if (idempotencyKey) {
         orderIdempotencyMap.set(idempotencyKey, { order: saved, timestamp: Date.now() });
@@ -3961,19 +3889,13 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
               VALUES (?, ?, ?, ?, ?)
               ON CONFLICT(key) DO UPDATE SET response_json = excluded.response_json
             `).bind(idempotencyKey, saved.id, saved.orderNumber, JSON.stringify(idempotentPayload), Date.now()).run();
-          } catch (idemSaveErr: any) {
-            const errStr = idemSaveErr?.message || String(idemSaveErr);
-            if (errStr.includes('no such table')) {
-              console.error('[IDEMPOTENCY_SCHEMA_MISMATCH] order_idempotency table missing in D1 on save:', errStr);
-            } else {
-              console.error('[Idempotency Error] Error saving order_idempotency to D1:', idemSaveErr);
-            }
+          } catch (idemSaveErr) {
+            console.error('[Idempotency Error] Error saving order_idempotency to D1:', idemSaveErr);
           }
         }
       }
       orderRecentSubmissionMap.set(doubleClickFingerprint, { order: saved, timestamp: Date.now() });
 
-      stage = 'complete';
       return jsonResponse(
         {
           success: true,
@@ -3983,57 +3905,27 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         201
       );
     } catch (err: any) {
-      const errMsg = err?.message || String(err);
-      const errType = err?.name || 'Error';
-
-      // Structured logging for Cloudflare Worker diagnostics (Section 2)
-      // Never log sensitive credentials, payment tokens, or full card details
-      console.error(
-        `[ORDER_CREATE_ERROR]\n` +
-        `stage: ${stage}\n` +
-        `error type: ${errType}\n` +
-        `error message: ${errMsg}\n` +
-        `order id: ${orderId || 'none'}\n` +
-        `order number: ${orderNumber || 'none'}\n` +
-        `product count: ${productCount}\n` +
-        `payment method: ${paymentMethod}`
-      );
-      if (err?.stack) {
-        console.error('[ORDER_CREATE_ERROR_STACK]', err.stack);
-      }
-
+      console.error('Error saving order to D1:', err);
+      const errMsg = err?.message || '';
       const isClientValidationError = [
         'required',
-        'bangladeshi contact phone number',
-        'invalid phone',
+        'Bangladeshi contact phone number',
         'restricted for this contact number',
-        'blocked contact number',
-        'daily order limit',
-        'order limit reached',
+        'Daily order limit',
         'at least one item',
-        'missing a valid product id',
-        'invalid item quantity',
-        'insufficient stock',
+        'missing a valid product ID',
+        'Invalid item quantity',
+        'Insufficient stock',
         'sold out during checkout',
         'does not exist',
         'already exists',
-        'duplicate submission',
-        'empty cart',
-      ].some((pattern) => errMsg.toLowerCase().includes(pattern.toLowerCase()));
+      ].some((pattern) => errMsg.includes(pattern));
 
       const hasSqlOrDbLeak = /sqlite|syntax error|d1_error|table |column |foreign key|prepare|bind|database/i.test(errMsg);
       if (isClientValidationError && !hasSqlOrDbLeak) {
         return jsonResponse({ success: false, error: errMsg }, 400);
       }
-
-      // Safe customer-facing 500 response (Requirement 2 & 13)
-      return jsonResponse(
-        {
-          success: false,
-          error: 'Unable to place the order right now. Please try again.',
-        },
-        500
-      );
+      return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
     }
   }
 
@@ -4059,15 +3951,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           const isSuperAdmin = authRes.auth.role === 'super_admin';
           const canViewBuyingPrice = hasPermission(authRes.auth, 'product.view_buying_price') || isSuperAdmin;
           const canViewProfit = hasPermission(authRes.auth, 'report.profit') || hasPermission(authRes.auth, 'product.view_profit') || isSuperAdmin;
-          const canViewIp = hasPermission(authRes.auth, 'orders.view_ip') || hasPermission(authRes.auth, 'order.view_ip') || isSuperAdmin;
-
-          if (canViewIp && order.customerIp && env.DB) {
-            order.isIpBlocked = await isIpAddressBlocked(env.DB, order.customerIp);
-          }
-
           return jsonResponse({
             success: true,
-            order: sanitizeOrderForRole(order, { isSuperAdmin, canViewBuyingPrice, canViewProfit, canViewIp }),
+            order: sanitizeOrderForRole(order, { isSuperAdmin, canViewBuyingPrice, canViewProfit }),
           });
         }
 
@@ -4241,24 +4127,15 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           if (permErr) return permErr;
         }
 
-        // Prevent tampering with recorded IP address
-        delete (updates as any).customerIp;
-        delete (updates as any).customer_ip;
-
         const updated = await updateOrderInD1(env.DB, orderId, updates);
         const isSuperAdmin = auth!.role === 'super_admin';
         const canViewBuyingPrice = hasPermission(auth!, 'product.view_buying_price') || isSuperAdmin;
         const canViewProfit = hasPermission(auth!, 'report.profit') || hasPermission(auth!, 'product.view_profit') || isSuperAdmin;
-        const canViewIp = hasPermission(auth!, 'orders.view_ip') || hasPermission(auth!, 'order.view_ip') || isSuperAdmin;
-
-        if (canViewIp && updated.customerIp && env.DB) {
-          updated.isIpBlocked = await isIpAddressBlocked(env.DB, updated.customerIp);
-        }
 
         return jsonResponse({
           success: true,
           message: `Order #${updated.orderNumber} successfully updated in Cloudflare D1!`,
-          order: sanitizeOrderForRole(updated, { isSuperAdmin, canViewBuyingPrice, canViewProfit, canViewIp }),
+          order: sanitizeOrderForRole(updated, { isSuperAdmin, canViewBuyingPrice, canViewProfit }),
         });
       } catch (err: any) {
         console.error('Error updating order in D1:', err);
@@ -4283,329 +4160,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         });
       } catch (err: any) {
         console.error('Error deleting order from D1:', err);
-        return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
-      }
-    }
-  }
-
-  // ==========================================
-  // 8.1 ORDER IP BLOCKING & UNBLOCKING ROUTES (RBAC: orders.block_ip)
-  // ==========================================
-  const orderBlockIpMatch = path.match(/^\/api\/orders\/([^/]+)\/block-ip$/);
-  if (orderBlockIpMatch) {
-    const orderId = decodeURIComponent(orderBlockIpMatch[1]);
-
-    if (method === 'POST') {
-      const { auth, errorResponse } = await requireAuth(request, env);
-      if (errorResponse) return errorResponse;
-
-      const canBlockIp =
-        auth!.role === 'super_admin' ||
-        hasPermission(auth!, 'orders.block_ip') ||
-        hasPermission(auth!, 'order.block_ip');
-
-      if (!canBlockIp) {
-        return jsonResponse(
-          {
-            success: false,
-            error: 'Forbidden: Insufficient permissions to block customer IP addresses.',
-            requiredPermission: 'orders.block_ip',
-          },
-          403
-        );
-      }
-
-      try {
-        const order = await getOrderById(env.DB, orderId);
-        if (!order) {
-          return jsonResponse({ success: false, error: 'Order not found.' }, 404);
-        }
-
-        const body = (await request.json().catch(() => ({}))) as any;
-        const targetIp = (body?.ipAddress || order.customerIp || '').trim();
-
-        if (!targetIp) {
-          return jsonResponse({ success: false, error: 'No IP address recorded for this order.' }, 400);
-        }
-
-        if (!isValidIpAddress(targetIp)) {
-          return jsonResponse({ success: false, error: 'Invalid IP address format.' }, 400);
-        }
-
-        const reason = (body?.reason || '').trim() || `Blocked from Order #${order.orderNumber}`;
-        const blockedBy = auth!.dbUser?.email || auth!.tokenUser?.email || 'admin';
-
-        const blockedEntry = await blockIpAddress(env.DB, targetIp, { reason, blockedBy });
-
-        // Record audit log
-        await insertAuditLogInD1(env.DB, {
-          actorId: auth!.dbUser?.id || auth!.tokenUser?.userId || 'admin',
-          actorEmail: blockedBy,
-          actorRole: auth!.role,
-          action: 'IP_BLOCK',
-          targetId: targetIp,
-          targetType: 'blocked_ips',
-          details: `Blocked customer IP ${targetIp} from Order #${order.orderNumber}. Reason: ${reason}`,
-          ipAddress: getClientIp(request),
-        }).catch((err) => console.warn('Audit log write error for IP_BLOCK:', err));
-
-        return jsonResponse({
-          success: true,
-          message: `IP ${targetIp} has been blocked successfully. Future public orders from this IP will be rejected.`,
-          ipAddress: targetIp,
-          isBlocked: true,
-          blockedEntry,
-        });
-      } catch (err: any) {
-        console.error('Error blocking IP from order:', err);
-        return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
-      }
-    }
-
-    if (method === 'DELETE') {
-      const { auth, errorResponse } = await requireAuth(request, env);
-      if (errorResponse) return errorResponse;
-
-      const canBlockIp =
-        auth!.role === 'super_admin' ||
-        hasPermission(auth!, 'orders.block_ip') ||
-        hasPermission(auth!, 'order.block_ip');
-
-      if (!canBlockIp) {
-        return jsonResponse(
-          {
-            success: false,
-            error: 'Forbidden: Insufficient permissions to unblock customer IP addresses.',
-            requiredPermission: 'orders.block_ip',
-          },
-          403
-        );
-      }
-
-      try {
-        const order = await getOrderById(env.DB, orderId);
-        if (!order) {
-          return jsonResponse({ success: false, error: 'Order not found.' }, 404);
-        }
-
-        const body = (await request.json().catch(() => ({}))) as any;
-        const targetIp = (body?.ipAddress || body?.ip || order.customerIp || '').trim();
-        if (!targetIp) {
-          return jsonResponse({ success: false, error: 'No IP address recorded for this order.' }, 400);
-        }
-
-        await unblockIpAddress(env.DB, targetIp);
-
-        const unblockedBy = auth!.dbUser?.email || auth!.tokenUser?.email || 'admin';
-
-        // Record audit log
-        await insertAuditLogInD1(env.DB, {
-          actorId: auth!.dbUser?.id || auth!.tokenUser?.userId || 'admin',
-          actorEmail: unblockedBy,
-          actorRole: auth!.role,
-          action: 'IP_UNBLOCK',
-          targetId: targetIp,
-          targetType: 'blocked_ips',
-          details: `Unblocked customer IP ${targetIp} from Order #${order.orderNumber}.`,
-          ipAddress: getClientIp(request),
-        }).catch((err) => console.warn('Audit log write error for IP_UNBLOCK:', err));
-
-        return jsonResponse({
-          success: true,
-          message: `IP ${targetIp} has been unblocked successfully.`,
-          ipAddress: targetIp,
-          isBlocked: false,
-        });
-      } catch (err: any) {
-        console.error('Error unblocking IP from order:', err);
-        return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
-      }
-    }
-  }
-
-  // ==========================================
-  // 8.2 CENTRAL BLOCKED IPS MANAGEMENT ROUTES
-  // ==========================================
-  if (path === '/api/admin/blocked-ips' && method === 'GET') {
-    const { auth, errorResponse } = await requireAuth(request, env);
-    if (errorResponse) return errorResponse;
-
-    const canView =
-      auth!.role === 'super_admin' ||
-      hasPermission(auth!, 'orders.view_ip') ||
-      hasPermission(auth!, 'orders.block_ip') ||
-      hasPermission(auth!, 'order.view_ip') ||
-      hasPermission(auth!, 'order.block_ip');
-
-    if (!canView) {
-      return jsonResponse(
-        {
-          success: false,
-          error: 'Forbidden: Insufficient permissions to view blocked IPs.',
-          requiredPermission: 'orders.view_ip',
-        },
-        403
-      );
-    }
-
-    try {
-      const list = await getAllBlockedIps(env.DB);
-      return jsonResponse({
-        success: true,
-        count: list.length,
-        blockedIps: list,
-      });
-    } catch (err: any) {
-      console.error('Error fetching blocked IPs:', err);
-      return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
-    }
-  }
-
-  if (path === '/api/admin/blocked-ips' && method === 'POST') {
-    const { auth, errorResponse } = await requireAuth(request, env);
-    if (errorResponse) return errorResponse;
-
-    const canBlock =
-      auth!.role === 'super_admin' ||
-      hasPermission(auth!, 'orders.block_ip') ||
-      hasPermission(auth!, 'order.block_ip');
-
-    if (!canBlock) {
-      return jsonResponse(
-        {
-          success: false,
-          error: 'Forbidden: Insufficient permissions to block customer IP addresses.',
-          requiredPermission: 'orders.block_ip',
-        },
-        403
-      );
-    }
-
-    try {
-      const body = (await request.json().catch(() => ({}))) as any;
-      const targetIp = (body?.ipAddress || body?.ip || '').trim();
-      const reason = (body?.reason || '').trim() || null;
-
-      if (!targetIp || !isValidIpAddress(targetIp)) {
-        return jsonResponse({ success: false, error: 'A valid IPv4 or IPv6 address is required.' }, 400);
-      }
-
-      const blockedBy = auth!.dbUser?.email || auth!.tokenUser?.email || 'admin';
-      const blocked = await blockIpAddress(env.DB, targetIp, { reason: reason || undefined, blockedBy });
-
-      await insertAuditLogInD1(env.DB, {
-        actorId: auth!.dbUser?.id || auth!.tokenUser?.userId || 'admin',
-        actorEmail: blockedBy,
-        actorRole: auth!.role,
-        action: 'IP_BLOCK',
-        targetId: targetIp,
-        targetType: 'blocked_ips',
-        details: `Blocked IP ${targetIp}. Reason: ${reason || 'Manual block'}`,
-        ipAddress: getClientIp(request),
-      }).catch((err) => console.warn('Audit log write error for IP_BLOCK:', err));
-
-      return jsonResponse(
-        {
-          success: true,
-          message: `IP ${targetIp} has been blocked successfully.`,
-          blocked,
-        },
-        201
-      );
-    } catch (err: any) {
-      console.error('Error blocking IP in D1:', err);
-      return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
-    }
-  }
-
-  const directBlockedIpMatch = path.match(/^\/api\/admin\/blocked-ips\/([^/]+)$/);
-  if (directBlockedIpMatch) {
-    const targetIp = decodeURIComponent(directBlockedIpMatch[1]).trim();
-
-    if (method === 'GET') {
-      const { auth, errorResponse } = await requireAuth(request, env);
-      if (errorResponse) return errorResponse;
-
-      const canView =
-        auth!.role === 'super_admin' ||
-        hasPermission(auth!, 'orders.view_ip') ||
-        hasPermission(auth!, 'orders.block_ip') ||
-        hasPermission(auth!, 'order.view_ip') ||
-        hasPermission(auth!, 'order.block_ip');
-
-      if (!canView) {
-        return jsonResponse(
-          {
-            success: false,
-            error: 'Forbidden: Insufficient permissions to view blocked IPs.',
-            requiredPermission: 'orders.view_ip',
-          },
-          403
-        );
-      }
-
-      try {
-        const isBlocked = await isIpAddressBlocked(env.DB, targetIp);
-        const details = isBlocked ? await getBlockedIpDetails(env.DB, targetIp) : null;
-        return jsonResponse({
-          success: true,
-          ipAddress: targetIp,
-          isBlocked,
-          details,
-        });
-      } catch (err: any) {
-        console.error('Error checking blocked IP status:', err);
-        return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
-      }
-    }
-
-    if (method === 'DELETE') {
-      const { auth, errorResponse } = await requireAuth(request, env);
-      if (errorResponse) return errorResponse;
-
-      const canBlock =
-        auth!.role === 'super_admin' ||
-        hasPermission(auth!, 'orders.block_ip') ||
-        hasPermission(auth!, 'order.block_ip');
-
-      if (!canBlock) {
-        return jsonResponse(
-          {
-            success: false,
-            error: 'Forbidden: Insufficient permissions to unblock customer IP addresses.',
-            requiredPermission: 'orders.block_ip',
-          },
-          403
-        );
-      }
-
-      try {
-        if (!isValidIpAddress(targetIp)) {
-          return jsonResponse({ success: false, error: 'Invalid IP address format.' }, 400);
-        }
-
-        await unblockIpAddress(env.DB, targetIp);
-
-        const unblockedBy = auth!.dbUser?.email || auth!.tokenUser?.email || 'admin';
-        await insertAuditLogInD1(env.DB, {
-          actorId: auth!.dbUser?.id || auth!.tokenUser?.userId || 'admin',
-          actorEmail: unblockedBy,
-          actorRole: auth!.role,
-          action: 'IP_UNBLOCK',
-          targetId: targetIp,
-          targetType: 'blocked_ips',
-          details: `Unblocked IP ${targetIp}.`,
-          ipAddress: getClientIp(request),
-        }).catch((err) => console.warn('Audit log write error for IP_UNBLOCK:', err));
-
-        return jsonResponse({
-          success: true,
-          message: `IP ${targetIp} has been unblocked successfully.`,
-          ipAddress: targetIp,
-          isBlocked: false,
-        });
-      } catch (err: any) {
-        console.error('Error unblocking IP:', err);
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
       }
     }
