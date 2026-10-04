@@ -517,6 +517,36 @@ export const orderApi = {
   },
 
   /**
+   * Fetches all blocked IP addresses from D1 database
+   */
+  async getBlockedIps(): Promise<{ success: boolean; count?: number; blockedIps?: any[]; error?: string }> {
+    try {
+      const res = await fetch(`${API_BASE}/admin/blocked-ips`, {
+        method: 'GET',
+        credentials: 'include',
+        headers: getHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        return {
+          success: false,
+          error: data.error || `Failed to fetch blocked IPs (HTTP ${res.status})`,
+        };
+      }
+      return {
+        success: true,
+        count: data.count,
+        blockedIps: data.blockedIps || [],
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err?.message || 'Network error fetching blocked IPs',
+      };
+    }
+  },
+
+  /**
    * Blocks a customer IP address in D1 database
    */
   async blockIp(ipAddress: string, reason?: string, orderId?: string): Promise<{ success: boolean; message?: string; isBlocked?: boolean; error?: string }> {
@@ -579,6 +609,38 @@ export const orderApi = {
       return {
         success: false,
         error: err?.message || 'Network error unblocking IP',
+      };
+    }
+  },
+
+  /**
+   * Checks whether a customer IP address is currently blocked in D1 database
+   */
+  async checkIpBlocked(ipAddress: string): Promise<{ success: boolean; isBlocked?: boolean; details?: any; error?: string }> {
+    try {
+      const res = await fetch(`${API_BASE}/admin/blocked-ips/${encodeURIComponent(ipAddress)}`, {
+        method: 'GET',
+        credentials: 'include',
+        headers: getHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        return {
+          success: false,
+          isBlocked: false,
+          error: data.error || `HTTP ${res.status}`,
+        };
+      }
+      return {
+        success: true,
+        isBlocked: Boolean(data.isBlocked),
+        details: data.details,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        isBlocked: false,
+        error: err?.message || 'Network error checking IP status',
       };
     }
   },

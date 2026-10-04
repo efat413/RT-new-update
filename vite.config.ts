@@ -190,6 +190,32 @@ function localApiDevPlugin(): Plugin {
   const devOrderIdempotencyMap = new Map<string, { order: any; timestamp: number }>();
   const devWebhookReplays = new Map<string, { createdAt: number; expiresAt: number }>();
 
+  interface DevBlockedIpEntry {
+    id: string;
+    ip_address: string;
+    reason?: string | null;
+    blocked_by?: string | null;
+    blocked_at: string;
+    updated_at: string;
+  }
+  const devBlockedIps = new Map<string, DevBlockedIpEntry>();
+
+  const isValidDevIpAddress = (ip: string): boolean => {
+    if (!ip || typeof ip !== 'string') return false;
+    const clean = ip.trim();
+    if (/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(clean)) {
+      const parts = clean.split('.').map(Number);
+      return parts.every((p) => p >= 0 && p <= 255);
+    }
+    if (clean.includes(':') && /^[0-9a-fA-F:]+$/.test(clean) && clean.length >= 2 && clean.length <= 45) {
+      return true;
+    }
+    if (clean === 'localhost' || clean === '127.0.0.1' || clean === '::1' || clean.startsWith('cf-ray-')) {
+      return true;
+    }
+    return false;
+  };
+
   const checkAndRecordDevWebhookReplay = (fingerprint: string, ttlSeconds: number = 600): { isReplay: boolean } => {
     const now = Date.now();
     // Opportunistic cleanup of expired entries
@@ -570,11 +596,12 @@ function localApiDevPlugin(): Plugin {
 
   const sanitizeDevOrder = (
     o: any,
-    options: { isSuperAdmin?: boolean; canViewBuyingPrice?: boolean; canViewProfit?: boolean } | boolean
+    options: { isSuperAdmin?: boolean; canViewBuyingPrice?: boolean; canViewProfit?: boolean; canViewIp?: boolean } | boolean
   ) => {
     const isSuper = typeof options === 'boolean' ? options : Boolean(options.isSuperAdmin);
     const canBuying = typeof options === 'boolean' ? options : Boolean(options.isSuperAdmin || options.canViewBuyingPrice);
     const canProfit = typeof options === 'boolean' ? options : Boolean(options.isSuperAdmin || options.canViewProfit);
+    const canViewIp = typeof options === 'boolean' ? options : Boolean(options.isSuperAdmin || options.canViewIp);
 
     const safeItems = (o.items || []).map((it: any) => {
       const safeProduct = sanitizeDevProduct(it.product || {}, options);
@@ -602,6 +629,12 @@ function localApiDevPlugin(): Plugin {
       delete safeOrder.netProfit;
       delete safeOrder.net_profit;
       delete safeOrder.profit;
+    }
+    if (!canViewIp) {
+      delete safeOrder.customerIp;
+      delete safeOrder.customer_ip;
+      delete safeOrder.isIpBlocked;
+      delete safeOrder.is_ip_blocked;
     }
     return safeOrder;
   };
@@ -2644,6 +2677,7 @@ function localApiDevPlugin(): Plugin {
           const isSuper = authResult.auth!.role === 'super_admin';
           const canViewBuyingPrice = isSuper || hasDevPermission(authResult.auth!, 'product.view_buying_price');
           const canViewProfit = isSuper || hasDevPermission(authResult.auth!, 'report.profit') || hasDevPermission(authResult.auth!, 'product.view_profit');
+          const canViewIp = isSuper || hasDevPermission(authResult.auth!, 'orders.view_ip') || hasDevPermission(authResult.auth!, 'order.view_ip');
 
           // Parse and strictly clamp pagination parameters (Default: 25, Max: 100)
           const rawPage = parseInt(url.searchParams.get('page') || '1', 10);
@@ -2765,7 +2799,13 @@ function localApiDevPlugin(): Plugin {
           const offset = (page - 1) * limit;
           const pagedOrders = filtered
             .slice(offset, offset + limit)
-            .map((o) => sanitizeDevOrder(o, { isSuperAdmin: isSuper, canViewBuyingPrice, canViewProfit }));
+            .map((o) => {
+              const ordCopy = { ...o };
+              if (canViewIp && ordCopy.customerIp) {
+                ordCopy.isIpBlocked = devBlockedIps.has(ordCopy.customerIp);
+              }
+              return sanitizeDevOrder(ordCopy, { isSuperAdmin: isSuper, canViewBuyingPrice, canViewProfit, canViewIp });
+            });
 
           res.statusCode = 200;
           return res.end(JSON.stringify({
@@ -2849,7 +2889,18 @@ function localApiDevPlugin(): Plugin {
               }
             }
 
-            const clientIp = ((req.headers['cf-connecting-ip'] || req.headers['x-real-ip'] || req.socket?.remoteAddress || '127.0.0.1') as string).trim();
+            const rawClientIp = ((req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.socket?.remoteAddress || '127.0.0.1') as string).split(',')[0].trim().replace(/^::ffff:/, '');
+            const clientIp = rawClientIp || '127.0.0.1';
+
+            // Server-Side IP Blocklist Enforcement
+            if ((clientIp && devBlockedIps.has(clientIp)) || (rawOrder?.customerIp && devBlockedIps.has(rawOrder.customerIp))) {
+              res.statusCode = 403;
+              return res.end(JSON.stringify({
+                success: false,
+                error: 'Order could not be processed. Please contact support.',
+              }));
+            }
+
             if (!checkDevRateLimit(`order_burst:${clientIp}`, 2, 10)) {
               res.statusCode = 429;
               res.setHeader('Retry-After', '10');
@@ -2901,6 +2952,8 @@ function localApiDevPlugin(): Plugin {
               shippingStatus,
               totalCost,
               totalGrossProfit,
+              customerIp: clientIp,
+              isIpBlocked: false,
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
             };
@@ -2942,8 +2995,13 @@ function localApiDevPlugin(): Plugin {
               }
               const canViewBuyingPrice = Boolean(auth && (isSuperAdmin || hasDevPermission(auth, 'product.view_buying_price')));
               const canViewProfit = Boolean(auth && (isSuperAdmin || hasDevPermission(auth, 'report.profit') || hasDevPermission(auth, 'product.view_profit')));
+              const canViewIp = Boolean(auth && (isSuperAdmin || hasDevPermission(auth, 'orders.view_ip') || hasDevPermission(auth, 'order.view_ip')));
+              const foundCopy = { ...found };
+              if (canViewIp && foundCopy.customerIp) {
+                foundCopy.isIpBlocked = devBlockedIps.has(foundCopy.customerIp);
+              }
               res.statusCode = 200;
-              return res.end(JSON.stringify({ success: true, order: sanitizeDevOrder(found, { isSuperAdmin, canViewBuyingPrice, canViewProfit }) }));
+              return res.end(JSON.stringify({ success: true, order: sanitizeDevOrder(foundCopy, { isSuperAdmin, canViewBuyingPrice, canViewProfit, canViewIp }) }));
             }
 
             // 2. Authenticated customer viewing own order
@@ -3144,6 +3202,241 @@ function localApiDevPlugin(): Plugin {
             devOrders = devOrders.filter((o) => o.id !== id && o.orderNumber !== id);
             res.statusCode = 200;
             return res.end(JSON.stringify({ success: true, message: 'Order deleted' }));
+          }
+        }
+
+        // 8.1 ORDER IP BLOCKING & UNBLOCKING (DEV MODE)
+        const devOrderBlockIpMatch = url.pathname.match(/^\/api\/orders\/([^/]+)\/block-ip$/);
+        if (devOrderBlockIpMatch) {
+          const orderId = decodeURIComponent(devOrderBlockIpMatch[1]);
+          if (method === 'POST') {
+            const authResult = requireDevAuth(req);
+            if (authResult.error) return sendDevError(res, authResult.error);
+            const canBlock =
+              authResult.auth!.role === 'super_admin' ||
+              hasDevPermission(authResult.auth!, 'orders.block_ip') ||
+              hasDevPermission(authResult.auth!, 'order.block_ip');
+            if (!canBlock) {
+              return sendDevError(res, {
+                status: 403,
+                body: { success: false, error: 'Forbidden: Insufficient permissions to block customer IP addresses.', requiredPermission: 'orders.block_ip' },
+              });
+            }
+
+            return readBody((body) => {
+              const targetOrder = devOrders.find((o) => o.id === orderId || o.orderNumber === orderId);
+              if (!targetOrder) {
+                res.statusCode = 404;
+                return res.end(JSON.stringify({ success: false, error: 'Order not found' }));
+              }
+              const targetIp = (body?.ipAddress || body?.ip || targetOrder.customerIp || '').trim();
+              if (!targetIp || !isValidDevIpAddress(targetIp)) {
+                res.statusCode = 400;
+                return res.end(JSON.stringify({ success: false, error: 'A valid IPv4 or IPv6 address is required.' }));
+              }
+              const reason = (body?.reason || '').trim() || `Blocked from Order #${targetOrder.orderNumber}`;
+              const blockedBy = authResult.auth?.user?.email || 'admin';
+              const now = new Date().toISOString();
+              const entry: DevBlockedIpEntry = {
+                id: `blk-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                ip_address: targetIp,
+                reason,
+                blocked_by: blockedBy,
+                blocked_at: now,
+                updated_at: now,
+              };
+              devBlockedIps.set(targetIp, entry);
+              devOrders.forEach((o) => {
+                if (o.customerIp === targetIp) {
+                  o.isIpBlocked = true;
+                }
+              });
+              res.statusCode = 200;
+              return res.end(
+                JSON.stringify({
+                  success: true,
+                  message: `IP ${targetIp} has been blocked successfully. Future public orders from this IP will be rejected.`,
+                  ipAddress: targetIp,
+                  isBlocked: true,
+                  blockedEntry: entry,
+                })
+              );
+            });
+          }
+
+          if (method === 'DELETE') {
+            const authResult = requireDevAuth(req);
+            if (authResult.error) return sendDevError(res, authResult.error);
+            const canBlock =
+              authResult.auth!.role === 'super_admin' ||
+              hasDevPermission(authResult.auth!, 'orders.block_ip') ||
+              hasDevPermission(authResult.auth!, 'order.block_ip');
+            if (!canBlock) {
+              return sendDevError(res, {
+                status: 403,
+                body: { success: false, error: 'Forbidden: Insufficient permissions to unblock customer IP addresses.', requiredPermission: 'orders.block_ip' },
+              });
+            }
+
+            return readBody((body) => {
+              const targetOrder = devOrders.find((o) => o.id === orderId || o.orderNumber === orderId);
+              const targetIp = (body?.ipAddress || body?.ip || targetOrder?.customerIp || '').trim();
+              if (targetIp) {
+                devBlockedIps.delete(targetIp);
+                devOrders.forEach((o) => {
+                  if (o.customerIp === targetIp) {
+                    o.isIpBlocked = false;
+                  }
+                });
+              }
+              res.statusCode = 200;
+              return res.end(
+                JSON.stringify({
+                  success: true,
+                  message: `IP ${targetIp} has been unblocked successfully.`,
+                  ipAddress: targetIp,
+                  isBlocked: false,
+                })
+              );
+            });
+          }
+        }
+
+        // 8.2 CENTRAL BLOCKED IPS MANAGEMENT (DEV MODE)
+        if (url.pathname === '/api/admin/blocked-ips') {
+          if (method === 'GET') {
+            const authResult = requireDevAuth(req);
+            if (authResult.error) return sendDevError(res, authResult.error);
+            const canView =
+              authResult.auth!.role === 'super_admin' ||
+              hasDevPermission(authResult.auth!, 'orders.view_ip') ||
+              hasDevPermission(authResult.auth!, 'orders.block_ip') ||
+              hasDevPermission(authResult.auth!, 'order.view_ip') ||
+              hasDevPermission(authResult.auth!, 'order.block_ip');
+            if (!canView) {
+              return sendDevError(res, {
+                status: 403,
+                body: { success: false, error: 'Forbidden: Insufficient permissions to view blocked IPs.', requiredPermission: 'orders.view_ip' },
+              });
+            }
+            const list = Array.from(devBlockedIps.values());
+            res.statusCode = 200;
+            return res.end(
+              JSON.stringify({
+                success: true,
+                count: list.length,
+                blockedIps: list,
+              })
+            );
+          }
+
+          if (method === 'POST') {
+            const authResult = requireDevAuth(req);
+            if (authResult.error) return sendDevError(res, authResult.error);
+            const canBlock =
+              authResult.auth!.role === 'super_admin' ||
+              hasDevPermission(authResult.auth!, 'orders.block_ip') ||
+              hasDevPermission(authResult.auth!, 'order.block_ip');
+            if (!canBlock) {
+              return sendDevError(res, {
+                status: 403,
+                body: { success: false, error: 'Forbidden: Insufficient permissions to block customer IP addresses.', requiredPermission: 'orders.block_ip' },
+              });
+            }
+
+            return readBody((body) => {
+              const targetIp = (body?.ipAddress || body?.ip || '').trim();
+              const reason = (body?.reason || '').trim() || null;
+              if (!targetIp || !isValidDevIpAddress(targetIp)) {
+                res.statusCode = 400;
+                return res.end(JSON.stringify({ success: false, error: 'A valid IPv4 or IPv6 address is required.' }));
+              }
+              const now = new Date().toISOString();
+              const entry: DevBlockedIpEntry = {
+                id: `blk-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                ip_address: targetIp,
+                reason,
+                blocked_by: authResult.auth?.user?.email || 'admin',
+                blocked_at: now,
+                updated_at: now,
+              };
+              devBlockedIps.set(targetIp, entry);
+              devOrders.forEach((o) => {
+                if (o.customerIp === targetIp) {
+                  o.isIpBlocked = true;
+                }
+              });
+              res.statusCode = 201;
+              return res.end(
+                JSON.stringify({
+                  success: true,
+                  message: `IP ${targetIp} has been blocked successfully.`,
+                  blocked: entry,
+                })
+              );
+            });
+          }
+        }
+
+        const devDirectBlockedIpMatch = url.pathname.match(/^\/api\/admin\/blocked-ips\/([^/]+)$/);
+        if (devDirectBlockedIpMatch) {
+          const targetIp = decodeURIComponent(devDirectBlockedIpMatch[1]).trim();
+          if (method === 'GET') {
+            const authResult = requireDevAuth(req);
+            if (authResult.error) return sendDevError(res, authResult.error);
+            const canView =
+              authResult.auth!.role === 'super_admin' ||
+              hasDevPermission(authResult.auth!, 'orders.view_ip') ||
+              hasDevPermission(authResult.auth!, 'orders.block_ip') ||
+              hasDevPermission(authResult.auth!, 'order.view_ip') ||
+              hasDevPermission(authResult.auth!, 'order.block_ip');
+            if (!canView) {
+              return sendDevError(res, {
+                status: 403,
+                body: { success: false, error: 'Forbidden: Insufficient permissions to view blocked IPs.', requiredPermission: 'orders.view_ip' },
+              });
+            }
+            const isBlocked = devBlockedIps.has(targetIp);
+            const details = isBlocked ? devBlockedIps.get(targetIp) : null;
+            res.statusCode = 200;
+            return res.end(
+              JSON.stringify({
+                success: true,
+                ipAddress: targetIp,
+                isBlocked,
+                details,
+              })
+            );
+          }
+
+          if (method === 'DELETE') {
+            const authResult = requireDevAuth(req);
+            if (authResult.error) return sendDevError(res, authResult.error);
+            const canBlock =
+              authResult.auth!.role === 'super_admin' ||
+              hasDevPermission(authResult.auth!, 'orders.block_ip') ||
+              hasDevPermission(authResult.auth!, 'order.block_ip');
+            if (!canBlock) {
+              return sendDevError(res, {
+                status: 403,
+                body: { success: false, error: 'Forbidden: Insufficient permissions to unblock customer IP addresses.', requiredPermission: 'orders.block_ip' },
+              });
+            }
+            devBlockedIps.delete(targetIp);
+            devOrders.forEach((o) => {
+              if (o.customerIp === targetIp) {
+                o.isIpBlocked = false;
+              }
+            });
+            res.statusCode = 200;
+            return res.end(
+              JSON.stringify({
+                success: true,
+                message: `IP ${targetIp} has been unblocked successfully.`,
+                ipAddress: targetIp,
+                isBlocked: false,
+              })
+            );
           }
         }
 

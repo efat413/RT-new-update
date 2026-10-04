@@ -16,6 +16,7 @@ import {
   Lock,
   Bug,
   TrendingUp,
+  ShieldAlert,
 } from 'lucide-react';
 
 interface AdminSidebarProps {
@@ -155,6 +156,14 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
       permission: 'canManageAccounts',
     },
     {
+      id: 'ip-management',
+      label: 'IP Management',
+      icon: ShieldAlert,
+      badge: 'Security',
+      color: 'rose',
+      permission: 'orders.view_ip',
+    },
+    {
       id: 'pixels',
       label: 'Marketing Pixels',
       icon: Activity,
@@ -196,16 +205,23 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
           Menu Options
         </span>
         <span className="text-[10px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full font-mono">
-          11 Modules
+          {menuItems.length} Modules
         </span>
       </div>
 
-      {/* Vertical list of the 10 menu options */}
+      {/* Vertical list of menu options */}
       <nav className="space-y-1.5 flex-1" aria-label="Admin Navigation Menu">
         {menuItems.map((item) => {
           const Icon = item.icon;
           const isActive = activeTab === item.id;
-          const isPermitted = !item.permission || hasPermission(item.permission);
+          const isPermitted =
+            item.id === 'ip-management'
+              ? isSuperAdmin ||
+                hasPermission('orders.view_ip') ||
+                hasPermission('orders.block_ip') ||
+                hasPermission('order.view_ip') ||
+                hasPermission('order.block_ip')
+              : !item.permission || hasPermission(item.permission);
 
           return (
             <div key={item.id} className="space-y-1">

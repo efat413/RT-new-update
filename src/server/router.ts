@@ -381,22 +381,22 @@ export function getClientIp(request: Request, isDev?: boolean): string {
   // 1. Authoritative Cloudflare edge header (set securely by Cloudflare network in production)
   const cfIp = request.headers.get('cf-connecting-ip');
   if (cfIp && cfIp.trim()) {
-    return cfIp.trim();
+    return cfIp.trim().replace(/^::ffff:/, '');
   }
   const trueClientIp = request.headers.get('true-client-ip');
   if (trueClientIp && trueClientIp.trim()) {
-    return trueClientIp.trim();
+    return trueClientIp.trim().replace(/^::ffff:/, '');
   }
 
   // 2. Safe local development / testing fallback (only allowed when isDev is explicitly true)
   if (isDev) {
     const xff = request.headers.get('x-forwarded-for');
     if (xff && xff.trim()) {
-      return xff.split(',')[0].trim();
+      return xff.split(',')[0].trim().replace(/^::ffff:/, '');
     }
     const realIp = request.headers.get('x-real-ip');
     if (realIp && realIp.trim()) {
-      return realIp.trim();
+      return realIp.trim().replace(/^::ffff:/, '');
     }
     return '127.0.0.1';
   }
@@ -4388,7 +4388,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           return jsonResponse({ success: false, error: 'Order not found.' }, 404);
         }
 
-        const targetIp = (order.customerIp || '').trim();
+        const body = (await request.json().catch(() => ({}))) as any;
+        const targetIp = (body?.ipAddress || body?.ip || order.customerIp || '').trim();
         if (!targetIp) {
           return jsonResponse({ success: false, error: 'No IP address recorded for this order.' }, 400);
         }

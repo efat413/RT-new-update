@@ -15,6 +15,7 @@ import {
   Bug,
   AlertTriangle,
   CheckCircle2,
+  ShieldAlert,
 } from 'lucide-react';
 
 export interface AdminTopOptionsBarProps {
@@ -114,6 +115,14 @@ export const AdminTopOptionsBar: React.FC<AdminTopOptionsBarProps> = ({
       badge: `${usersCount}`,
       badgeColor: 'bg-slate-700 text-slate-300',
       permission: 'canManageAccounts',
+    },
+    {
+      id: 'ip-management',
+      label: 'IP Management',
+      icon: ShieldAlert,
+      badge: null,
+      badgeColor: 'bg-rose-500/20 text-rose-300 border-rose-500/30',
+      permission: 'orders.view_ip',
     },
     {
       id: 'pixels',

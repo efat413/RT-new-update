@@ -131,6 +131,9 @@ const AdminDebugTab = React.lazy(() =>
 const AdminProfitAnalyticsTab = React.lazy(() =>
   import('./AdminProfitAnalyticsTab').then((m) => ({ default: m.AdminProfitAnalyticsTab }))
 );
+const AdminIpManagementTab = React.lazy(() =>
+  import('./Admin/AdminIpManagementTab').then((m) => ({ default: m.AdminIpManagementTab }))
+);
 
 const AdminTabFallback: React.FC = () => (
   <div className="py-24 flex flex-col items-center justify-center space-y-3 text-slate-400">
@@ -253,6 +256,8 @@ const AdminPanelContent: React.FC = () => {
     setOrderQueryFilters,
     featuredProducts,
     toggleProductFeatured,
+    setOrders,
+    refreshOrders,
   } = useStore();
 
   // Authentication states (start empty for security, no auto-fill)
@@ -278,7 +283,7 @@ const AdminPanelContent: React.FC = () => {
 
   // Active Tab
   const [activeTab, setActiveTab] = useState<
-    'overview' | 'profit' | 'orders' | 'products' | 'categories' | 'slides' | 'couriers' | 'settings' | 'users' | 'pixels' | 'vouchers' | 'debug'
+    'overview' | 'profit' | 'orders' | 'products' | 'categories' | 'slides' | 'couriers' | 'settings' | 'users' | 'pixels' | 'vouchers' | 'debug' | 'ip-management'
   >((adminActiveTab as any) || 'overview');
 
   // Product stock filter
@@ -667,6 +672,14 @@ const AdminPanelContent: React.FC = () => {
           if (editingOrder && editingOrder.customerIp === blockTargetData.ip) {
             setEditingOrder((prev) => (prev ? { ...prev, isIpBlocked: false } : null));
           }
+          if (setOrders) {
+            setOrders((prev) =>
+              prev.map((o) =>
+                o.customerIp === blockTargetData.ip ? { ...o, isIpBlocked: false } : o
+              )
+            );
+          }
+          if (refreshOrders) refreshOrders();
           setBlockIpModalOpen(false);
           setBlockTargetData(null);
         } else {
@@ -687,6 +700,14 @@ const AdminPanelContent: React.FC = () => {
           if (editingOrder && editingOrder.customerIp === blockTargetData.ip) {
             setEditingOrder((prev) => (prev ? { ...prev, isIpBlocked: true } : null));
           }
+          if (setOrders) {
+            setOrders((prev) =>
+              prev.map((o) =>
+                o.customerIp === blockTargetData.ip ? { ...o, isIpBlocked: true } : o
+              )
+            );
+          }
+          if (refreshOrders) refreshOrders();
           setBlockIpModalOpen(false);
           setBlockTargetData(null);
         } else {
@@ -1918,6 +1939,13 @@ const AdminPanelContent: React.FC = () => {
 
   const openEditOrderModal = (order: Order) => {
     setEditingOrder(order);
+    if (order.customerIp && (canViewIp || isSuperAdmin)) {
+      orderApi.checkIpBlocked(order.customerIp).then((res) => {
+        if (res.success && res.isBlocked !== undefined) {
+          setEditingOrder((prev) => (prev && prev.id === order.id ? { ...prev, isIpBlocked: res.isBlocked } : prev));
+        }
+      }).catch(() => {});
+    }
     const initialItems = order.items ? JSON.parse(JSON.stringify(order.items)) : [];
     setEditOrderItems(initialItems);
     setOrderItemCustomAdjust({});
@@ -4954,6 +4982,18 @@ const AdminPanelContent: React.FC = () => {
               >
                 Marketing Pixels & Tracking
               </button>
+              <button
+                type="button"
+                id="filter-settings-ip"
+                onClick={() => setSettingsSectionFilter('ip')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                  settingsSectionFilter === 'ip'
+                    ? 'bg-rose-600 text-white shadow-xs'
+                    : 'bg-rose-50 hover:bg-rose-100 text-rose-800'
+                }`}
+              >
+                Security & IP Management
+              </button>
             </div>
 
             {settingsSectionFilter !== 'all' && (
@@ -4963,7 +5003,8 @@ const AdminPanelContent: React.FC = () => {
                     settingsSectionFilter === 'general' ? 'Store / Header Settings' :
                     settingsSectionFilter === 'delivery' ? 'Delivery Fees' :
                     settingsSectionFilter === 'bank' ? 'DBBL Bank & NexusPay' :
-                    settingsSectionFilter === 'footer' ? 'Footer & Legal Policies' : 'Marketing Pixels & Tracking'
+                    settingsSectionFilter === 'footer' ? 'Footer & Legal Policies' :
+                    settingsSectionFilter === 'pixels' ? 'Marketing Pixels & Tracking' : 'Security & IP Management'
                   }</strong>. Other sections are hidden.
                 </span>
                 <button
@@ -4985,6 +5026,21 @@ const AdminPanelContent: React.FC = () => {
               </div>
             )}
 
+            {/* IP MANAGEMENT & BLOCKLIST SECTION */}
+            {settingsSectionFilter === 'ip' && (
+              <div id="settings-ip-management-section" className="space-y-4">
+                <React.Suspense fallback={<AdminTabFallback />}>
+                  <AdminIpManagementTab
+                    canViewIp={canViewIp}
+                    canBlockIp={canBlockIp}
+                    showNotification={showNotification}
+                    onRefreshOrders={refreshOrders}
+                  />
+                </React.Suspense>
+              </div>
+            )}
+
+            {settingsSectionFilter !== 'pixels' && settingsSectionFilter !== 'ip' && (
             <form onSubmit={handleSaveSettings} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs space-y-4">
               {/* General & Contact Section */}
               {(settingsSectionFilter === 'all' || settingsSectionFilter === 'general') && (
@@ -6012,6 +6068,7 @@ const AdminPanelContent: React.FC = () => {
                 </div>
               </div>
             </form>
+            )}
           </div>
           )
         )}
@@ -6806,6 +6863,20 @@ const AdminPanelContent: React.FC = () => {
               <AdminProfitAnalyticsTab />
             </React.Suspense>
           )
+        )}
+
+        {/* ============================================================ */}
+        {/* TAB 13: IP MANAGEMENT & BLOCKLIST                            */}
+        {/* ============================================================ */}
+        {activeTab === 'ip-management' && (
+          <React.Suspense fallback={<AdminTabFallback />}>
+            <AdminIpManagementTab
+              canViewIp={canViewIp}
+              canBlockIp={canBlockIp}
+              showNotification={showNotification}
+              onRefreshOrders={refreshOrders}
+            />
+          </React.Suspense>
         )}
         </main>
       </div>
@@ -9518,25 +9589,25 @@ const AdminPanelContent: React.FC = () => {
 
                 {/* Customer IP Tracking & Blocking (Requirement 2 & 5 & 12) */}
                 {canViewIp && (
-                  <div className="pt-3 border-t border-slate-100">
+                  <div className="pt-3 border-t border-slate-100" id="order-customer-ip-section">
                     <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                       <div className="space-y-1">
                         <div className="flex items-center gap-2">
-                          <span className="text-[11px] font-bold text-slate-700">Customer Originating IP:</span>
-                          <span className="font-mono text-xs font-semibold text-slate-900 bg-white px-2 py-0.5 rounded border border-slate-200">
+                          <span className="text-[11px] font-bold text-slate-700">Customer IP:</span>
+                          <span className="font-mono text-xs font-semibold text-slate-900 bg-white px-2 py-0.5 rounded border border-slate-200" id="order-details-customer-ip">
                             {editingOrder.customerIp || 'Not available'}
                           </span>
                         </div>
                         <div className="flex items-center gap-2 text-[11px]">
-                          <span className="text-slate-500 font-medium">IP Status:</span>
+                          <span className="text-slate-500 font-medium">Status:</span>
                           {editingOrder.customerIp ? (
                             editingOrder.isIpBlocked ? (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200" id="order-details-ip-status">
                                 <ShieldAlert className="w-3 h-3 text-rose-600" />
                                 Blocked
                               </span>
                             ) : (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200" id="order-details-ip-status">
                                 <ShieldCheck className="w-3 h-3 text-emerald-600" />
                                 Active
                               </span>
@@ -9552,6 +9623,7 @@ const AdminPanelContent: React.FC = () => {
                           {editingOrder.isIpBlocked ? (
                             <button
                               type="button"
+                              id="btn-order-unblock-ip"
                               onClick={() =>
                                 handleInitiateBlockIp(
                                   editingOrder.customerIp!,
@@ -9568,6 +9640,7 @@ const AdminPanelContent: React.FC = () => {
                           ) : (
                             <button
                               type="button"
+                              id="btn-order-block-ip"
                               onClick={() =>
                                 handleInitiateBlockIp(
                                   editingOrder.customerIp!,
@@ -10538,20 +10611,30 @@ const AdminPanelContent: React.FC = () => {
         cancelText="Cancel"
         variant={blockTargetData?.isCurrentlyBlocked ? 'primary' : 'danger'}
       >
-        {!blockTargetData?.isCurrentlyBlocked && (
-          <div className="mt-3">
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Reason for Blocking (Optional internal audit note):
-            </label>
-            <input
-              type="text"
-              value={blockIpReason}
-              onChange={(e) => setBlockIpReason(e.target.value)}
-              placeholder="e.g. Fraudulent order, fake delivery details, spam"
-              className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl bg-slate-50 focus:bg-white focus:ring-2 focus:ring-rose-500 focus:outline-hidden"
-            />
+        <div className="mt-2.5 space-y-2.5">
+          <div className="p-2.5 bg-slate-100 rounded-xl border border-slate-200 text-xs flex items-center justify-between">
+            <span className="text-slate-600 font-medium">Target IP Address:</span>
+            <span className="font-mono font-bold text-slate-900 bg-white px-2 py-0.5 rounded border border-slate-200" id="modal-target-ip-display">
+              {blockTargetData?.ip}
+            </span>
           </div>
-        )}
+
+          {!blockTargetData?.isCurrentlyBlocked && (
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Reason for Blocking (Optional):
+              </label>
+              <input
+                type="text"
+                id="modal-block-ip-reason"
+                value={blockIpReason}
+                onChange={(e) => setBlockIpReason(e.target.value)}
+                placeholder="e.g. Fraudulent order, fake delivery details, spam"
+                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl bg-slate-50 focus:bg-white focus:ring-2 focus:ring-rose-500 focus:outline-hidden"
+              />
+            </div>
+          )}
+        </div>
       </ConfirmModal>
     </div>
   );
