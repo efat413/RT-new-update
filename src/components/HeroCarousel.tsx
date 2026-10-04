@@ -178,11 +178,6 @@ export const HeroCarousel: React.FC = () => {
           />
         </div>
 
-        {/* Vignette Gradient Overlay: Enhances text legibility when overlay headlines are present */}
-        {hasText && (
-          <div className="absolute inset-0 z-[1] bg-gradient-to-r from-slate-950/85 via-slate-950/45 to-transparent pointer-events-none" />
-        )}
-
         {/* Slide Content Overlay: Scaled gracefully across all viewports to fit perfectly inside fixed ratio */}
         {hasText && (
           <div
