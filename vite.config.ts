@@ -1603,7 +1603,9 @@ function localApiDevPlugin(): Plugin {
         // 0. OPTIMIZED PUBLIC HOMEPAGE CONSOLIDATED ROUTE
         if (url.pathname === '/api/store/homepage' && (method === 'GET' || method === 'HEAD')) {
           const safeSettings = maskDevSettings(devSettings, false, false);
-          const activeSliders = [...devSliders];
+          const activeSliders = [...devSliders]
+            .filter((s: any) => s.isActive !== false && s.is_active !== 0 && s.status !== 'inactive')
+            .sort((a: any, b: any) => (Number(a.sort_order ?? a.sortOrder ?? 0) - Number(b.sort_order ?? b.sortOrder ?? 0)));
 
           const categoryProducts: Record<string, any[]> = {};
           const collectedMap = new Map<string, any>();
@@ -1988,10 +1990,71 @@ function localApiDevPlugin(): Plugin {
         }
 
         // 3. SLIDERS
+        if (url.pathname === '/api/sliders/order' || url.pathname === '/api/admin/sliders/order') {
+          if (method === 'PUT' || method === 'POST') {
+            const authResult = requireDevAuth(req);
+            const permErr = requireDevPermission(authResult, 'slider.manage');
+            if (permErr) return sendDevError(res, permErr);
+
+            return readBody((body) => {
+              const items = Array.isArray(body) ? body : (body.slides || body.sliders || body.order || []);
+              if (!Array.isArray(items) || items.length === 0) {
+                res.statusCode = 400;
+                res.setHeader('Content-Type', 'application/json');
+                return res.end(JSON.stringify({ success: false, error: 'Non-empty array expected for slider ordering' }));
+              }
+
+              const rawIds = items.map((it: any) => (typeof it === 'string' ? it : it.id)).filter(Boolean);
+              const uniqueIds = Array.from(new Set(rawIds));
+              if (uniqueIds.length !== items.length) {
+                res.statusCode = 400;
+                res.setHeader('Content-Type', 'application/json');
+                return res.end(JSON.stringify({ success: false, error: 'Duplicate slide IDs detected in ordering request' }));
+              }
+
+              for (const id of uniqueIds) {
+                if (!devSliders.some((s) => s.id === id)) {
+                  res.statusCode = 400;
+                  res.setHeader('Content-Type', 'application/json');
+                  return res.end(JSON.stringify({ success: false, error: `Slide not found with ID: ${id}` }));
+                }
+              }
+
+              // Reorder devSliders according to uniqueIds
+              const orderMap = new Map<string, number>();
+              uniqueIds.forEach((id, idx) => orderMap.set(id, idx + 1));
+              let nextOrder = uniqueIds.length + 1;
+              devSliders.forEach((s) => {
+                if (!orderMap.has(s.id)) {
+                  orderMap.set(s.id, nextOrder++);
+                }
+              });
+
+              devSliders.forEach((s) => {
+                const so = orderMap.get(s.id) || 1;
+                s.sort_order = so;
+                s.sortOrder = so;
+              });
+
+              devSliders.sort((a, b) => (Number(a.sort_order ?? a.sortOrder ?? 0) - Number(b.sort_order ?? b.sortOrder ?? 0)));
+
+              res.statusCode = 200;
+              res.setHeader('Content-Type', 'application/json');
+              return res.end(JSON.stringify({
+                success: true,
+                count: devSliders.length,
+                sliders: devSliders,
+                message: 'Slider ordering updated successfully'
+              }));
+            });
+          }
+        }
+
         if (url.pathname === '/api/sliders') {
           if (method === 'GET') {
             res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=120, stale-while-revalidate=60');
             res.setHeader('Vary', 'Origin, Accept-Encoding');
+            devSliders.sort((a, b) => (Number(a.sort_order ?? a.sortOrder ?? 0) - Number(b.sort_order ?? b.sortOrder ?? 0)));
             res.statusCode = 200;
             return res.end(JSON.stringify({ success: true, count: devSliders.length, sliders: devSliders }));
           }
@@ -2002,8 +2065,18 @@ function localApiDevPlugin(): Plugin {
 
             return readBody((body) => {
               const sl = body.slide || body;
-              const newSl = { id: sl.id || `slide-${Date.now()}`, ...sl };
+              const nextOrder = devSliders.length > 0
+                ? Math.max(...devSliders.map((s) => Number(s.sort_order ?? s.sortOrder ?? 0))) + 1
+                : 1;
+              const newSl = {
+                id: sl.id || `slide-${Date.now()}`,
+                sort_order: sl.sort_order ?? sl.sortOrder ?? nextOrder,
+                sortOrder: sl.sort_order ?? sl.sortOrder ?? nextOrder,
+                isActive: sl.isActive !== undefined ? Boolean(sl.isActive) : true,
+                ...sl
+              };
               devSliders.push(newSl);
+              devSliders.sort((a, b) => (Number(a.sort_order ?? a.sortOrder ?? 0) - Number(b.sort_order ?? b.sortOrder ?? 0)));
               res.statusCode = 201;
               return res.end(JSON.stringify({ success: true, slider: newSl }));
             });
@@ -2011,7 +2084,7 @@ function localApiDevPlugin(): Plugin {
         }
 
         const slMatch = url.pathname.match(/^\/api\/sliders\/([^/]+)$/);
-        if (slMatch) {
+        if (slMatch && slMatch[1] !== 'order') {
           const id = decodeURIComponent(slMatch[1]);
           if (method === 'PUT' || method === 'PATCH') {
             const authResult = requireDevAuth(req);
@@ -2022,7 +2095,14 @@ function localApiDevPlugin(): Plugin {
               const updates = body.updates || body.slide || body;
               const idx = devSliders.findIndex((s) => s.id === id);
               if (idx >= 0) {
-                devSliders[idx] = { ...devSliders[idx], ...updates };
+                devSliders[idx] = {
+                  ...devSliders[idx],
+                  ...updates,
+                  sort_order: updates.sort_order ?? updates.sortOrder ?? devSliders[idx].sort_order,
+                  sortOrder: updates.sort_order ?? updates.sortOrder ?? devSliders[idx].sortOrder,
+                  isActive: updates.isActive !== undefined ? Boolean(updates.isActive) : (updates.is_active !== undefined ? Boolean(Number(updates.is_active)) : (devSliders[idx].isActive ?? true)),
+                };
+                devSliders.sort((a, b) => (Number(a.sort_order ?? a.sortOrder ?? 0) - Number(b.sort_order ?? b.sortOrder ?? 0)));
                 res.statusCode = 200;
                 return res.end(JSON.stringify({ success: true, slider: devSliders[idx] }));
               }
@@ -2036,6 +2116,10 @@ function localApiDevPlugin(): Plugin {
             if (permErr) return sendDevError(res, permErr);
 
             devSliders = devSliders.filter((s) => s.id !== id);
+            devSliders.forEach((s, idx) => {
+              s.sort_order = idx + 1;
+              s.sortOrder = idx + 1;
+            });
             res.statusCode = 200;
             return res.end(JSON.stringify({ success: true, message: 'Deleted' }));
           }

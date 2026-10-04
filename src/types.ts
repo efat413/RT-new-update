@@ -134,6 +134,9 @@ export interface CarouselSlide {
   imageUrl: string;
   accentGradient?: string;
   buttonText?: string;
+  sort_order?: number;
+  sortOrder?: number;
+  isActive?: boolean;
 }
 
 export interface DbblPaymentDetails {

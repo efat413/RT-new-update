@@ -14,7 +14,9 @@ export const HeroCarousel: React.FC = () => {
   const touchEndX = useRef<number | null>(null);
   const touchEndY = useRef<number | null>(null);
 
-  const activeSlides = Array.isArray(slides) && slides.length > 0 ? slides : [];
+  const activeSlides = (Array.isArray(slides) ? slides : []).filter(
+    (s) => s.isActive !== false && (s as any).is_active !== 0 && (s as any).status !== 'inactive'
+  );
 
   // Authoritative master aspect ratio: Desktop 1200:480 (5:2 = 2.5:1)
   // Strictly identical across ALL screen sizes (mobile, tablet, laptop, desktop, ultra-wide)

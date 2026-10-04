@@ -697,6 +697,23 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, [setSlides, showNotification]);
 
+  const reorderSlides = useCallback(async (
+    orderedItems: Array<{ id: string; sort_order?: number; sortOrder?: number } | string>
+  ): Promise<{ success: boolean; sliders?: CarouselSlide[]; error?: string }> => {
+    try {
+      const updated = await slidersApi.reorder(orderedItems);
+      if (Array.isArray(updated)) {
+        setSlides(updated);
+      }
+      showNotification('success', 'Order Saved', 'Banner slide order saved to D1 database.');
+      return { success: true, sliders: updated };
+    } catch (err: any) {
+      const errorMsg = err?.message || 'Failed to save slide order to D1 database';
+      showNotification('error', 'Order Save Failed', errorMsg, 6000);
+      return { success: false, error: errorMsg };
+    }
+  }, [setSlides, showNotification]);
+
   // Courier APIs Config
   const triggerCourierWebhooks = useCallback(async (event: string, courier: any): Promise<{ success: boolean; dispatchedCount: number; results: any[] }> => {
     try {
@@ -1360,6 +1377,7 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     updateSlide,
     deleteSlide,
     resetSlides,
+    reorderSlides,
     updateSettings,
     resetToDefaultSeed,
     users,
@@ -1434,6 +1452,7 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     updateSlide,
     deleteSlide,
     resetSlides,
+    reorderSlides,
     updateSettings,
     resetToDefaultSeed,
     users,

@@ -113,6 +113,7 @@ const defaultAdminStubs: AdminContextType = {
   updateSlide: async () => ({ success: false, error: 'Admin context not loaded' }),
   deleteSlide: async () => ({ success: false, error: 'Admin context not loaded' }),
   resetSlides: () => {},
+  reorderSlides: async () => ({ success: false, error: 'Admin context not loaded' }),
 
   // Settings & Seed
   updateSettings: async () => ({ success: false, error: 'Admin context not loaded' }),

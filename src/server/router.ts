@@ -21,6 +21,7 @@ import {
   getSliderById,
   insertSlider,
   updateSliderInD1,
+  reorderSlidersInD1,
   deleteSliderFromD1,
   // Store Settings
   getStoreSettings,
@@ -2433,8 +2434,42 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     }
   }
 
+  // Slider Reordering Endpoint (Accepts PUT/POST on /api/sliders/order and /api/admin/sliders/order)
+  if (path === '/api/sliders/order' || path === '/api/admin/sliders/order') {
+    if (method === 'PUT' || method === 'POST') {
+      const { auth, errorResponse } = await requireAuth(request, env);
+      if (errorResponse) return errorResponse;
+      const permErr = requirePermission(auth!, 'slider.manage');
+      if (permErr) return permErr;
+
+      try {
+        const body = (await request.json()) as any;
+        const items = Array.isArray(body) ? body : (body.slides || body.sliders || body.order || []);
+        if (!Array.isArray(items) || items.length === 0) {
+          return jsonResponse({ success: false, error: 'Non-empty array expected for slider ordering.' }, 400);
+        }
+        const updated = await reorderSlidersInD1(env.DB, items);
+        return jsonResponse(
+          {
+            success: true,
+            count: updated.length,
+            sliders: updated,
+            message: 'Slider ordering updated successfully in D1 database.',
+          },
+          200,
+          {
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+          }
+        );
+      } catch (err: any) {
+        console.error('Error reordering sliders:', err);
+        return jsonResponse({ success: false, error: err?.message || 'Failed to reorder sliders in D1.' }, 400);
+      }
+    }
+  }
+
   const sliderIdMatch = path.match(/^\/api\/sliders\/([^/]+)$/);
-  if (sliderIdMatch) {
+  if (sliderIdMatch && sliderIdMatch[1] !== 'order') {
     const slideId = decodeURIComponent(sliderIdMatch[1]);
 
     if (method === 'GET') {

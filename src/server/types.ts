@@ -173,6 +173,7 @@ export interface SliderRow {
   accent_gradient: string | null;
   button_text: string | null;
   sort_order: number;
+  is_active?: number | null;
   created_at: string;
   updated_at: string;
 }

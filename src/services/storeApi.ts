@@ -485,6 +485,25 @@ export const slidersApi = {
     }
     return true;
   },
+
+  async reorder(orderedItems: Array<{ id: string; sort_order?: number; sortOrder?: number } | string>): Promise<CarouselSlide[]> {
+    cachedSliders = null;
+    storeHomepageApi.clearCache();
+    const payload = orderedItems.map((item, idx) =>
+      typeof item === 'string'
+        ? { id: item, sort_order: idx + 1 }
+        : { id: item.id, sort_order: item.sort_order ?? item.sortOrder ?? idx + 1 }
+    );
+    const res = await apiRequest<{ success: boolean; sliders: CarouselSlide[] }>(`${API_BASE}/sliders/order`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+    if (!res.success || !res.data?.sliders) {
+      throw new Error(res.error || 'Failed to update slider order in D1');
+    }
+    cachedSliders = { data: res.data.sliders, timestamp: Date.now() };
+    return res.data.sliders;
+  },
 };
 
 // ==========================================

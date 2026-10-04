@@ -214,6 +214,7 @@ const AdminPanelContent: React.FC = () => {
     updateSlide,
     deleteSlide,
     resetSlides,
+    reorderSlides,
     courierConfigs,
     addCourierConfig,
     updateCourierConfig,
@@ -5928,6 +5929,8 @@ const AdminPanelContent: React.FC = () => {
                 onUpdateSlide={updateSlide}
                 onDeleteSlide={deleteSlide}
                 onResetSlides={resetSlides}
+                onReorderSlides={reorderSlides}
+                canManageSlides={hasPermission('canManageSettings')}
               />
             </React.Suspense>
           )

@@ -442,6 +442,9 @@ export const INITIAL_SLIDES: CarouselSlide[] = [
     categoryId: 'cat-mens-accessories',
     imageUrl: 'https://images.unsplash.com/photo-1524805444758-089113d48a6d?auto=format&fit=crop&w=1400&q=80',
     buttonText: 'Shop Collection',
+    sort_order: 1,
+    sortOrder: 1,
+    isActive: true,
   },
   {
     id: 'slide-gadgets',
@@ -453,6 +456,9 @@ export const INITIAL_SLIDES: CarouselSlide[] = [
     categoryId: 'cat-gadgets-electronics',
     imageUrl: 'https://images.unsplash.com/photo-1505740420928-5e560c06d30e?auto=format&fit=crop&w=1400&q=80',
     buttonText: 'Shop Collection',
+    sort_order: 2,
+    sortOrder: 2,
+    isActive: true,
   },
   {
     id: 'slide-gifts',
@@ -464,6 +470,9 @@ export const INITIAL_SLIDES: CarouselSlide[] = [
     categoryId: 'cat-gift-items',
     imageUrl: 'https://images.unsplash.com/photo-1549465220-1a8b9238cd48?auto=format&fit=crop&w=1400&q=80',
     buttonText: 'Shop Collection',
+    sort_order: 3,
+    sortOrder: 3,
+    isActive: true,
   },
 ];
 

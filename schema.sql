@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS sliders (
   accent_gradient TEXT DEFAULT '',
   button_text TEXT DEFAULT '',
   sort_order INTEGER DEFAULT 0,
+  is_active INTEGER DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

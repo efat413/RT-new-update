@@ -427,7 +427,7 @@ export const ADMIN_PRODUCT_COLUMNS =
 export const CATEGORY_COLUMNS = 'id, name, slug, icon_name, description';
 
 export const SLIDER_COLUMNS =
-  'id, title, headline, subtext, tag, discount_badge, category_id, image_url, accent_gradient, button_text';
+  'id, title, headline, subtext, tag, discount_badge, category_id, image_url, accent_gradient, button_text, sort_order';
 
 export const COUPON_COLUMNS =
   'code, discount_type, discount_value, min_spend, description, is_active';
@@ -1075,6 +1075,44 @@ export async function deleteCategoryFromD1(db: D1Database, idOrSlug: string): Pr
 // 3. SLIDERS / HERO BANNERS DATABASE OPERATIONS
 // ==============================================================
 
+let cachedSliderTableColumns: Set<string> | null = null;
+let sliderSchemaHealingAttempted = false;
+
+export async function getSliderTableColumns(db: D1Database): Promise<Set<string>> {
+  if (cachedSliderTableColumns) return cachedSliderTableColumns;
+  try {
+    const res = await db.prepare("PRAGMA table_info('sliders')").all<{ name: string }>();
+    if (res.results && res.results.length > 0) {
+      cachedSliderTableColumns = new Set(res.results.map((r) => r.name.toLowerCase()));
+      return cachedSliderTableColumns;
+    }
+  } catch (err: any) {
+    console.warn('[D1] Could not query pragma_table_info for sliders:', err);
+  }
+  return new Set([
+    'id', 'title', 'headline', 'subtext', 'tag', 'discount_badge',
+    'category_id', 'image_url', 'accent_gradient', 'button_text', 'sort_order', 'is_active'
+  ]);
+}
+
+export async function ensureSliderTableSchema(db: D1Database): Promise<Set<string>> {
+  let columns = await getSliderTableColumns(db);
+  if (!sliderSchemaHealingAttempted) {
+    sliderSchemaHealingAttempted = true;
+    if (!columns.has('is_active')) {
+      try {
+        await db.prepare('ALTER TABLE sliders ADD COLUMN is_active INTEGER DEFAULT 1').run();
+        cachedSliderTableColumns = null;
+        columns = await getSliderTableColumns(db);
+        console.log('[D1] Self-healed: added missing is_active column to sliders table.');
+      } catch (err: any) {
+        console.warn('[D1] is_active column addition notice:', err?.message || err);
+      }
+    }
+  }
+  return columns;
+}
+
 export function rowToSlider(row: SliderRow): CarouselSlide {
   return {
     id: row.id,
@@ -1087,16 +1125,27 @@ export function rowToSlider(row: SliderRow): CarouselSlide {
     imageUrl: row.image_url,
     accentGradient: row.accent_gradient || undefined,
     buttonText: row.button_text || undefined,
+    sort_order: row.sort_order != null ? Number(row.sort_order) : 0,
+    sortOrder: row.sort_order != null ? Number(row.sort_order) : 0,
+    isActive: row.is_active != null ? Boolean(row.is_active) : true,
   };
 }
 
 export async function getAllSliders(db: D1Database): Promise<CarouselSlide[]> {
-  const result = await db.prepare(`SELECT ${SLIDER_COLUMNS} FROM sliders ORDER BY sort_order ASC, created_at ASC`).all<SliderRow>();
+  const cols = await ensureSliderTableSchema(db);
+  const selectCols = cols.has('is_active')
+    ? `${SLIDER_COLUMNS}, is_active`
+    : SLIDER_COLUMNS;
+  const result = await db.prepare(`SELECT ${selectCols} FROM sliders ORDER BY sort_order ASC, created_at ASC`).all<SliderRow>();
   return (result.results || []).map(rowToSlider);
 }
 
 export async function getSliderById(db: D1Database, id: string): Promise<CarouselSlide | null> {
-  const row = await db.prepare(`SELECT ${SLIDER_COLUMNS} FROM sliders WHERE id = ? LIMIT 1`).bind(id).first<SliderRow>();
+  const cols = await ensureSliderTableSchema(db);
+  const selectCols = cols.has('is_active')
+    ? `${SLIDER_COLUMNS}, is_active`
+    : SLIDER_COLUMNS;
+  const row = await db.prepare(`SELECT ${selectCols} FROM sliders WHERE id = ? LIMIT 1`).bind(id).first<SliderRow>();
   return row ? rowToSlider(row) : null;
 }
 
@@ -1108,6 +1157,21 @@ export async function insertSlider(db: D1Database, input: any): Promise<Carousel
     return updateSliderInD1(db, id, input);
   }
 
+  const cols = await ensureSliderTableSchema(db);
+
+  // If sortOrder is not provided or <= 0, place new slide at the end (max sort_order + 1)
+  let sortOrder = input.sortOrder != null || input.sort_order != null
+    ? Number(input.sortOrder ?? input.sort_order)
+    : 0;
+  if (!sortOrder || sortOrder <= 0) {
+    try {
+      const maxRow = await db.prepare('SELECT MAX(sort_order) as max_order FROM sliders').first<{ max_order: number | null }>();
+      sortOrder = (maxRow?.max_order ?? 0) + 1;
+    } catch {
+      sortOrder = 1;
+    }
+  }
+
   const title = (input.title || '').trim();
   const headline = (input.headline || '').trim();
   const subtext = input.subtext || '';
@@ -1117,87 +1181,225 @@ export async function insertSlider(db: D1Database, input: any): Promise<Carousel
   const imageUrl = input.imageUrl || '';
   const accentGradient = input.accentGradient || '';
   const buttonText = input.buttonText || 'Shop Now';
-  const sortOrder = Number(input.sortOrder) || 0;
+  const isActive = input.isActive !== undefined ? (input.isActive ? 1 : 0) : (input.is_active !== undefined ? (Number(input.is_active) ? 1 : 0) : 1);
 
-  await db
-    .prepare(`
-      INSERT INTO sliders (
-        id, title, headline, subtext, tag, discount_badge, category_id,
-        image_url, accent_gradient, button_text, sort_order, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-    `)
-    .bind(
-      id,
-      title,
-      headline,
-      subtext,
-      tag,
-      discountBadge,
-      categoryId,
-      imageUrl,
-      accentGradient,
-      buttonText,
-      sortOrder
-    )
-    .run();
+  if (cols.has('is_active')) {
+    await db
+      .prepare(`
+        INSERT INTO sliders (
+          id, title, headline, subtext, tag, discount_badge, category_id,
+          image_url, accent_gradient, button_text, sort_order, is_active, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `)
+      .bind(
+        id,
+        title,
+        headline,
+        subtext,
+        tag,
+        discountBadge,
+        categoryId,
+        imageUrl,
+        accentGradient,
+        buttonText,
+        sortOrder,
+        isActive
+      )
+      .run();
+  } else {
+    await db
+      .prepare(`
+        INSERT INTO sliders (
+          id, title, headline, subtext, tag, discount_badge, category_id,
+          image_url, accent_gradient, button_text, sort_order, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `)
+      .bind(
+        id,
+        title,
+        headline,
+        subtext,
+        tag,
+        discountBadge,
+        categoryId,
+        imageUrl,
+        accentGradient,
+        buttonText,
+        sortOrder
+      )
+      .run();
+  }
 
-  const row = await db.prepare(`SELECT ${SLIDER_COLUMNS} FROM sliders WHERE id = ?`).bind(id).first<SliderRow>();
+  const row = await getSliderById(db, id);
   if (!row) throw new Error('Failed to retrieve inserted slider');
-  return rowToSlider(row);
+  return row;
 }
 
-export async function updateSliderInD1(db: D1Database, id: string, updates: Partial<CarouselSlide>): Promise<CarouselSlide> {
-  const existing = await db.prepare(`SELECT ${SLIDER_COLUMNS} FROM sliders WHERE id = ?`).bind(id).first<SliderRow>();
+export async function updateSliderInD1(db: D1Database, id: string, updates: Partial<CarouselSlide> & { sort_order?: number; sortOrder?: number; isActive?: boolean; is_active?: number }): Promise<CarouselSlide> {
+  const existing = await getSliderById(db, id);
   if (!existing) throw new Error('Slider not found.');
 
-  const current = rowToSlider(existing);
-  const title = updates.title ?? current.title;
-  const headline = updates.headline ?? current.headline;
-  const subtext = updates.subtext ?? current.subtext;
-  const tag = updates.tag ?? current.tag;
-  const discountBadge = updates.discountBadge ?? current.discountBadge;
-  const categoryId = updates.categoryId ?? current.categoryId;
-  const imageUrl = updates.imageUrl ?? current.imageUrl;
-  const accentGradient = updates.accentGradient ?? current.accentGradient;
-  const buttonText = updates.buttonText ?? current.buttonText;
+  const cols = await ensureSliderTableSchema(db);
 
-  await db
-    .prepare(`
-      UPDATE sliders SET
-        title = ?,
-        headline = ?,
-        subtext = ?,
-        tag = ?,
-        discount_badge = ?,
-        category_id = ?,
-        image_url = ?,
-        accent_gradient = ?,
-        button_text = ?,
-        updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `)
-    .bind(
-      title,
-      headline,
-      subtext,
-      tag,
-      discountBadge,
-      categoryId,
-      imageUrl,
-      accentGradient || null,
-      buttonText || null,
-      id
-    )
-    .run();
+  const title = updates.title ?? existing.title;
+  const headline = updates.headline ?? existing.headline;
+  const subtext = updates.subtext ?? existing.subtext;
+  const tag = updates.tag ?? existing.tag;
+  const discountBadge = updates.discountBadge ?? existing.discountBadge;
+  const categoryId = updates.categoryId ?? existing.categoryId;
+  const imageUrl = updates.imageUrl ?? existing.imageUrl;
+  const accentGradient = updates.accentGradient ?? existing.accentGradient;
+  const buttonText = updates.buttonText ?? existing.buttonText;
+  const sortOrder = updates.sort_order ?? updates.sortOrder ?? existing.sort_order ?? 0;
+  
+  const isActive = updates.isActive !== undefined 
+    ? (updates.isActive ? 1 : 0) 
+    : (updates.is_active !== undefined ? (Number(updates.is_active) ? 1 : 0) : (existing.isActive !== false ? 1 : 0));
 
-  const row = await db.prepare(`SELECT ${SLIDER_COLUMNS} FROM sliders WHERE id = ?`).bind(id).first<SliderRow>();
+  if (cols.has('is_active')) {
+    await db
+      .prepare(`
+        UPDATE sliders SET
+          title = ?,
+          headline = ?,
+          subtext = ?,
+          tag = ?,
+          discount_badge = ?,
+          category_id = ?,
+          image_url = ?,
+          accent_gradient = ?,
+          button_text = ?,
+          sort_order = ?,
+          is_active = ?,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `)
+      .bind(
+        title,
+        headline,
+        subtext,
+        tag,
+        discountBadge,
+        categoryId,
+        imageUrl,
+        accentGradient || null,
+        buttonText || null,
+        sortOrder,
+        isActive,
+        id
+      )
+      .run();
+  } else {
+    await db
+      .prepare(`
+        UPDATE sliders SET
+          title = ?,
+          headline = ?,
+          subtext = ?,
+          tag = ?,
+          discount_badge = ?,
+          category_id = ?,
+          image_url = ?,
+          accent_gradient = ?,
+          button_text = ?,
+          sort_order = ?,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `)
+      .bind(
+        title,
+        headline,
+        subtext,
+        tag,
+        discountBadge,
+        categoryId,
+        imageUrl,
+        accentGradient || null,
+        buttonText || null,
+        sortOrder,
+        id
+      )
+      .run();
+  }
+
+  const row = await getSliderById(db, id);
   if (!row) throw new Error('Failed to retrieve updated slider');
-  return rowToSlider(row);
+  return row;
+}
+
+export async function reorderSlidersInD1(
+  db: D1Database,
+  orderedItems: Array<{ id: string; sort_order?: number; sortOrder?: number } | string>
+): Promise<CarouselSlide[]> {
+  if (!Array.isArray(orderedItems) || orderedItems.length === 0) {
+    throw new Error('Invalid order payload: non-empty array expected');
+  }
+
+  // Extract and validate unique slide IDs
+  const rawIds = orderedItems.map((item) => (typeof item === 'string' ? item : item.id)).filter(Boolean);
+  const uniqueIds = Array.from(new Set(rawIds));
+  if (uniqueIds.length !== orderedItems.length) {
+    throw new Error('Duplicate slide IDs detected in ordering request');
+  }
+
+  // Fetch all current sliders from DB to verify IDs exist
+  const currentSliders = await getAllSliders(db);
+  const currentMap = new Map(currentSliders.map((s) => [s.id, s]));
+
+  for (const id of uniqueIds) {
+    if (!currentMap.has(id)) {
+      throw new Error(`Slide not found with ID: ${id}`);
+    }
+  }
+
+  // Normalize sequential order 1, 2, 3, ... N
+  const statements: D1PreparedStatement[] = [];
+  uniqueIds.forEach((id, index) => {
+    const normalizedSortOrder = index + 1;
+    statements.push(
+      db.prepare('UPDATE sliders SET sort_order = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(normalizedSortOrder, id)
+    );
+  });
+
+  // Handle any slides in DB that weren't included in the request: place them after normalized (N + 1, N + 2...)
+  let nextOrder = uniqueIds.length + 1;
+  for (const slide of currentSliders) {
+    if (!uniqueIds.includes(slide.id)) {
+      statements.push(
+        db.prepare('UPDATE sliders SET sort_order = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(nextOrder++, slide.id)
+      );
+    }
+  }
+
+  if (statements.length > 0) {
+    if (typeof db.batch === 'function') {
+      await db.batch(statements);
+    } else {
+      await Promise.all(statements.map((s) => s.run()));
+    }
+  }
+
+  return getAllSliders(db);
 }
 
 export async function deleteSliderFromD1(db: D1Database, id: string): Promise<boolean> {
   const res = await db.prepare('DELETE FROM sliders WHERE id = ?').bind(id).run();
-  return res.success;
+  if (!res.success) return false;
+
+  // Normalize remaining slides' sort_order: 1, 2, 3...
+  try {
+    const remaining = await getAllSliders(db);
+    if (remaining.length > 0 && typeof db.batch === 'function') {
+      const reindexStatements = remaining.map((s, idx) =>
+        db.prepare('UPDATE sliders SET sort_order = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(idx + 1, s.id)
+      );
+      await db.batch(reindexStatements);
+    }
+  } catch (err: any) {
+    console.warn('[D1] deleteSlider reindexing notice:', err?.message || err);
+  }
+
+  return true;
 }
 
 // ==============================================================
@@ -1476,7 +1678,7 @@ export async function getHomepageMetadata(db: D1Database): Promise<{
 
   const settings = parseStoreSettingsRow(resSettings);
   const categories = resCategories.map(rowToCategory);
-  const sliders = resSliders.map(rowToSlider);
+  const sliders = resSliders.map(rowToSlider).filter((s) => s.isActive !== false);
 
   return { settings, categories, sliders };
 }

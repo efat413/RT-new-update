@@ -97,6 +97,7 @@ export interface AdminContextType {
   updateSlide: (id: string, updates: Partial<CarouselSlide>) => Promise<{ success: boolean; slider?: CarouselSlide; error?: string }>;
   deleteSlide: (id: string) => Promise<{ success: boolean; error?: string }>;
   resetSlides: () => Promise<void> | void;
+  reorderSlides: (orderedItems: Array<{ id: string; sort_order?: number; sortOrder?: number } | string>) => Promise<{ success: boolean; sliders?: CarouselSlide[]; error?: string }>;
 
   // Settings & Seed
   updateSettings: (newSettings: Partial<StoreSettings>) => Promise<{ success: boolean; settings?: StoreSettings; error?: string }>;
