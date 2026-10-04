@@ -313,7 +313,7 @@ export const CheckoutSection: React.FC = () => {
     } catch (err: any) {
       setIsSubmitting(false);
       setErrorMessage(
-        err?.message || 'Could not place order. Please verify your details and connection and try again.'
+        err?.message || 'Unable to place the order right now. Please try again.'
       );
     }
   };

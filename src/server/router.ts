@@ -480,9 +480,15 @@ async function checkRateLimit(
           await db.prepare('DELETE FROM rate_limits WHERE key = ?').bind(key).run().catch(() => {});
         }
       }
-    } catch (err) {
+    } catch (err: any) {
+      const errMsg = err?.message || String(err);
+      if (errMsg.includes('no such table') || errMsg.includes('rate_limits')) {
+        console.error('[RATE_LIMIT_SCHEMA_MISMATCH] rate_limits table missing in D1:', errMsg);
+        // Fall back to Tier 1 in-memory limiter without blocking all legitimate checkouts
+        return { allowed: true };
+      }
       console.error('[RateLimit Error] Rate limits table check failed in D1:', err);
-      // Security: Rate-limit failures must not silently result in allowed: true
+      // Security: Non-schema transient errors default to safe rate limit wait
       return { allowed: false, remainingSeconds: 60 };
     }
   }
@@ -3712,7 +3718,14 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
   }
 
   if (path === '/api/orders' && method === 'POST') {
+    let stage = 'init';
+    let orderId = '';
+    let orderNumber = '';
+    let productCount = 0;
+    let paymentMethod = 'COD';
+
     try {
+      stage = 'abuse_checks';
       cleanupOrderAbuseMaps();
       const isDev = isDevEnvironment(env);
       const clientIp = getClientIp(request, isDev);
@@ -3771,6 +3784,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         );
       }
 
+      stage = 'parse_payload';
       const body = (await request.json().catch(() => ({}))) as any;
       const orderData: Order = body.order || body;
 
@@ -3778,6 +3792,12 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         return jsonResponse({ success: false, error: 'Invalid order payload.' }, 400);
       }
 
+      productCount = Array.isArray(orderData.items) ? orderData.items.length : 0;
+      paymentMethod = orderData.paymentMethod || 'COD';
+      orderId = (orderData.id || '').trim();
+      orderNumber = (orderData.orderNumber || '').trim();
+
+      stage = 'identity_resolution';
       // Authoritative Identity Determination:
       // If user is authenticated, derive userId & userEmail authoritatively from verified token.
       // If user is guest/unauthenticated, strip client-supplied userId and userEmail to prevent account impersonation.
@@ -3800,6 +3820,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         orderData.userEmail = undefined;
       }
 
+      stage = 'customer_validation';
       if (!orderData.customer?.fullName || !orderData.customer?.phone || !orderData.customer?.fullAddress) {
         return jsonResponse({ success: false, error: 'Missing required customer delivery information.' }, 400);
       }
@@ -3809,6 +3830,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         return jsonResponse({ success: false, error: 'A valid 11-digit Bangladeshi contact phone number is required.' }, 400);
       }
 
+      stage = 'phone_rate_limits';
       // 2b. Abuse Protection: Phone-based throttling (burst protection: max 2 in 60s; sustained: max 6 in 1 hour)
       const phoneBurstCheck = await checkRateLimit(`order_ph_burst:${cleanPhone}`, 2, 60, env.DB);
       if (!phoneBurstCheck.allowed) {
@@ -3838,6 +3860,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         );
       }
 
+      stage = 'idempotency_check';
       // 3. Duplicate & Idempotency Protection: Client-provided idempotency key with persistent D1 storage
       const idempotencyKey = (
         request.headers.get('idempotency-key') ||
@@ -3864,8 +3887,13 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
                 });
               }
             }
-          } catch (idemErr) {
-            console.error('[Idempotency Error] Error checking D1 order_idempotency:', idemErr);
+          } catch (idemErr: any) {
+            const errStr = idemErr?.message || String(idemErr);
+            if (errStr.includes('no such table')) {
+              console.error('[IDEMPOTENCY_SCHEMA_MISMATCH] order_idempotency table missing in D1:', errStr);
+            } else {
+              console.error('[Idempotency Error] Error checking D1 order_idempotency:', idemErr);
+            }
           }
         }
 
@@ -3884,6 +3912,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         }
       }
 
+      stage = 'duplicate_click_check';
       // 4. Duplicate Click Protection: Rapid double-click within 15 seconds from same phone & IP
       const itemsCount = Array.isArray(orderData.items) ? orderData.items.length : 0;
       const doubleClickFingerprint = `${clientIp}:${cleanPhone}:${itemsCount}`;
@@ -3900,12 +3929,14 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         );
       }
 
+      stage = 'insert_order_and_stock_batch';
       // 5. Server-side authoritative validation, pricing calculation & stock deduction via insertOrder
-      // Secure IP assignment: The customer cannot submit or override the IP value (Requirement 1)
       orderData.customerIp = clientIp;
       delete (orderData as any).customer_ip;
 
       const saved = await insertOrder(env.DB, orderData);
+      orderId = saved.id;
+      orderNumber = saved.orderNumber;
 
       // Record rate limit attempts for phone throttling
       await Promise.all([
@@ -3913,6 +3944,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         recordFailedAttempt(`order_ph_hour:${cleanPhone}`, 6, 3600, env.DB),
       ]);
 
+      stage = 'idempotency_cache';
       // Cache for idempotency & rapid duplicate avoidance (both persistent D1 and memory)
       if (idempotencyKey) {
         orderIdempotencyMap.set(idempotencyKey, { order: saved, timestamp: Date.now() });
@@ -3929,13 +3961,19 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
               VALUES (?, ?, ?, ?, ?)
               ON CONFLICT(key) DO UPDATE SET response_json = excluded.response_json
             `).bind(idempotencyKey, saved.id, saved.orderNumber, JSON.stringify(idempotentPayload), Date.now()).run();
-          } catch (idemSaveErr) {
-            console.error('[Idempotency Error] Error saving order_idempotency to D1:', idemSaveErr);
+          } catch (idemSaveErr: any) {
+            const errStr = idemSaveErr?.message || String(idemSaveErr);
+            if (errStr.includes('no such table')) {
+              console.error('[IDEMPOTENCY_SCHEMA_MISMATCH] order_idempotency table missing in D1 on save:', errStr);
+            } else {
+              console.error('[Idempotency Error] Error saving order_idempotency to D1:', idemSaveErr);
+            }
           }
         }
       }
       orderRecentSubmissionMap.set(doubleClickFingerprint, { order: saved, timestamp: Date.now() });
 
+      stage = 'complete';
       return jsonResponse(
         {
           success: true,
@@ -3945,27 +3983,57 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         201
       );
     } catch (err: any) {
-      console.error('Error saving order to D1:', err);
-      const errMsg = err?.message || '';
+      const errMsg = err?.message || String(err);
+      const errType = err?.name || 'Error';
+
+      // Structured logging for Cloudflare Worker diagnostics (Section 2)
+      // Never log sensitive credentials, payment tokens, or full card details
+      console.error(
+        `[ORDER_CREATE_ERROR]\n` +
+        `stage: ${stage}\n` +
+        `error type: ${errType}\n` +
+        `error message: ${errMsg}\n` +
+        `order id: ${orderId || 'none'}\n` +
+        `order number: ${orderNumber || 'none'}\n` +
+        `product count: ${productCount}\n` +
+        `payment method: ${paymentMethod}`
+      );
+      if (err?.stack) {
+        console.error('[ORDER_CREATE_ERROR_STACK]', err.stack);
+      }
+
       const isClientValidationError = [
         'required',
-        'Bangladeshi contact phone number',
+        'bangladeshi contact phone number',
+        'invalid phone',
         'restricted for this contact number',
-        'Daily order limit',
+        'blocked contact number',
+        'daily order limit',
+        'order limit reached',
         'at least one item',
-        'missing a valid product ID',
-        'Invalid item quantity',
-        'Insufficient stock',
+        'missing a valid product id',
+        'invalid item quantity',
+        'insufficient stock',
         'sold out during checkout',
         'does not exist',
         'already exists',
-      ].some((pattern) => errMsg.includes(pattern));
+        'duplicate submission',
+        'empty cart',
+      ].some((pattern) => errMsg.toLowerCase().includes(pattern.toLowerCase()));
 
       const hasSqlOrDbLeak = /sqlite|syntax error|d1_error|table |column |foreign key|prepare|bind|database/i.test(errMsg);
       if (isClientValidationError && !hasSqlOrDbLeak) {
         return jsonResponse({ success: false, error: errMsg }, 400);
       }
-      return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+
+      // Safe customer-facing 500 response (Requirement 2 & 13)
+      return jsonResponse(
+        {
+          success: false,
+          error: 'Unable to place the order right now. Please try again.',
+        },
+        500
+      );
     }
   }
 

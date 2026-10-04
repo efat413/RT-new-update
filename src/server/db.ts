@@ -82,6 +82,86 @@ export async function getProductTableColumns(db: D1Database): Promise<Set<string
   ]);
 }
 
+let cachedOrderTableColumns: Set<string> | null = null;
+
+export const EXPECTED_ORDER_COLUMNS = [
+  'id',
+  'order_number',
+  'user_id',
+  'user_email',
+  'customer_name',
+  'customer_phone',
+  'customer_address',
+  'customer_district',
+  'customer_zone',
+  'customer_notes',
+  'items_json',
+  'subtotal',
+  'delivery_fee',
+  'total_amount',
+  'coupon_code',
+  'discount_amount',
+  'payment_method',
+  'payment_status',
+  'transaction_id',
+  'shipping_status',
+  'courier_name',
+  'courier_waybill',
+  'consignment_id',
+  'courier_status',
+  'courier_booking_json',
+  'dbbl_details_json',
+  'card_details_json',
+  'last_courier_sync',
+  'total_cost',
+  'total_profit',
+  'customer_ip',
+  'created_at',
+  'updated_at',
+] as const;
+
+export async function getOrderTableColumns(db: D1Database, forceRefresh = false): Promise<Set<string>> {
+  if (!forceRefresh && cachedOrderTableColumns && cachedOrderTableColumns.size > 0) {
+    return cachedOrderTableColumns;
+  }
+  try {
+    const res = await db.prepare("SELECT name FROM pragma_table_info('orders')").all<{ name: string }>();
+    if (res.results && res.results.length > 0) {
+      cachedOrderTableColumns = new Set(res.results.map((r) => r.name.toLowerCase()));
+      return cachedOrderTableColumns;
+    }
+  } catch (err) {
+    console.warn('[D1] Could not query pragma_table_info for orders:', err);
+  }
+  return new Set([
+    'id', 'order_number', 'user_id', 'user_email',
+    'customer_name', 'customer_phone', 'customer_address', 'customer_district', 'customer_zone', 'customer_notes',
+    'items_json', 'subtotal', 'delivery_fee', 'total_amount', 'coupon_code', 'discount_amount',
+    'payment_method', 'payment_status', 'transaction_id',
+    'shipping_status', 'courier_name', 'courier_waybill', 'consignment_id', 'courier_status',
+    'courier_booking_json', 'dbbl_details_json', 'card_details_json', 'last_courier_sync',
+    'total_cost', 'total_profit', 'customer_ip', 'created_at', 'updated_at'
+  ]);
+}
+
+/**
+ * Preflight schema verification for orders table (Requirement 5).
+ * Inspects PRAGMA table_info('orders') and checks for missing expected columns.
+ * Logs [ORDER_SCHEMA_MISMATCH] server-side if any expected columns are missing.
+ * Does NOT perform dangerous runtime ALTER TABLE migrations during customer checkout requests.
+ */
+export async function verifyOrderTableSchema(db: D1Database, forceRefresh = false): Promise<{
+  availableColumns: Set<string>;
+  missingColumns: string[];
+}> {
+  const available = await getOrderTableColumns(db, forceRefresh);
+  const missing = EXPECTED_ORDER_COLUMNS.filter((col) => !available.has(col));
+  if (missing.length > 0) {
+    console.error(`[ORDER_SCHEMA_MISMATCH]\nMissing columns:\n${missing.join(', ')}`);
+  }
+  return { availableColumns: available, missingColumns: missing };
+}
+
 /**
  * Migration verification & self-healing helper.
  * Ensures the products table contains all required columns (e.g. video_url, buying_price, featured_sort_order)
@@ -2829,52 +2909,8 @@ export async function insertOrder(db: D1Database, order: Order): Promise<Order> 
     customerFullAddress = `${customerFullAddress}, ${order.customer.area.trim()}`;
   }
 
-  // 9. Construct atomic D1 batch transaction (order insertion + stock deductions)
-  const insertSqlWithIp = `
-    INSERT INTO orders (
-      id, order_number, user_id, user_email,
-      customer_name, customer_phone, customer_address, customer_district, customer_zone, customer_notes,
-      items_json, subtotal, delivery_fee, total_amount, coupon_code, discount_amount,
-      payment_method, payment_status, transaction_id,
-      shipping_status, courier_name, courier_waybill, consignment_id, courier_status,
-      courier_booking_json, dbbl_details_json, card_details_json, last_courier_sync,
-      total_cost, total_profit,
-      customer_ip,
-      created_at, updated_at
-    ) VALUES (
-      ?, ?, ?, ?,
-      ?, ?, ?, ?, ?, ?,
-      ?, ?, ?, ?, ?, ?,
-      ?, ?, ?,
-      ?, ?, ?, ?, ?,
-      ?, ?, ?, ?,
-      ?, ?,
-      ?,
-      ?, CURRENT_TIMESTAMP
-    );
-  `;
-
-  const insertSqlLegacy = `
-    INSERT INTO orders (
-      id, order_number, user_id, user_email,
-      customer_name, customer_phone, customer_address, customer_district, customer_zone, customer_notes,
-      items_json, subtotal, delivery_fee, total_amount, coupon_code, discount_amount,
-      payment_method, payment_status, transaction_id,
-      shipping_status, courier_name, courier_waybill, consignment_id, courier_status,
-      courier_booking_json, dbbl_details_json, card_details_json, last_courier_sync,
-      total_cost, total_profit,
-      created_at, updated_at
-    ) VALUES (
-      ?, ?, ?, ?,
-      ?, ?, ?, ?, ?, ?,
-      ?, ?, ?, ?, ?, ?,
-      ?, ?, ?,
-      ?, ?, ?, ?, ?,
-      ?, ?, ?, ?,
-      ?, ?,
-      ?, CURRENT_TIMESTAMP
-    );
-  `;
+  // 9. Preflight Schema Verification & Dynamic Column Mapping (Requirement 5 & 7)
+  const { availableColumns: orderCols } = await verifyOrderTableSchema(db);
 
   const stockStatements = verifiedItems.map((it) => {
     const qty = Number(it.quantity) || 1;
@@ -2888,47 +2924,65 @@ export async function insertOrder(db: D1Database, order: Order): Promise<Order> 
   let currentOrderNumber = orderNumber;
   let batchSuccess = false;
   let collisionRetries = 0;
-  let useLegacyInsert = false;
 
   while (!batchSuccess && collisionRetries < maxRetries) {
-    const activeInsertSql = useLegacyInsert ? insertSqlLegacy : insertSqlWithIp;
-    const bindParams = [
-      orderId,
-      currentOrderNumber,
-      order.userId || null,
-      order.userEmail || null,
-      order.customer.fullName.trim(),
-      cleanCustomerPhone,
-      customerFullAddress,
-      order.customer.district || null,
-      deliveryZone,
-      order.customer.notes || null,
-      JSON.stringify(verifiedItems),
-      authoritativeSubtotal,
-      authoritativeDeliveryFee,
-      authoritativeTotalAmount,
-      finalCouponCode,
-      authoritativeDiscount,
-      paymentMethod,
-      paymentStatus,
-      order.transactionId || null,
-      shippingStatus,
-      null, // Courier name initial null
-      null, // Courier waybill initial null
-      null, // Consignment ID initial null
-      null, // Courier status initial null
-      null,
-      order.dbblDetails ? JSON.stringify(order.dbblDetails) : null,
-      null,
-      null,
-      totalOrderCost,
-      totalGrossProfit,
+    // Dynamically pair column names and bind values based on verified table schema
+    // Guarantees 100% exact 1-to-1 match between SQL placeholders and .bind() parameters
+    const insertFields: Array<{ col: string; val: any }> = [
+      { col: 'id', val: orderId },
+      { col: 'order_number', val: currentOrderNumber },
+      { col: 'user_id', val: order.userId || null },
+      { col: 'user_email', val: order.userEmail || null },
+      { col: 'customer_name', val: order.customer.fullName.trim() },
+      { col: 'customer_phone', val: cleanCustomerPhone },
+      { col: 'customer_address', val: customerFullAddress },
+      { col: 'customer_district', val: order.customer.district || null },
+      { col: 'customer_zone', val: deliveryZone },
+      { col: 'customer_notes', val: order.customer.notes || null },
+      { col: 'items_json', val: JSON.stringify(verifiedItems) },
+      { col: 'subtotal', val: authoritativeSubtotal },
+      { col: 'delivery_fee', val: authoritativeDeliveryFee },
+      { col: 'total_amount', val: authoritativeTotalAmount },
+      { col: 'coupon_code', val: finalCouponCode },
+      { col: 'discount_amount', val: authoritativeDiscount },
+      { col: 'payment_method', val: paymentMethod },
+      { col: 'payment_status', val: paymentStatus },
+      { col: 'transaction_id', val: order.transactionId || null },
+      { col: 'shipping_status', val: shippingStatus },
+      { col: 'courier_name', val: null },
+      { col: 'courier_waybill', val: null },
+      { col: 'consignment_id', val: null },
+      { col: 'courier_status', val: null },
+      { col: 'courier_booking_json', val: null },
+      { col: 'dbbl_details_json', val: order.dbblDetails ? JSON.stringify(order.dbblDetails) : null },
+      { col: 'card_details_json', val: null },
+      { col: 'last_courier_sync', val: null },
     ];
 
-    if (!useLegacyInsert) {
-      bindParams.push(order.customerIp || null);
+    if (orderCols.has('total_cost')) {
+      insertFields.push({ col: 'total_cost', val: totalOrderCost });
     }
-    bindParams.push(order.createdAt || new Date().toISOString());
+    if (orderCols.has('total_profit')) {
+      insertFields.push({ col: 'total_profit', val: totalGrossProfit });
+    }
+    if (orderCols.has('customer_ip')) {
+      insertFields.push({ col: 'customer_ip', val: order.customerIp || null });
+    }
+    insertFields.push({ col: 'created_at', val: order.createdAt || new Date().toISOString() });
+
+    const colNames = insertFields.map((f) => f.col).join(', ');
+    const placeholders = insertFields.map(() => '?').join(', ');
+    const bindParams = insertFields.map((f) => f.val);
+
+    const activeInsertSql = `
+      INSERT INTO orders (
+        ${colNames},
+        updated_at
+      ) VALUES (
+        ${placeholders},
+        CURRENT_TIMESTAMP
+      )
+    `;
 
     const orderInsertStmt = db.prepare(activeInsertSql).bind(...bindParams);
 
@@ -2937,10 +2991,6 @@ export async function insertOrder(db: D1Database, order: Order): Promise<Order> 
       const failed = batchResults.find((r) => !r.success);
       if (failed) {
         const errorText = failed.error || '';
-        if (errorText.includes('customer_ip') && !useLegacyInsert) {
-          useLegacyInsert = true;
-          continue;
-        }
         if (errorText.includes('UNIQUE constraint') && errorText.includes('order_number') && collisionRetries + 1 < maxRetries) {
           collisionRetries++;
           currentOrderNumber = generateSecureOrderNumber();
@@ -2950,7 +3000,7 @@ export async function insertOrder(db: D1Database, order: Order): Promise<Order> 
           throw new Error('One or more items in your cart sold out during checkout. Please refresh your cart.');
         }
         console.error('Database transaction error during order placement batch:', errorText);
-        throw new Error('Database transaction failed during order placement.');
+        throw new Error(`Database transaction failed during order placement: ${errorText}`);
       }
 
       // Verify that every stock update statement actually affected exactly 1 row
