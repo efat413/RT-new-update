@@ -25,6 +25,7 @@ import {
   UserRow,
   ExpenseRow,
   PasswordResetTokenRow,
+  BlockedIpRow,
 } from './types';
 import {
   INITIAL_SETTINGS,
@@ -168,6 +169,7 @@ export interface SanitizationOptions {
   isSuperAdmin?: boolean;
   canViewBuyingPrice?: boolean;
   canViewProfit?: boolean;
+  canViewIp?: boolean;
 }
 
 /**
@@ -232,6 +234,7 @@ export function sanitizeOrderForRole(
   const isSuper = typeof roleOrOptions === 'boolean' ? roleOrOptions : Boolean(roleOrOptions?.isSuperAdmin);
   const canViewBuyingPrice = isSuper || (typeof roleOrOptions === 'object' && Boolean(roleOrOptions.canViewBuyingPrice));
   const canViewProfit = isSuper || (typeof roleOrOptions === 'object' && Boolean(roleOrOptions.canViewProfit));
+  const canViewIp = isSuper || (typeof roleOrOptions === 'object' && Boolean(roleOrOptions.canViewIp));
 
   const safeItems = (order.items || []).map((item) => {
     const safeProduct = sanitizeProductForRole(item.product, { isSuperAdmin: isSuper, canViewBuyingPrice, canViewProfit });
@@ -280,6 +283,16 @@ export function sanitizeOrderForRole(
     delete safeOrder.netProfit;
     delete safeOrder.net_profit;
     delete safeOrder.profit;
+  }
+
+  if (canViewIp) {
+    if (order.customerIp) safeOrder.customerIp = order.customerIp;
+    if (order.isIpBlocked !== undefined) safeOrder.isIpBlocked = Boolean(order.isIpBlocked);
+  } else {
+    delete safeOrder.customerIp;
+    delete safeOrder.customer_ip;
+    delete safeOrder.isIpBlocked;
+    delete safeOrder.is_ip_blocked;
   }
 
   return safeOrder as Order;
@@ -2312,6 +2325,7 @@ export function rowToOrder(row: OrderRow): Order {
     lastCourierSync: row.last_courier_sync || undefined,
     totalCost: row.total_cost != null ? Number(row.total_cost) : (items.reduce((s: number, it: any) => s + (Number(it.productCost) || (Number(it.buyingPriceSnapshot || it.product?.buyingPrice || 0) * (Number(it.quantity) || 1))), 0)),
     totalGrossProfit: row.total_profit != null ? Number(row.total_profit) : Math.max(0, (Number(row.subtotal) || 0) - (row.total_cost != null ? Number(row.total_cost) : (items.reduce((s: number, it: any) => s + (Number(it.productCost) || (Number(it.buyingPriceSnapshot || it.product?.buyingPrice || 0) * (Number(it.quantity) || 1))), 0)))),
+    customerIp: (row as any).customer_ip || undefined,
     createdAt: row.created_at,
   };
 }
@@ -2816,7 +2830,31 @@ export async function insertOrder(db: D1Database, order: Order): Promise<Order> 
   }
 
   // 9. Construct atomic D1 batch transaction (order insertion + stock deductions)
-  const insertSql = `
+  const insertSqlWithIp = `
+    INSERT INTO orders (
+      id, order_number, user_id, user_email,
+      customer_name, customer_phone, customer_address, customer_district, customer_zone, customer_notes,
+      items_json, subtotal, delivery_fee, total_amount, coupon_code, discount_amount,
+      payment_method, payment_status, transaction_id,
+      shipping_status, courier_name, courier_waybill, consignment_id, courier_status,
+      courier_booking_json, dbbl_details_json, card_details_json, last_courier_sync,
+      total_cost, total_profit,
+      customer_ip,
+      created_at, updated_at
+    ) VALUES (
+      ?, ?, ?, ?,
+      ?, ?, ?, ?, ?, ?,
+      ?, ?, ?, ?, ?, ?,
+      ?, ?, ?,
+      ?, ?, ?, ?, ?,
+      ?, ?, ?, ?,
+      ?, ?,
+      ?,
+      ?, CURRENT_TIMESTAMP
+    );
+  `;
+
+  const insertSqlLegacy = `
     INSERT INTO orders (
       id, order_number, user_id, user_email,
       customer_name, customer_phone, customer_address, customer_district, customer_zone, customer_notes,
@@ -2850,49 +2888,59 @@ export async function insertOrder(db: D1Database, order: Order): Promise<Order> 
   let currentOrderNumber = orderNumber;
   let batchSuccess = false;
   let collisionRetries = 0;
+  let useLegacyInsert = false;
 
   while (!batchSuccess && collisionRetries < maxRetries) {
-    const orderInsertStmt = db
-      .prepare(insertSql)
-      .bind(
-        orderId,
-        currentOrderNumber,
-        order.userId || null,
-        order.userEmail || null,
-        order.customer.fullName.trim(),
-        cleanCustomerPhone,
-        customerFullAddress,
-        order.customer.district || null,
-        deliveryZone,
-        order.customer.notes || null,
-        JSON.stringify(verifiedItems),
-        authoritativeSubtotal,
-        authoritativeDeliveryFee,
-        authoritativeTotalAmount,
-        finalCouponCode,
-        authoritativeDiscount,
-        paymentMethod,
-        paymentStatus,
-        order.transactionId || null,
-        shippingStatus,
-        null, // Courier name initial null
-        null, // Courier waybill initial null
-        null, // Consignment ID initial null
-        null, // Courier status initial null
-        null,
-        order.dbblDetails ? JSON.stringify(order.dbblDetails) : null,
-        null,
-        null,
-        totalOrderCost,
-        totalGrossProfit,
-        order.createdAt || new Date().toISOString()
-      );
+    const activeInsertSql = useLegacyInsert ? insertSqlLegacy : insertSqlWithIp;
+    const bindParams = [
+      orderId,
+      currentOrderNumber,
+      order.userId || null,
+      order.userEmail || null,
+      order.customer.fullName.trim(),
+      cleanCustomerPhone,
+      customerFullAddress,
+      order.customer.district || null,
+      deliveryZone,
+      order.customer.notes || null,
+      JSON.stringify(verifiedItems),
+      authoritativeSubtotal,
+      authoritativeDeliveryFee,
+      authoritativeTotalAmount,
+      finalCouponCode,
+      authoritativeDiscount,
+      paymentMethod,
+      paymentStatus,
+      order.transactionId || null,
+      shippingStatus,
+      null, // Courier name initial null
+      null, // Courier waybill initial null
+      null, // Consignment ID initial null
+      null, // Courier status initial null
+      null,
+      order.dbblDetails ? JSON.stringify(order.dbblDetails) : null,
+      null,
+      null,
+      totalOrderCost,
+      totalGrossProfit,
+    ];
+
+    if (!useLegacyInsert) {
+      bindParams.push(order.customerIp || null);
+    }
+    bindParams.push(order.createdAt || new Date().toISOString());
+
+    const orderInsertStmt = db.prepare(activeInsertSql).bind(...bindParams);
 
     try {
       const batchResults = await db.batch([orderInsertStmt, ...stockStatements]);
       const failed = batchResults.find((r) => !r.success);
       if (failed) {
         const errorText = failed.error || '';
+        if (errorText.includes('customer_ip') && !useLegacyInsert) {
+          useLegacyInsert = true;
+          continue;
+        }
         if (errorText.includes('UNIQUE constraint') && errorText.includes('order_number') && collisionRetries + 1 < maxRetries) {
           collisionRetries++;
           currentOrderNumber = generateSecureOrderNumber();
@@ -3684,3 +3732,123 @@ export async function checkAndRecordWebhookFingerprint(
     return { isReplay: false };
   }
 }
+
+// ==============================================================
+// 13. BLOCKED IPS DATABASE OPERATIONS (Server-Authoritative IP Blocklist)
+// ==============================================================
+
+/**
+ * Validates IP address format (IPv4, IPv6, localhost, loopback) to prevent SQL injection or arbitrary data
+ */
+export function isValidIpAddress(ip: string): boolean {
+  if (!ip || typeof ip !== 'string') return false;
+  const clean = ip.trim();
+  // IPv4 standard format: e.g. 192.168.1.1
+  const ipv4Regex = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+  if (ipv4Regex.test(clean)) return true;
+  // IPv6 format check: e.g. 2001:db8::1 or standard colon separation
+  if (clean.includes(':') && /^[0-9a-fA-F:]+$/.test(clean) && clean.length >= 2 && clean.length <= 45) {
+    return true;
+  }
+  // Local development / loopback fallbacks
+  if (clean === 'localhost' || clean === '127.0.0.1' || clean === '::1' || clean.startsWith('cf-ray-')) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Checks whether an IP address is present in the D1 blocked_ips table
+ */
+export async function isIpAddressBlocked(db: D1Database, ip: string): Promise<boolean> {
+  if (!ip || !ip.trim()) return false;
+  try {
+    const row = await db
+      .prepare('SELECT id FROM blocked_ips WHERE ip_address = ? LIMIT 1')
+      .bind(ip.trim())
+      .first<{ id: string }>();
+    return Boolean(row);
+  } catch (err: any) {
+    return false;
+  }
+}
+
+/**
+ * Retrieves details for a specific blocked IP record from D1
+ */
+export async function getBlockedIpDetails(db: D1Database, ip: string): Promise<BlockedIpRow | null> {
+  if (!ip || !ip.trim()) return null;
+  try {
+    return await db
+      .prepare('SELECT * FROM blocked_ips WHERE ip_address = ? LIMIT 1')
+      .bind(ip.trim())
+      .first<BlockedIpRow>();
+  } catch (err) {
+    console.error('Error fetching blocked_ip in D1:', err);
+    return null;
+  }
+}
+
+/**
+ * Retrieves all blocked IP records from D1 (ordered by newest first)
+ */
+export async function getAllBlockedIps(db: D1Database): Promise<BlockedIpRow[]> {
+  try {
+    const res = await db
+      .prepare('SELECT * FROM blocked_ips ORDER BY blocked_at DESC')
+      .all<BlockedIpRow>();
+    return res.results || [];
+  } catch (err) {
+    return [];
+  }
+}
+
+/**
+ * Blocks an IP address server-side in D1
+ */
+export async function blockIpAddress(
+  db: D1Database,
+  ip: string,
+  options: { reason?: string; blockedBy?: string }
+): Promise<BlockedIpRow> {
+  const cleanIp = ip.trim();
+  const id = `blk-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+  const now = new Date().toISOString();
+  await db
+    .prepare(`
+      INSERT INTO blocked_ips (id, ip_address, reason, blocked_by, blocked_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(ip_address) DO UPDATE SET
+        reason = excluded.reason,
+        blocked_by = excluded.blocked_by,
+        updated_at = excluded.updated_at
+    `)
+    .bind(
+      id,
+      cleanIp,
+      options.reason?.trim() || null,
+      options.blockedBy?.trim() || null,
+      now,
+      now
+    )
+    .run();
+
+  const saved = await getBlockedIpDetails(db, cleanIp);
+  if (!saved) {
+    throw new Error('Failed to retrieve blocked IP entry from D1 after insert.');
+  }
+  return saved;
+}
+
+/**
+ * Unblocks an IP address server-side in D1
+ */
+export async function unblockIpAddress(db: D1Database, ip: string): Promise<boolean> {
+  const cleanIp = ip.trim();
+  const res = await db
+    .prepare('DELETE FROM blocked_ips WHERE ip_address = ?')
+    .bind(cleanIp)
+    .run();
+  return Boolean(res.success);
+}
+

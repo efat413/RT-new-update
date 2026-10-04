@@ -617,6 +617,89 @@ const AdminPanelContent: React.FC = () => {
     currentUser.role === 'super_admin'
   );
 
+  // Granular IP Tracking & IP Blocking permissions (Requirements 2, 3, 4)
+  const canViewIp = Boolean(
+    isSuperAdmin ||
+    hasPermission('orders.view_ip') ||
+    hasPermission('order.view_ip')
+  );
+
+  const canBlockIp = Boolean(
+    isSuperAdmin ||
+    hasPermission('orders.block_ip') ||
+    hasPermission('order.block_ip')
+  );
+
+  // IP Tracking & Blocking State
+  const [isBlockingIp, setIsBlockingIp] = useState(false);
+  const [blockIpReason, setBlockIpReason] = useState('');
+  const [blockIpModalOpen, setBlockIpModalOpen] = useState(false);
+  const [blockTargetData, setBlockTargetData] = useState<{
+    ip: string;
+    orderId?: string;
+    orderNumber?: string;
+    isCurrentlyBlocked: boolean;
+  } | null>(null);
+
+  const handleInitiateBlockIp = (
+    ip: string,
+    orderId?: string,
+    orderNumber?: string,
+    isCurrentlyBlocked: boolean = false
+  ) => {
+    if (!canBlockIp) {
+      showNotification('error', 'Permission Denied', 'You do not have permission to block or unblock IP addresses.');
+      return;
+    }
+    setBlockTargetData({ ip, orderId, orderNumber, isCurrentlyBlocked });
+    setBlockIpReason('');
+    setBlockIpModalOpen(true);
+  };
+
+  const handleConfirmToggleBlockIp = async () => {
+    if (!blockTargetData?.ip) return;
+    setIsBlockingIp(true);
+    try {
+      if (blockTargetData.isCurrentlyBlocked) {
+        const res = await orderApi.unblockIp(blockTargetData.ip, blockTargetData.orderId);
+        if (res.success) {
+          showNotification('success', 'IP Unblocked', `Customer IP ${blockTargetData.ip} has been unblocked successfully.`);
+          if (editingOrder && editingOrder.customerIp === blockTargetData.ip) {
+            setEditingOrder((prev) => (prev ? { ...prev, isIpBlocked: false } : null));
+          }
+          setBlockIpModalOpen(false);
+          setBlockTargetData(null);
+        } else {
+          showNotification('error', 'Unblock Failed', res.error || 'Failed to unblock IP address.');
+        }
+      } else {
+        const res = await orderApi.blockIp(
+          blockTargetData.ip,
+          blockIpReason.trim() || undefined,
+          blockTargetData.orderId
+        );
+        if (res.success) {
+          showNotification(
+            'success',
+            'IP Blocked',
+            `Customer IP ${blockTargetData.ip} has been blocked. Future public orders from this IP will be rejected.`
+          );
+          if (editingOrder && editingOrder.customerIp === blockTargetData.ip) {
+            setEditingOrder((prev) => (prev ? { ...prev, isIpBlocked: true } : null));
+          }
+          setBlockIpModalOpen(false);
+          setBlockTargetData(null);
+        } else {
+          showNotification('error', 'Block Failed', res.error || 'Failed to block IP address.');
+        }
+      }
+    } catch (err: any) {
+      showNotification('error', 'Error', err?.message || 'Failed to update IP blocklist.');
+    } finally {
+      setIsBlockingIp(false);
+    }
+  };
+
   // Executive Dashboard Profit & Financial summaries
   const [todayProfit, setTodayProfit] = useState<ProfitAnalyticsSummary | null>(null);
   const [monthProfit, setMonthProfit] = useState<ProfitAnalyticsSummary | null>(null);
@@ -3441,6 +3524,25 @@ const AdminPanelContent: React.FC = () => {
                                 <p className="text-[10px] text-slate-500 italic mt-1 bg-slate-50 p-1 rounded border border-slate-100 max-w-[220px]">
                                   Note: "{ord.customer.notes}"
                                 </p>
+                              )}
+                              {canViewIp && (
+                                <div className="mt-1.5 flex items-center gap-1.5 text-[10px] font-mono">
+                                  <span className="text-slate-400">IP:</span>
+                                  <span className="font-semibold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                                    {ord.customerIp || 'Not available'}
+                                  </span>
+                                  {ord.customerIp && (
+                                    ord.isIpBlocked ? (
+                                      <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 text-rose-700 border border-rose-200">
+                                        Blocked
+                                      </span>
+                                    ) : (
+                                      <span className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                        Active
+                                      </span>
+                                    )
+                                  )}
+                                </div>
                               )}
                             </td>
 
@@ -9413,6 +9515,78 @@ const AdminPanelContent: React.FC = () => {
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium text-slate-800 focus:ring-2 focus:ring-rose-500"
                   />
                 </div>
+
+                {/* Customer IP Tracking & Blocking (Requirement 2 & 5 & 12) */}
+                {canViewIp && (
+                  <div className="pt-3 border-t border-slate-100">
+                    <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[11px] font-bold text-slate-700">Customer Originating IP:</span>
+                          <span className="font-mono text-xs font-semibold text-slate-900 bg-white px-2 py-0.5 rounded border border-slate-200">
+                            {editingOrder.customerIp || 'Not available'}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 text-[11px]">
+                          <span className="text-slate-500 font-medium">IP Status:</span>
+                          {editingOrder.customerIp ? (
+                            editingOrder.isIpBlocked ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
+                                <ShieldAlert className="w-3 h-3 text-rose-600" />
+                                Blocked
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                <ShieldCheck className="w-3 h-3 text-emerald-600" />
+                                Active
+                              </span>
+                            )
+                          ) : (
+                            <span className="text-slate-400 italic">No IP recorded</span>
+                          )}
+                        </div>
+                      </div>
+
+                      {canBlockIp && editingOrder.customerIp && (
+                        <div className="shrink-0">
+                          {editingOrder.isIpBlocked ? (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleInitiateBlockIp(
+                                  editingOrder.customerIp!,
+                                  editingOrder.id,
+                                  editingOrder.orderNumber,
+                                  true
+                                )
+                              }
+                              className="px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                            >
+                              <RotateCcw className="w-3.5 h-3.5" />
+                              <span>Unblock IP</span>
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleInitiateBlockIp(
+                                  editingOrder.customerIp!,
+                                  editingOrder.id,
+                                  editingOrder.orderNumber,
+                                  false
+                                )
+                              }
+                              className="px-3 py-1.5 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                            >
+                              <Ban className="w-3.5 h-3.5" />
+                              <span>Block IP</span>
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* ============================================================ */}
@@ -10339,6 +10513,46 @@ const AdminPanelContent: React.FC = () => {
         variant={confirmDialog.variant}
         onConfirm={confirmDialog.onConfirm}
       />
+
+      {/* IP Blocking & Unblocking Confirmation Modal (Requirement 5) */}
+      <ConfirmModal
+        isOpen={blockIpModalOpen}
+        onClose={() => {
+          if (!isBlockingIp) {
+            setBlockIpModalOpen(false);
+            setBlockTargetData(null);
+          }
+        }}
+        onConfirm={handleConfirmToggleBlockIp}
+        title={blockTargetData?.isCurrentlyBlocked ? 'Unblock Customer IP' : 'Block Customer IP Address'}
+        message={
+          blockTargetData?.isCurrentlyBlocked
+            ? `Are you sure you want to unblock customer IP address "${blockTargetData.ip}"? Future public orders from this IP will be accepted normally.`
+            : `Blocking IP address "${blockTargetData?.ip}" will immediately prevent any future public orders from being submitted from this device or network. Are you sure you want to proceed?`
+        }
+        confirmText={
+          isBlockingIp
+            ? (blockTargetData?.isCurrentlyBlocked ? 'Unblocking...' : 'Blocking...')
+            : (blockTargetData?.isCurrentlyBlocked ? 'Unblock IP' : 'Block IP')
+        }
+        cancelText="Cancel"
+        variant={blockTargetData?.isCurrentlyBlocked ? 'primary' : 'danger'}
+      >
+        {!blockTargetData?.isCurrentlyBlocked && (
+          <div className="mt-3">
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Reason for Blocking (Optional internal audit note):
+            </label>
+            <input
+              type="text"
+              value={blockIpReason}
+              onChange={(e) => setBlockIpReason(e.target.value)}
+              placeholder="e.g. Fraudulent order, fake delivery details, spam"
+              className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl bg-slate-50 focus:bg-white focus:ring-2 focus:ring-rose-500 focus:outline-hidden"
+            />
+          </div>
+        )}
+      </ConfirmModal>
     </div>
   );
 };

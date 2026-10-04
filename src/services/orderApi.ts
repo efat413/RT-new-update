@@ -515,4 +515,71 @@ export const orderApi = {
       };
     }
   },
+
+  /**
+   * Blocks a customer IP address in D1 database
+   */
+  async blockIp(ipAddress: string, reason?: string, orderId?: string): Promise<{ success: boolean; message?: string; isBlocked?: boolean; error?: string }> {
+    try {
+      const url = orderId
+        ? `${API_BASE}/orders/${encodeURIComponent(orderId)}/block-ip`
+        : `${API_BASE}/admin/blocked-ips`;
+      const res = await fetch(url, {
+        method: 'POST',
+        credentials: 'include',
+        headers: getHeaders(),
+        body: JSON.stringify({ ipAddress, reason, orderId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        return {
+          success: false,
+          error: data.error || `Failed to block IP (HTTP ${res.status})`,
+        };
+      }
+      return {
+        success: true,
+        isBlocked: true,
+        message: data.message || 'IP address blocked successfully',
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err?.message || 'Network error blocking IP',
+      };
+    }
+  },
+
+  /**
+   * Unblocks a customer IP address in D1 database
+   */
+  async unblockIp(ipAddress: string, orderId?: string): Promise<{ success: boolean; message?: string; isBlocked?: boolean; error?: string }> {
+    try {
+      const url = orderId
+        ? `${API_BASE}/orders/${encodeURIComponent(orderId)}/block-ip`
+        : `${API_BASE}/admin/blocked-ips/${encodeURIComponent(ipAddress)}`;
+      const res = await fetch(url, {
+        method: 'DELETE',
+        credentials: 'include',
+        headers: getHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        return {
+          success: false,
+          error: data.error || `Failed to unblock IP (HTTP ${res.status})`,
+        };
+      }
+      return {
+        success: true,
+        isBlocked: false,
+        message: data.message || 'IP address unblocked successfully',
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err?.message || 'Network error unblocking IP',
+      };
+    }
+  },
 };

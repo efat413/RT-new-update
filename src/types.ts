@@ -200,7 +200,19 @@ export interface Order {
   // Super Admin Cost & Profit snapshots
   totalCost?: number;
   totalGrossProfit?: number;
+  // Customer IP tracking and blocking
+  customerIp?: string;
+  isIpBlocked?: boolean;
   createdAt: string;
+}
+
+export interface BlockedIpEntry {
+  id: string;
+  ipAddress: string;
+  reason?: string;
+  blockedBy?: string;
+  blockedAt: string;
+  updatedAt?: string;
 }
 
 export type ExpenseType = 'facebook_ads' | 'courier' | 'payment_gateway' | 'other';

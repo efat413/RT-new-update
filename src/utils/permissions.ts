@@ -87,6 +87,12 @@ export function hasUserPermission(
     if (permStr === 'report.profit' || permStr === 'product.view_profit') {
       return Boolean(user.permissions['report.profit'] || user.permissions['product.view_profit']);
     }
+    if (permStr === 'orders.view_ip' || permStr === 'order.view_ip') {
+      return Boolean(user.permissions['orders.view_ip'] || user.permissions['order.view_ip']);
+    }
+    if (permStr === 'orders.block_ip' || permStr === 'order.block_ip') {
+      return Boolean(user.permissions['orders.block_ip'] || user.permissions['order.block_ip']);
+    }
 
     // Check granular key against legacy mapping if not directly specified
     if (isValidPermissionKey(permStr)) {

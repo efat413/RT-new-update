@@ -112,7 +112,17 @@ export interface OrderRow {
   last_courier_sync: string | null;
   total_cost: number | null;
   total_profit: number | null;
+  customer_ip?: string | null;
   created_at: string;
+  updated_at: string;
+}
+
+export interface BlockedIpRow {
+  id: string;
+  ip_address: string;
+  reason: string | null;
+  blocked_by: string | null;
+  blocked_at: string;
   updated_at: string;
 }
 

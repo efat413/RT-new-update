@@ -84,6 +84,8 @@ const PERMISSION_GROUPS: PermissionGroupDefinition[] = [
       'order.status_change',
       'order.cancel',
       'order.delete',
+      'orders.view_ip',
+      'orders.block_ip',
     ],
   },
   {
