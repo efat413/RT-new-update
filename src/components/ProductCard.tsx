@@ -22,6 +22,7 @@ const ProductCardComponent: React.FC<ProductCardProps> = ({ product, priority = 
     getProductUrl,
     getCategoryUrl,
     setSelectedCategory,
+    navigateToCategory,
     setCurrentView,
     setSelectedProductId,
     loadProductById,
@@ -50,10 +51,7 @@ const ProductCardComponent: React.FC<ProductCardProps> = ({ product, priority = 
     e.preventDefault();
     e.stopPropagation();
     if (category) {
-      setSelectedCategory(category.id);
-      setCurrentView('store');
-      window.history.pushState({}, '', getCategoryUrl(category.slug || category.id));
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+      navigateToCategory(category.id);
     }
   };
 

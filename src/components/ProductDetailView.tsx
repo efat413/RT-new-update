@@ -57,6 +57,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
     getProductUrl,
     getCategoryUrl,
     setSelectedCategory,
+    navigateToCategory,
     openProductVideo,
     currentUser,
     isAdminLoggedIn,
@@ -447,9 +448,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
               onClick={(e) => {
                 if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
                 e.preventDefault();
-                setSelectedCategory(category.id);
-                setCurrentView('store');
-                window.history.pushState({}, '', getCategoryUrl(category.slug || category.id));
+                navigateToCategory(category.id);
               }}
               className="underline decoration-slate-300 underline-offset-4 hover:decoration-rose-500 hover:text-rose-600 focus:outline-none focus:ring-2 focus:ring-rose-500/40 focus:ring-offset-1 rounded-xs transition-colors font-medium"
             >
@@ -647,9 +646,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
                     onClick={(e) => {
                       if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
                       e.preventDefault();
-                      setSelectedCategory(category.id);
-                      setCurrentView('store');
-                      window.history.pushState({}, '', getCategoryUrl(category.slug || category.id));
+                      navigateToCategory(category.id);
                     }}
                     className="inline-block text-xs font-bold text-rose-600 uppercase tracking-wider bg-rose-50 hover:bg-rose-100 px-3 py-1 rounded-lg transition-colors cursor-pointer"
                   >
@@ -1141,9 +1138,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
                 onClick={(e) => {
                   if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
                   e.preventDefault();
-                  setSelectedCategory(category.id);
-                  setCurrentView('store');
-                  window.history.pushState({}, '', getCategoryUrl(category.slug || category.id));
+                  navigateToCategory(category.id);
                 }}
                 className="text-xs font-bold text-rose-600 hover:text-rose-700"
               >

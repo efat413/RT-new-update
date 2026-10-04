@@ -26,6 +26,7 @@ export const Footer: React.FC = () => {
     settings,
     categories,
     setSelectedCategory,
+    navigateToCategory,
     setCurrentView,
     setSearchQuery,
     setQuickViewProduct,
@@ -240,10 +241,7 @@ export const Footer: React.FC = () => {
                 <li key={cat.id}>
                   <button
                     onClick={() => {
-                      setSelectedCategory(cat.id);
-                      setCurrentView('store');
-                      const el = document.getElementById('products-feed-section');
-                      if (el) el.scrollIntoView({ behavior: 'smooth' });
+                      navigateToCategory(cat.id);
                     }}
                     className="hover:text-rose-400 transition-colors text-slate-400 text-left cursor-pointer flex items-center gap-1.5"
                   >

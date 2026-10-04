@@ -54,6 +54,7 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
     getProductUrl,
     getCategoryUrl,
     setSelectedCategory,
+    navigateToCategory,
     setQuickViewProduct,
     videoModalProduct,
     openProductVideo,
@@ -521,7 +522,7 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
                       if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
                       e.preventDefault();
                       onClose();
-                      setSelectedCategory(category.id);
+                      navigateToCategory(category.id);
                     }}
                     className="underline decoration-slate-300 underline-offset-4 hover:decoration-rose-500 hover:text-rose-600 focus:outline-none focus:ring-2 focus:ring-rose-500/40 focus:ring-offset-1 rounded-xs transition-colors font-medium"
                   >
@@ -542,7 +543,7 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
                   if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
                   e.preventDefault();
                   onClose();
-                  setSelectedCategory(category.id);
+                  navigateToCategory(category.id);
                 }}
                 className="inline-block text-xs font-bold text-rose-600 uppercase tracking-wider bg-rose-50 hover:bg-rose-100 px-2.5 py-1 rounded-lg transition-colors cursor-pointer"
                 title={`Browse ${category.name}`}

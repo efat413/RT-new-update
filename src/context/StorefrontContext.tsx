@@ -74,6 +74,8 @@ export interface StorefrontContextType {
 
   selectedCategory: string | null;
   setSelectedCategory: (catId: string | null) => void;
+  navigateToCategory: (categoryIdOrSlug: string | null) => void;
+  categoryNavSeq: number;
   searchQuery: string;
   setSearchQuery: (query: string) => void;
   quickViewProduct: Product | null;
@@ -326,10 +328,95 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     return null;
   });
 
+  const [categoryNavSeq, setCategoryNavSeq] = useState<number>(0);
+
   const setSelectedCategory = useCallback((catId: string | null) => {
     setSelectedCategoryState((prev) => (prev === catId ? prev : catId));
     setCategoryPage((prev) => (prev === 1 ? prev : 1));
   }, []);
+
+  const navigateToCategory = useCallback((categoryIdOrSlug: string | null) => {
+    setSelectedProductId(null);
+    setSearchQueryState('');
+    setCurrentView('store');
+
+    if (!categoryIdOrSlug) {
+      setSelectedCategoryState(null);
+      setCategoryPage(1);
+      if (typeof window !== 'undefined' && (window.location.pathname !== '/' || window.location.search)) {
+        window.history.pushState({}, '', '/');
+      }
+      setCategoryNavSeq((prev) => prev + 1);
+      return;
+    }
+
+    if (categoryIdOrSlug === 'featured') {
+      setSelectedCategoryState('featured');
+      setCategoryPage(1);
+      if (typeof window !== 'undefined' && window.location.pathname !== '/featured') {
+        window.history.pushState({}, '', '/featured');
+      }
+      setCategoryNavSeq((prev) => prev + 1);
+      return;
+    }
+
+    const cat = categories.find(
+      (c) => c.id === categoryIdOrSlug || c.slug?.toLowerCase() === categoryIdOrSlug.toLowerCase()
+    );
+    const targetId = cat ? cat.id : categoryIdOrSlug;
+    const targetSlug = cat ? cat.slug || cat.id : categoryIdOrSlug;
+
+    setSelectedCategoryState(targetId);
+    setCategoryPage(1);
+    if (typeof window !== 'undefined') {
+      const targetUrl = `/category/${encodeURIComponent(targetSlug)}`;
+      if (window.location.pathname !== targetUrl) {
+        window.history.pushState({}, '', targetUrl);
+      }
+    }
+    setCategoryNavSeq((prev) => prev + 1);
+  }, [categories]);
+
+  // Synchronize browser history (popstate) with category navigation
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handlePopState = () => {
+      const pathname = window.location.pathname;
+      if (pathname === '/reset-password') {
+        setCurrentView('reset-password');
+        return;
+      }
+      if (pathname === '/admin' || pathname.startsWith('/admin/')) {
+        setCurrentView('admin');
+        return;
+      }
+      if (pathname.startsWith('/product/')) {
+        const prodId = decodeURIComponent(pathname.replace(/^\/product\//, '').replace(/\/$/, '')).trim();
+        setSelectedProductId(prodId || null);
+        setCurrentView('product');
+        return;
+      }
+      setCurrentView('store');
+      setSelectedProductId(null);
+      if (pathname.startsWith('/category/')) {
+        const raw = decodeURIComponent(pathname.replace(/^\/category\//, '').replace(/\/$/, '')).trim();
+        const found = categories.find(
+          (c) => c.slug?.toLowerCase() === raw.toLowerCase() || c.id === raw
+        );
+        setSelectedCategoryState(found ? found.id : raw);
+        setCategoryNavSeq((prev) => prev + 1);
+      } else if (pathname === '/featured') {
+        setSelectedCategoryState('featured');
+        setCategoryNavSeq((prev) => prev + 1);
+      } else if (pathname === '/') {
+        setSelectedCategoryState(null);
+        setSearchQueryState('');
+        setCategoryNavSeq((prev) => prev + 1);
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [categories]);
 
   const [searchQuery, setSearchQueryState] = useState<string>('');
 
@@ -1337,6 +1424,8 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     refreshProductsByIds,
     selectedCategory,
     setSelectedCategory,
+    navigateToCategory,
+    categoryNavSeq,
     searchQuery,
     setSearchQuery,
     quickViewProduct,
@@ -1418,6 +1507,8 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     loadProductById,
     refreshProductsByIds,
     selectedCategory,
+    navigateToCategory,
+    categoryNavSeq,
     searchQuery,
     quickViewProduct,
     videoModalProduct,

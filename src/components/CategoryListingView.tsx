@@ -88,7 +88,7 @@ export const CategoryListingView: React.FC<CategoryListingViewProps> = ({
   };
 
   return (
-    <div ref={containerRef} className="pt-4 pb-12">
+    <div ref={containerRef} className="pt-4 pb-12 scroll-mt-20 sm:scroll-mt-24">
       {/* Breadcrumb Navigation */}
       <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-xs text-slate-500 mb-3">
         <button

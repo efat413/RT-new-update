@@ -4,7 +4,7 @@ import { useStore } from '../context/StoreContext';
 import { getResponsiveImageProps, getResponsiveImageUrl } from '../utils/responsiveImage';
 
 export const HeroCarousel: React.FC = () => {
-  const { setSelectedCategory, slides, settings } = useStore();
+  const { navigateToCategory, slides, settings } = useStore();
   const [currentSlide, setCurrentSlide] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
 
@@ -72,11 +72,12 @@ export const HeroCarousel: React.FC = () => {
 
   const handleShopNow = (catId?: string) => {
     if (catId) {
-      setSelectedCategory(catId);
-    }
-    const feed = document.getElementById('products-feed-section');
-    if (feed) {
-      feed.scrollIntoView({ behavior: 'smooth' });
+      navigateToCategory(catId);
+    } else {
+      const feed = document.getElementById('products-feed-section');
+      if (feed) {
+        feed.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
     }
   };
 
@@ -233,7 +234,7 @@ export const HeroCarousel: React.FC = () => {
                 onClick={(e) => {
                   e.stopPropagation();
                   const feed = document.getElementById('products-feed-section');
-                  if (feed) feed.scrollIntoView({ behavior: 'smooth' });
+                  if (feed) feed.scrollIntoView({ behavior: 'smooth', block: 'start' });
                 }}
                 className="hidden sm:inline-flex px-3 sm:px-4 py-1.5 sm:py-2.5 rounded-xl sm:rounded-2xl bg-black/40 hover:bg-black/60 text-white font-semibold text-xs backdrop-blur-md border border-white/20 transition-colors"
               >

@@ -57,6 +57,7 @@ export const Header: React.FC = () => {
     setSearchQuery,
     selectedCategory,
     setSelectedCategory,
+    navigateToCategory,
     currentView,
     setCurrentView,
     isAdminLoggedIn,
@@ -142,14 +143,8 @@ export const Header: React.FC = () => {
     currentUser?.role === 'sub_admin';
 
   const handleCategorySelect = (categoryId: string | null) => {
-    setSelectedCategory(categoryId);
-    setSelectedProductId(null);
     setMobileMenuOpen(false);
-    setCurrentView('store');
-    const el = document.getElementById('products-feed-section');
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth' });
-    }
+    navigateToCategory(categoryId);
   };
 
   // Navigates directly to the clean storefront homepage smoothly

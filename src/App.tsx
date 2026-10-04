@@ -254,6 +254,8 @@ const StoreContent: React.FC = () => {
     categories,
     selectedCategory,
     setSelectedCategory,
+    navigateToCategory,
+    categoryNavSeq,
     searchQuery,
     setSearchQuery,
     currentView,
@@ -290,26 +292,56 @@ const StoreContent: React.FC = () => {
   }, [homeCategoryFilter, categories]);
 
   const handleViewAllFeatured = React.useCallback(() => {
-    setSelectedCategory('featured');
-    window.history.pushState({}, '', '/featured');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }, [setSelectedCategory]);
+    navigateToCategory('featured');
+  }, [navigateToCategory]);
 
   const handleViewAllCategory = React.useCallback((category: any) => {
-    setSelectedCategory(category.id);
-    const categoryUrl = `/category/${category.slug || category.id}`;
-    window.history.pushState({}, '', categoryUrl);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }, [setSelectedCategory]);
+    navigateToCategory(category.id);
+  }, [navigateToCategory]);
 
   const handleBackToHome = React.useCallback(() => {
-    setSelectedCategory(null);
-    setSearchQuery('');
-    if (window.location.pathname !== '/' || window.location.search) {
-      window.history.pushState({}, '', '/');
+    navigateToCategory(null);
+  }, [navigateToCategory]);
+
+  const prevCategoryRef = React.useRef<string | null>(selectedCategory);
+  const prevNavSeqRef = React.useRef<number>(categoryNavSeq);
+  const isInitialMountRef = React.useRef<boolean>(true);
+
+  // Authoritative post-render scroll orchestration for category navigation
+  React.useEffect(() => {
+    if (isInitialMountRef.current) {
+      isInitialMountRef.current = false;
+      prevCategoryRef.current = selectedCategory;
+      prevNavSeqRef.current = categoryNavSeq;
+      return;
     }
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }, [setSelectedCategory, setSearchQuery]);
+
+    const isNavSeqChanged = categoryNavSeq !== prevNavSeqRef.current;
+    const isCategoryChanged = selectedCategory !== prevCategoryRef.current;
+
+    prevNavSeqRef.current = categoryNavSeq;
+    prevCategoryRef.current = selectedCategory;
+
+    if (!isNavSeqChanged && !isCategoryChanged) {
+      return;
+    }
+
+    if (selectedCategory) {
+      // Execute post-render scroll in requestAnimationFrame after React has mounted the category view
+      const rafId = requestAnimationFrame(() => {
+        const targetEl = document.getElementById('products-feed-section');
+        if (targetEl) {
+          targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } else {
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+      });
+      return () => cancelAnimationFrame(rafId);
+    } else if (isNavSeqChanged) {
+      // Navigated back to homepage
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  }, [selectedCategory, categoryNavSeq]);
 
   React.useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -629,7 +661,7 @@ const StoreContent: React.FC = () => {
 
           {/* If viewing a specific category or searching, show separate CategoryListingView with server-side pagination */}
           {selectedCategory || searchQuery.trim() ? (
-            <section id="products-feed-section">
+            <section id="products-feed-section" className="scroll-mt-20 sm:scroll-mt-24">
               <ErrorBoundary
                 fallbackTitle="Category Unavailable"
                 fallbackMessage="Could not load product collection. Click dismiss or return home."
@@ -649,7 +681,7 @@ const StoreContent: React.FC = () => {
                     isFeaturedListing={selectedCategory === 'featured'}
                     onPageChange={(page) => setCategoryPage(page)}
                     onSortChange={(sort) => setCategorySortBy(sort)}
-                    onCategoryChange={(catId) => setSelectedCategory(catId)}
+                    onCategoryChange={(catId) => navigateToCategory(catId)}
                     onBackToHome={handleBackToHome}
                     onShareCategory={copyCategoryLink}
                     siteName={settings?.siteName}
@@ -659,7 +691,7 @@ const StoreContent: React.FC = () => {
             </section>
           ) : (
             /* Homepage: Lightweight category sections with recycling carousels */
-            <section id="products-feed-section" className="pt-2 pb-12">
+            <section id="products-feed-section" className="pt-2 pb-12 scroll-mt-20 sm:scroll-mt-24">
               {/* Featured Products Carousel - Bounded to 6-8 items, lazy loaded, deterministic sort */}
               {homeCategoryFilter === 'all' && featuredProducts && featuredProducts.length > 0 && (
                 <FeaturedProductsCarousel
