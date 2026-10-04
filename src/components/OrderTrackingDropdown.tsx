@@ -505,27 +505,15 @@ export const OrderTrackingDropdown: React.FC<OrderTrackingDropdownProps> = ({ on
               {/* Action Buttons */}
               <div className="pt-2 border-t border-slate-200 flex flex-col sm:flex-row gap-2">
                 {isPending && canModifyDirectly ? (
-                  <>
-                    <button
-                      type="button"
-                      id="dropdown-edit-delivery-btn"
-                      onClick={() => setIsEditModalOpen(true)}
-                      className="flex-1 py-2 px-3 rounded-xl bg-slate-900 hover:bg-black text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs active:scale-95 transition-all cursor-pointer"
-                    >
-                      <Edit2 className="w-3.5 h-3.5 text-rose-300" />
-                      <span>Edit Delivery Info</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      id="dropdown-cancel-order-btn"
-                      onClick={handleCancelOrder}
-                      className="flex-1 py-2 px-3 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs flex items-center justify-center gap-1.5 border border-rose-200 active:scale-95 transition-all cursor-pointer"
-                    >
-                      <Trash2 className="w-3.5 h-3.5 text-rose-600" />
-                      <span>Cancel Order</span>
-                    </button>
-                  </>
+                  <button
+                    type="button"
+                    id="dropdown-edit-delivery-btn"
+                    onClick={() => setIsEditModalOpen(true)}
+                    className="w-full py-2 px-3 rounded-xl bg-slate-900 hover:bg-black text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs active:scale-95 transition-all cursor-pointer"
+                  >
+                    <Edit2 className="w-3.5 h-3.5 text-rose-300" />
+                    <span>Edit Delivery Info</span>
+                  </button>
                 ) : (
                   <div className="w-full p-2.5 bg-slate-100 rounded-xl text-[11px] text-slate-600 flex items-center justify-between gap-2">
                     <span className="truncate">
@@ -583,7 +571,7 @@ export const OrderTrackingDropdown: React.FC<OrderTrackingDropdownProps> = ({ on
         </button>
       </div>
 
-      {/* Sub-modals for editing or canceling order */}
+      {/* Sub-modal for editing delivery info */}
       {matchedOrder && (
         <EditDeliveryInfoModal
           order={matchedOrder}
@@ -594,19 +582,6 @@ export const OrderTrackingDropdown: React.FC<OrderTrackingDropdownProps> = ({ on
             setActionFeedback('Delivery information updated successfully!');
             setTimeout(() => setActionFeedback(null), 3000);
           }}
-        />
-      )}
-
-      {matchedOrder && (
-        <ConfirmModal
-          isOpen={isCancelConfirmOpen}
-          onClose={() => setIsCancelConfirmOpen(false)}
-          title={`Cancel Order #${matchedOrder.orderNumber}?`}
-          message={`Are you sure you want to cancel Order #${matchedOrder.orderNumber}?\n\nThis will permanently delete the order and restore all items back into store inventory.`}
-          confirmText="Yes, Cancel Order"
-          cancelText="Keep Order"
-          variant="danger"
-          onConfirm={executeCancelOrder}
         />
       )}
     </div>

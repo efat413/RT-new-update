@@ -909,24 +909,14 @@ export const UserAccountModal: React.FC<UserAccountModalProps> = ({ isOpen, onCl
 
                             <div className="flex items-center gap-1.5 flex-wrap">
                               {ord.shippingStatus === 'Pending' && (
-                                <>
-                                  <button
-                                    type="button"
-                                    onClick={() => setEditingOrder(ord)}
-                                    className="px-2.5 py-1 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700 font-semibold text-[11px] flex items-center gap-1 transition-colors cursor-pointer"
-                                  >
-                                    <Edit2 className="w-3 h-3 text-slate-500" />
-                                    <span>Edit Address</span>
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => setCancelingOrder(ord)}
-                                    className="px-2.5 py-1 rounded-lg border border-rose-200 bg-rose-50/50 hover:bg-rose-100 text-rose-700 font-semibold text-[11px] flex items-center gap-1 transition-colors cursor-pointer"
-                                  >
-                                    <Trash2 className="w-3 h-3 text-rose-500" />
-                                    <span>Cancel</span>
-                                  </button>
-                                </>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingOrder(ord)}
+                                  className="px-2.5 py-1 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700 font-semibold text-[11px] flex items-center gap-1 transition-colors cursor-pointer"
+                                >
+                                  <Edit2 className="w-3 h-3 text-slate-500" />
+                                  <span>Edit Address</span>
+                                </button>
                               )}
 
                               <button
@@ -1008,28 +998,6 @@ export const UserAccountModal: React.FC<UserAccountModalProps> = ({ isOpen, onCl
         />
       )}
 
-      {/* Unified In-App Order Cancellation Confirmation Modal */}
-      <ConfirmModal
-        isOpen={!!cancelingOrder}
-        onClose={() => setCancelingOrder(null)}
-        title={`Cancel Order #${cancelingOrder?.orderNumber}?`}
-        message={`Are you sure you want to cancel Order #${cancelingOrder?.orderNumber}?\n\nThis will remove the order and automatically restore all items back into store inventory.`}
-        confirmText="Yes, Cancel Order"
-        cancelText="Keep Order"
-        variant="danger"
-        onConfirm={async () => {
-          if (cancelingOrder) {
-            const res = await cancelCustomerOrder(cancelingOrder.id);
-            if (res.success) {
-              setOrderActionNotice(res.message || `Order #${cancelingOrder.orderNumber} canceled successfully.`);
-            } else {
-              setOrderActionNotice(res.message || 'Failed to cancel order.');
-            }
-            setTimeout(() => setOrderActionNotice(null), 3500);
-            setCancelingOrder(null);
-          }
-        }}
-      />
       {/* Official Customer Invoice Modal */}
       {viewingInvoiceOrder && (
         <React.Suspense fallback={null}>

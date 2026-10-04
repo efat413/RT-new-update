@@ -11,4 +11,6 @@ export const STORAGE_KEYS = {
   COUPONS: 'rongdhonu_coupons',
   COURIER_WEBHOOKS: 'rongdhonu_courier_webhooks',
   COURIER_WEBHOOK_LOGS: 'rongdhonu_courier_webhook_logs',
+  ADMIN_LAST_ACTIVITY: 'rongdhonu_admin_last_activity',
+  ADMIN_LAST_TAB: 'rongdhonu_admin_last_tab',
 };

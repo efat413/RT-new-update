@@ -92,14 +92,94 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const { setCart } = useCart();
 
-  // Admin Navigation Tabs & Section
-  const [adminActiveTab, setAdminActiveTab] = useState<string>('overview');
-  const [adminSettingsSection, setAdminSettingsSection] = useState<string>('all');
+  // Admin Navigation Tabs & Section with URL persistence and back/forward synchronization
+  const VALID_ADMIN_TABS = useMemo(() => new Set([
+    'overview',
+    'profit',
+    'orders',
+    'products',
+    'categories',
+    'slides',
+    'couriers',
+    'settings',
+    'users',
+    'pixels',
+    'vouchers',
+    'debug',
+  ]), []);
+
+  const resolveAdminTabFromUrl = useCallback((): string => {
+    if (typeof window === 'undefined') return 'overview';
+    try {
+      const pathname = window.location.pathname;
+      if (pathname.startsWith('/admin/')) {
+        const sub = pathname.replace(/^\/admin\//, '').replace(/\/$/, '').toLowerCase();
+        if (sub === 'customers' || sub === 'accounts') return 'users';
+        if (VALID_ADMIN_TABS.has(sub)) return sub;
+      }
+      const params = new URLSearchParams(window.location.search);
+      const qTab = (params.get('tab') || '').toLowerCase();
+      if (qTab === 'customers' || qTab === 'accounts') return 'users';
+      if (VALID_ADMIN_TABS.has(qTab)) return qTab;
+
+      const saved = localStorage.getItem('rongdhonu_admin_last_tab');
+      if (saved && VALID_ADMIN_TABS.has(saved)) return saved;
+    } catch {}
+    return 'overview';
+  }, [VALID_ADMIN_TABS]);
+
+  const [adminActiveTab, setAdminActiveTabState] = useState<string>(resolveAdminTabFromUrl);
+  const [adminSettingsSection, setAdminSettingsSection] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const sec = params.get('section');
+        if (sec) return sec;
+      } catch {}
+    }
+    return 'all';
+  });
+
+  const setAdminActiveTab = useCallback((tab: string) => {
+    const normalized = tab === 'customers' || tab === 'accounts' ? 'users' : tab;
+    setAdminActiveTabState(normalized);
+    if (typeof window === 'undefined') return;
+
+    try {
+      localStorage.setItem('rongdhonu_admin_last_tab', normalized);
+      const targetPath = normalized === 'overview'
+        ? '/admin'
+        : (normalized === 'users' ? '/admin/customers' : `/admin/${normalized}`);
+      
+      if (window.location.pathname !== targetPath) {
+        window.history.pushState({ adminTab: normalized }, '', targetPath);
+      }
+    } catch {}
+  }, []);
+
+  // Listen to popstate for browser Back/Forward between admin sections
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handlePopState = () => {
+      const pathname = window.location.pathname;
+      if (pathname === '/admin' || pathname.startsWith('/admin/')) {
+        const tab = resolveAdminTabFromUrl();
+        setAdminActiveTabState(tab);
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [resolveAdminTabFromUrl]);
 
   const openAdminSettingsSection = useCallback((section: string = 'footer') => {
     setAdminActiveTab('settings');
     setAdminSettingsSection(section);
     setCurrentView('admin');
+    if (typeof window !== 'undefined') {
+      try {
+        window.history.pushState({ adminTab: 'settings', section }, '', `/admin/settings?section=${section}`);
+      } catch {}
+    }
     const label =
       section === 'footer'
         ? 'Dynamic Footer & WhatsApp Support settings'
@@ -111,7 +191,7 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         ? 'Delivery Rates settings'
         : `${section} settings`;
     showNotification('info', 'Store Settings Opened', `Navigated to ${label}.`, 3500);
-  }, [setCurrentView, showNotification]);
+  }, [setAdminActiveTab, setCurrentView, showNotification]);
 
   // Admin Server-Side Paginated Orders State
   const [orders, setOrders] = useState<Order[]>([]);

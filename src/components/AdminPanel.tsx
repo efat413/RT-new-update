@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import {
   Activity,
   LayoutDashboard,
@@ -105,6 +105,7 @@ import { ConfirmModal } from './ConfirmModal';
 import { FormattedDescription } from './FormattedDescription';
 import { ImageUploadField } from './ImageUploadField';
 import { AdminSidebar } from './AdminSidebar';
+import { STORAGE_KEYS } from '../context/storageKeys';
 
 // Code-splitting: Lazy-load large admin-only feature tabs and modals
 const FeaturedProductsManagement = React.lazy(() =>
@@ -239,6 +240,7 @@ const AdminPanelContent: React.FC = () => {
     showNotification,
     coupons,
     adminActiveTab,
+    setAdminActiveTab,
     adminSettingsSection,
     setSelectedCategory,
     setSearchQuery,
@@ -280,6 +282,25 @@ const AdminPanelContent: React.FC = () => {
   const [activeTab, setActiveTab] = useState<
     'overview' | 'profit' | 'orders' | 'products' | 'categories' | 'slides' | 'couriers' | 'settings' | 'users' | 'pixels' | 'vouchers' | 'debug'
   >((adminActiveTab as any) || 'overview');
+
+  const handleSelectTab = useCallback((tabId: string) => {
+    const targetTab = tabId === 'customers' || tabId === 'accounts' ? 'users' : tabId;
+    setActiveTab(targetTab as any);
+    setAdminActiveTab(targetTab);
+  }, [setAdminActiveTab]);
+
+  const handleManualLogout = useCallback(() => {
+    setIsAdminProfileDropdownOpen(false);
+    adminLogout();
+    setCurrentView('store');
+    try {
+      localStorage.removeItem(STORAGE_KEYS.ADMIN_LAST_TAB);
+      localStorage.removeItem(STORAGE_KEYS.ADMIN_LAST_ACTIVITY);
+    } catch {}
+    if (typeof window !== 'undefined') {
+      window.history.pushState({}, '', '/');
+    }
+  }, [adminLogout, setCurrentView]);
 
   // Product stock filter
   const [filterLowStockOnly, setFilterLowStockOnly] = useState(false);
@@ -648,6 +669,82 @@ const AdminPanelContent: React.FC = () => {
       fetchUsers().catch(() => {});
     }
   }, [activeTab, hasPermission, fetchUsers]);
+
+  // --- INACTIVITY AUTO-LOGOUT (30 MINUTES CONTINUOUS INACTIVITY) ---
+  const INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+  const ACTIVITY_THROTTLE_MS = 3000; // 3 seconds write throttle
+  const ADMIN_ACTIVITY_KEY = STORAGE_KEYS.ADMIN_LAST_ACTIVITY;
+
+  useEffect(() => {
+    if (!isPrivilegedAdmin) return;
+
+    let lastRecorded = Date.now();
+    try {
+      localStorage.setItem(ADMIN_ACTIVITY_KEY, lastRecorded.toString());
+    } catch {}
+
+    const handleUserActivity = () => {
+      const now = Date.now();
+      if (now - lastRecorded > ACTIVITY_THROTTLE_MS) {
+        lastRecorded = now;
+        try {
+          localStorage.setItem(ADMIN_ACTIVITY_KEY, now.toString());
+        } catch {}
+      }
+    };
+
+    // Meaningful interactions: movement, click, typing, scrolling, touching across Admin Panel
+    const activityEvents = ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart', 'pointerdown'];
+    activityEvents.forEach((evt) => {
+      window.addEventListener(evt, handleUserActivity, { passive: true });
+    });
+
+    // Check timer every 10 seconds
+    const interval = setInterval(() => {
+      let lastActivityTime = lastRecorded;
+      try {
+        const stored = localStorage.getItem(ADMIN_ACTIVITY_KEY);
+        if (stored) {
+          const parsed = parseInt(stored, 10);
+          if (!isNaN(parsed)) {
+            lastActivityTime = Math.max(lastActivityTime, parsed);
+          }
+        }
+      } catch {}
+
+      if (Date.now() - lastActivityTime >= INACTIVITY_TIMEOUT_MS) {
+        // 30 minutes of inactivity reached!
+        try {
+          localStorage.removeItem(ADMIN_ACTIVITY_KEY);
+        } catch {}
+        // Invalidate session on server and client using existing authentication architecture
+        adminLogout();
+        setAuthError('You have been automatically logged out due to 30 minutes of inactivity. Please log in again.');
+      }
+    }, 10000);
+
+    // Synchronize across multiple open browser tabs of the same authenticated Admin session
+    const handleStorageEvent = (e: StorageEvent) => {
+      if (e.key === ADMIN_ACTIVITY_KEY && e.newValue) {
+        const val = parseInt(e.newValue, 10);
+        if (!isNaN(val)) {
+          lastRecorded = Math.max(lastRecorded, val);
+        }
+      } else if (e.key === STORAGE_KEYS.ADMIN_AUTH && e.newValue === null) {
+        adminLogout();
+      }
+    };
+
+    window.addEventListener('storage', handleStorageEvent);
+
+    return () => {
+      activityEvents.forEach((evt) => {
+        window.removeEventListener(evt, handleUserActivity);
+      });
+      window.removeEventListener('storage', handleStorageEvent);
+      clearInterval(interval);
+    };
+  }, [isPrivilegedAdmin, adminLogout]);
 
   // While startup server-session verification (/api/auth/me) is in flight, show clean loading screen
   if (isAuthInitializing) {
@@ -2324,7 +2421,7 @@ const AdminPanelContent: React.FC = () => {
                       id="admin-dropdown-dashboard-btn"
                       onClick={() => {
                         setIsAdminProfileDropdownOpen(false);
-                        setActiveTab('overview');
+                        handleSelectTab('overview');
                         window.scrollTo({ top: 0, behavior: 'smooth' });
                       }}
                       className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-purple-700 hover:bg-purple-600 text-white font-bold text-xs transition-colors shadow-xs cursor-pointer"
@@ -2398,10 +2495,7 @@ const AdminPanelContent: React.FC = () => {
                     <button
                       type="button"
                       id="admin-dropdown-logout-btn"
-                      onClick={() => {
-                        setIsAdminProfileDropdownOpen(false);
-                        adminLogout();
-                      }}
+                      onClick={handleManualLogout}
                       className="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-rose-950/30 text-rose-400 hover:text-rose-300 font-bold text-xs transition-colors text-left cursor-pointer"
                     >
                       <LogOut className="w-4 h-4 text-rose-500" />
@@ -2417,7 +2511,7 @@ const AdminPanelContent: React.FC = () => {
               id="admin-header-debug-btn"
               type="button"
               onClick={() => {
-                setActiveTab('debug');
+                handleSelectTab('debug');
                 window.scrollTo({ top: 0, behavior: 'smooth' });
               }}
               className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer border shadow-2xs ${
@@ -2448,7 +2542,7 @@ const AdminPanelContent: React.FC = () => {
 
             <button
               id="admin-logout-btn"
-              onClick={adminLogout}
+              onClick={handleManualLogout}
               className="px-3 py-1.5 rounded-xl bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white text-xs font-bold transition-colors flex items-center gap-1.5"
             >
               <LogOut className="w-3.5 h-3.5" />
@@ -2466,7 +2560,7 @@ const AdminPanelContent: React.FC = () => {
         {/* ======================================================== */}
         <AdminSidebar
           activeTab={activeTab}
-          setActiveTab={setActiveTab}
+          setActiveTab={handleSelectTab}
           isMobileNavOpen={isMobileNavOpen}
           setIsMobileNavOpen={setIsMobileNavOpen}
           ordersCount={totalOrdersCount}

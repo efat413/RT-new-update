@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   CheckCircle,
   Package,
@@ -10,16 +10,15 @@ import {
   Truck,
   MapPin,
   Edit2,
-  Trash2,
   AlertTriangle,
   FileText,
   Download,
   Eye,
+  X,
 } from 'lucide-react';
 import { Order } from '../types';
 import { useStore } from '../context/StoreContext';
 import { EditDeliveryInfoModal } from './EditDeliveryInfoModal';
-import { ConfirmModal } from './ConfirmModal';
 import { formatWhatsAppLink } from '../utils/phone';
 
 // Code-splitting: Lazy-load InvoiceModal on demand only when viewing/downloading invoices
@@ -40,17 +39,28 @@ interface OrderSuccessModalProps {
 }
 
 export const OrderSuccessModal: React.FC<OrderSuccessModalProps> = ({ order: initialOrder, onClose }) => {
-  const { settings, cancelCustomerOrder } = useStore();
+  const { settings } = useStore();
   const [order, setOrder] = useState<Order | null>(initialOrder);
   const [copied, setCopied] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
-  const [isCancelConfirmOpen, setIsCancelConfirmOpen] = useState(false);
   const [isInvoiceOpen, setIsInvoiceOpen] = useState(false);
   const [cancelFeedback, setCancelFeedback] = useState<string | null>(null);
 
-  React.useEffect(() => {
+  useEffect(() => {
     setOrder(initialOrder);
   }, [initialOrder]);
+
+  // Support ESC key to cleanly close the order success modal
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (isInvoiceOpen || isEditModalOpen) return;
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose, isInvoiceOpen, isEditModalOpen]);
 
   if (!order) return null;
 
@@ -62,35 +72,23 @@ export const OrderSuccessModal: React.FC<OrderSuccessModalProps> = ({ order: ini
 
   const isPending = order.shippingStatus === 'Pending';
 
-  const handleCancelOrder = () => {
-    if (!isPending) {
-      setCancelFeedback('Only pending orders can be canceled. This order has already progressed to shipping.');
-      setTimeout(() => setCancelFeedback(null), 3500);
-      return;
-    }
-    setIsCancelConfirmOpen(true);
-  };
-
-  const executeCancelOrder = async () => {
-    const res = await cancelCustomerOrder(order.id);
-    if (res.success) {
-      setCancelFeedback(res.message || 'Order canceled successfully.');
-      setTimeout(() => {
-        setCancelFeedback(null);
-        onClose();
-      }, 1800);
-    } else {
-      setCancelFeedback(res.message || 'Failed to cancel order.');
-      setTimeout(() => setCancelFeedback(null), 3500);
-    }
-    setIsCancelConfirmOpen(false);
-  };
-
   const supportWhatsApp = settings.footer?.supportWhatsApp || settings.phone || '';
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center p-3 sm:p-6 bg-slate-950/70 backdrop-blur-sm overflow-y-auto">
-      <div className="relative w-full max-w-lg bg-white rounded-3xl shadow-2xl overflow-hidden border border-slate-200 my-4 sm:my-8">
+      <div className="relative w-full max-w-lg bg-white rounded-3xl shadow-2xl overflow-hidden border border-slate-200 my-4 sm:my-8 animate-scaleUp">
+        {/* Top-Right Close (X) Button */}
+        <button
+          type="button"
+          id="order-success-close-x-btn"
+          onClick={onClose}
+          aria-label="Close"
+          title="Close order confirmation"
+          className="absolute top-4 right-4 z-20 p-2 rounded-full bg-slate-100/90 hover:bg-slate-200 text-slate-500 hover:text-slate-800 transition-colors cursor-pointer shadow-xs active:scale-95"
+        >
+          <X className="w-5 h-5" />
+        </button>
+
         {/* Rainbow Accent Header */}
         <div className="h-2.5 w-full rainbow-gradient-bg" />
 
@@ -351,7 +349,7 @@ export const OrderSuccessModal: React.FC<OrderSuccessModalProps> = ({ order: ini
                   }
                   setIsEditModalOpen(true);
                 }}
-                className={`flex-1 py-2.5 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-xs ${
+                className={`w-full py-2.5 px-4 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-xs ${
                   isPending
                     ? 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 active:scale-95 cursor-pointer'
                     : 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200'
@@ -361,44 +359,18 @@ export const OrderSuccessModal: React.FC<OrderSuccessModalProps> = ({ order: ini
                 <Edit2 className="w-3.5 h-3.5 text-slate-600" />
                 Edit Delivery Info
               </button>
-
-              <button
-                type="button"
-                id="order-success-cancel-btn"
-                onClick={handleCancelOrder}
-                disabled={!isPending}
-                className={`flex-1 py-2.5 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-xs ${
-                  isPending
-                    ? 'bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 active:scale-95'
-                    : 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200'
-                }`}
-                title={isPending ? 'Cancel order and restore product stock' : 'Cannot cancel orders in processing'}
-              >
-                <Trash2 className="w-3.5 h-3.5 text-rose-600" />
-                Cancel / Delete Order
-              </button>
             </div>
 
             {!isPending && (
               <p className="text-[11px] text-amber-600 flex items-center gap-1">
                 <AlertTriangle className="w-3 h-3 shrink-0" />
-                Order is already being processed and cannot be edited or canceled online.
+                Order is already being processed and cannot be edited online.
               </p>
             )}
           </div>
 
           {/* Action buttons */}
-          <div className="space-y-3 pt-2">
-            <button
-              type="button"
-              id="order-success-view-invoice-btn"
-              onClick={() => setIsInvoiceOpen(true)}
-              className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-rose-600 to-pink-600 hover:from-rose-700 hover:to-pink-700 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-md hover:shadow-lg active:scale-95 transition-all cursor-pointer"
-            >
-              <FileText className="w-4 h-4" />
-              <span>View & Download Official Invoice</span>
-            </button>
-
+          <div className="pt-2">
             <div className="flex flex-col sm:flex-row gap-3">
               <a
                 href={formatWhatsAppLink(
@@ -445,18 +417,6 @@ export const OrderSuccessModal: React.FC<OrderSuccessModalProps> = ({ order: ini
         onSuccess={(updatedOrder) => {
           setOrder(updatedOrder);
         }}
-      />
-
-      {/* Unified In-App Order Cancellation Confirmation Modal */}
-      <ConfirmModal
-        isOpen={isCancelConfirmOpen}
-        onClose={() => setIsCancelConfirmOpen(false)}
-        title={`Cancel Order #${order.orderNumber}?`}
-        message={`Are you sure you want to cancel Order #${order.orderNumber}?\n\nThis will permanently delete the order and automatically restore product items back into store inventory.`}
-        confirmText="Yes, Cancel Order"
-        cancelText="Keep Order"
-        variant="danger"
-        onConfirm={executeCancelOrder}
       />
     </div>
   );

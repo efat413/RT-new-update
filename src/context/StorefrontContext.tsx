@@ -300,7 +300,42 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   }, [orders]);
 
   // Navigation & Modals UI state
-  const [currentView, setCurrentView] = useState<'store' | 'admin' | 'tracking' | 'reset-password' | 'product'>('store');
+  const [currentView, setCurrentViewState] = useState<'store' | 'admin' | 'tracking' | 'reset-password' | 'product'>(() => {
+    if (typeof window === 'undefined') return 'store';
+    try {
+      const pathname = window.location.pathname;
+      if (pathname === '/reset-password') return 'reset-password';
+      if (pathname === '/admin' || pathname.startsWith('/admin/')) return 'admin';
+      if (pathname.startsWith('/product/')) return 'product';
+    } catch {}
+    return 'store';
+  });
+
+  const setCurrentView = useCallback((view: 'store' | 'admin' | 'tracking' | 'reset-password' | 'product') => {
+    setCurrentViewState(view);
+    if (typeof window === 'undefined') return;
+
+    try {
+      const pathname = window.location.pathname;
+      if (view === 'admin') {
+        if (!pathname.startsWith('/admin')) {
+          const lastTab = localStorage.getItem('rongdhonu_admin_last_tab') || '';
+          const targetPath = lastTab && lastTab !== 'overview'
+            ? (lastTab === 'users' ? '/admin/customers' : `/admin/${lastTab}`)
+            : '/admin';
+          window.history.pushState({}, '', targetPath);
+        }
+      } else if (view === 'store') {
+        if (pathname.startsWith('/admin') || pathname === '/reset-password') {
+          window.history.pushState({}, '', '/');
+        }
+      } else if (view === 'reset-password') {
+        if (pathname !== '/reset-password') {
+          window.history.pushState({}, '', '/reset-password');
+        }
+      }
+    } catch {}
+  }, []);
   const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
   const [singleProduct, setSingleProduct] = useState<Product | null>(null);
   const [isProductLoading, setIsProductLoading] = useState<boolean>(false);
@@ -383,20 +418,20 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     const handlePopState = () => {
       const pathname = window.location.pathname;
       if (pathname === '/reset-password') {
-        setCurrentView('reset-password');
+        setCurrentViewState('reset-password');
         return;
       }
       if (pathname === '/admin' || pathname.startsWith('/admin/')) {
-        setCurrentView('admin');
+        setCurrentViewState('admin');
         return;
       }
       if (pathname.startsWith('/product/')) {
         const prodId = decodeURIComponent(pathname.replace(/^\/product\//, '').replace(/\/$/, '')).trim();
         setSelectedProductId(prodId || null);
-        setCurrentView('product');
+        setCurrentViewState('product');
         return;
       }
-      setCurrentView('store');
+      setCurrentViewState('store');
       setSelectedProductId(null);
       if (pathname.startsWith('/category/')) {
         const raw = decodeURIComponent(pathname.replace(/^\/category\//, '').replace(/\/$/, '')).trim();
