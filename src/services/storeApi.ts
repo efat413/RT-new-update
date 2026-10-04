@@ -78,7 +78,7 @@ async function apiRequest<T>(url: string, options?: RequestInit, timeoutMs = 450
     }
     return {
       success: false,
-      error: err?.message || 'Network error communicating with Cloudflare D1',
+      error: err?.message || 'Network error communicating with server. Please try again.',
     };
   }
 }
@@ -235,7 +235,7 @@ export const productsApi = {
     if (res.success && res.data && Array.isArray(res.data.products)) {
       return res.data.products;
     }
-    throw new Error(res.error || 'Failed to fetch products from D1');
+    throw new Error(res.error || 'Failed to fetch products. Please try again.');
   },
 
   async getHomepageCategoryProducts(categoryIdOrSlug: string, limit = 6): Promise<Product[]> {
@@ -279,7 +279,7 @@ export const productsApi = {
       const totalPages = Number(res.data.totalPages) || Math.ceil(total / limit) || 1;
       return { products, total, page, limit, totalPages };
     }
-    throw new Error(res.error || 'Failed to fetch paginated products from D1');
+    throw new Error(res.error || 'Failed to fetch paginated products. Please try again.');
   },
 
   async getById(id: string): Promise<Product | null> {
@@ -296,7 +296,7 @@ export const productsApi = {
       body: JSON.stringify(product),
     });
     if (!res.success || !res.data?.product) {
-      throw new Error(res.error || 'Failed to create product in D1');
+      throw new Error(res.error || 'Failed to create product. Please try again.');
     }
     return res.data.product;
   },
@@ -311,7 +311,7 @@ export const productsApi = {
       }
     );
     if (!res.success || !res.data?.product) {
-      throw new Error(res.error || 'Failed to update product in D1');
+      throw new Error(res.error || 'Failed to update product. Please try again.');
     }
     return res.data.product;
   },
@@ -326,7 +326,7 @@ export const productsApi = {
       }
     );
     if (!res.success || !res.data?.product) {
-      throw new Error(res.error || 'Failed to update featured status in D1');
+      throw new Error(res.error || 'Failed to update featured status. Please try again.');
     }
     return res.data.product;
   },
@@ -337,7 +337,7 @@ export const productsApi = {
       method: 'DELETE',
     });
     if (!res.success) {
-      throw new Error(res.error || 'Failed to delete product from D1');
+      throw new Error(res.error || 'Failed to delete product. Please try again.');
     }
     return true;
   },
@@ -361,7 +361,7 @@ export const categoriesApi = {
           cachedCategories = { data: res.data.categories, timestamp: Date.now() };
           return res.data.categories;
         }
-        throw new Error(res.error || 'Failed to fetch categories from D1');
+        throw new Error(res.error || 'Failed to fetch categories. Please try again.');
       } finally {
         activeCategoriesPromise = null;
       }
@@ -381,7 +381,7 @@ export const categoriesApi = {
       body: JSON.stringify(category),
     });
     if (!res.success || !res.data?.category) {
-      throw new Error(res.error || 'Failed to create category in D1');
+      throw new Error(res.error || 'Failed to create category. Please try again.');
     }
     return res.data.category;
   },
@@ -397,7 +397,7 @@ export const categoriesApi = {
       }
     );
     if (!res.success || !res.data?.category) {
-      throw new Error(res.error || 'Failed to update category in D1');
+      throw new Error(res.error || 'Failed to update category. Please try again.');
     }
     return res.data.category;
   },
@@ -409,7 +409,7 @@ export const categoriesApi = {
       method: 'DELETE',
     });
     if (!res.success) {
-      throw new Error(res.error || 'Failed to delete category from D1');
+      throw new Error(res.error || 'Failed to delete category. Please try again.');
     }
     return true;
   },
@@ -433,7 +433,7 @@ export const slidersApi = {
           cachedSliders = { data: res.data.sliders, timestamp: Date.now() };
           return res.data.sliders;
         }
-        throw new Error(res.error || 'Failed to fetch sliders from D1');
+        throw new Error(res.error || 'Failed to fetch sliders. Please try again.');
       } finally {
         activeSlidersPromise = null;
       }
@@ -453,7 +453,7 @@ export const slidersApi = {
       body: JSON.stringify(slider),
     });
     if (!res.success || !res.data?.slider) {
-      throw new Error(res.error || 'Failed to create slider in D1');
+      throw new Error(res.error || 'Failed to create slider. Please try again.');
     }
     return res.data.slider;
   },
@@ -469,7 +469,7 @@ export const slidersApi = {
       }
     );
     if (!res.success || !res.data?.slider) {
-      throw new Error(res.error || 'Failed to update slider in D1');
+      throw new Error(res.error || 'Failed to update slider. Please try again.');
     }
     return res.data.slider;
   },
@@ -481,7 +481,7 @@ export const slidersApi = {
       method: 'DELETE',
     });
     if (!res.success) {
-      throw new Error(res.error || 'Failed to delete slider from D1');
+      throw new Error(res.error || 'Failed to delete slider. Please try again.');
     }
     return true;
   },
@@ -499,7 +499,7 @@ export const slidersApi = {
       body: JSON.stringify(payload),
     });
     if (!res.success || !res.data?.sliders) {
-      throw new Error(res.error || 'Failed to update slider order in D1');
+      throw new Error(res.error || 'Failed to update slider order. Please try again.');
     }
     cachedSliders = { data: res.data.sliders, timestamp: Date.now() };
     return res.data.sliders;
@@ -533,7 +533,7 @@ export const settingsApi = {
             return candidate as StoreSettings;
           }
         }
-        throw new Error(res.error || 'Failed to fetch settings from D1');
+        throw new Error(res.error || 'Failed to fetch settings. Please try again.');
       } finally {
         activeSettingsPromise = null;
       }
@@ -559,7 +559,7 @@ export const settingsApi = {
         return candidate as StoreSettings;
       }
     }
-    throw new Error(res.error || 'Failed to update settings in D1');
+    throw new Error(res.error || 'Failed to update settings. Please try again.');
   },
 };
 
@@ -572,7 +572,7 @@ export const couponsApi = {
     if (res.success && res.data && Array.isArray(res.data.coupons)) {
       return res.data.coupons;
     }
-    throw new Error(res.error || 'Failed to fetch coupons from D1');
+    throw new Error(res.error || 'Failed to fetch coupons. Please try again.');
   },
 
   async create(coupon: Coupon): Promise<Coupon> {
@@ -581,7 +581,7 @@ export const couponsApi = {
       body: JSON.stringify(coupon),
     });
     if (!res.success || !res.data?.coupon) {
-      throw new Error(res.error || 'Failed to create coupon in D1');
+      throw new Error(res.error || 'Failed to create coupon. Please try again.');
     }
     return res.data.coupon;
   },
@@ -595,7 +595,7 @@ export const couponsApi = {
       }
     );
     if (!res.success || !res.data?.coupon) {
-      throw new Error(res.error || 'Failed to update coupon in D1');
+      throw new Error(res.error || 'Failed to update coupon. Please try again.');
     }
     return res.data.coupon;
   },
@@ -605,7 +605,7 @@ export const couponsApi = {
       method: 'DELETE',
     });
     if (!res.success) {
-      throw new Error(res.error || 'Failed to delete coupon from D1');
+      throw new Error(res.error || 'Failed to delete coupon. Please try again.');
     }
     return true;
   },
@@ -623,7 +623,7 @@ export const reviewsApi = {
     if (res.success && res.data && Array.isArray(res.data.reviews)) {
       return res.data.reviews;
     }
-    throw new Error(res.error || 'Failed to fetch reviews from D1');
+    throw new Error(res.error || 'Failed to fetch reviews. Please try again.');
   },
 
   async create(review: Partial<ProductReview>): Promise<ProductReview> {
@@ -632,7 +632,7 @@ export const reviewsApi = {
       body: JSON.stringify(review),
     });
     if (!res.success || !res.data?.review) {
-      throw new Error(res.error || 'Failed to create review in D1');
+      throw new Error(res.error || 'Failed to create review. Please try again.');
     }
     return res.data.review;
   },
@@ -642,7 +642,7 @@ export const reviewsApi = {
       method: 'DELETE',
     });
     if (!res.success) {
-      throw new Error(res.error || 'Failed to delete review from D1');
+      throw new Error(res.error || 'Failed to delete review. Please try again.');
     }
     return true;
   },
@@ -657,7 +657,7 @@ export const usersApi = {
     if (res.success && res.data && Array.isArray(res.data.users)) {
       return res.data.users;
     }
-    throw new Error(res.error || 'Failed to fetch users from D1');
+    throw new Error(res.error || 'Failed to fetch users. Please try again.');
   },
 
   async create(user: Partial<UserAccount>): Promise<UserAccount> {
@@ -666,7 +666,7 @@ export const usersApi = {
       body: JSON.stringify(user),
     });
     if (!res.success || !res.data?.user) {
-      throw new Error(res.error || 'Failed to create user in D1');
+      throw new Error(res.error || 'Failed to create user. Please try again.');
     }
     return res.data.user;
   },
@@ -680,7 +680,7 @@ export const usersApi = {
       }
     );
     if (!res.success || !res.data?.user) {
-      throw new Error(res.error || 'Failed to update user in D1');
+      throw new Error(res.error || 'Failed to update user. Please try again.');
     }
     return res.data.user;
   },
@@ -690,7 +690,7 @@ export const usersApi = {
       method: 'DELETE',
     });
     if (!res.success) {
-      throw new Error(res.error || 'Failed to delete user from D1');
+      throw new Error(res.error || 'Failed to delete user. Please try again.');
     }
     return true;
   },

@@ -283,14 +283,18 @@ function jsonResponse(data: any, status = 200, customHeaders: Record<string, str
         typeof payload.error === 'string' &&
         payload.error.toLowerCase().includes('unavailable');
 
-      if (!isSafe503Message && payload.error && payload.error !== 'Internal server error.') {
+      const isSafeOrderErrorMessage =
+        typeof payload.error === 'string' &&
+        payload.error === 'Unable to place the order right now. Please try again.';
+
+      if (!isSafe503Message && !isSafeOrderErrorMessage && payload.error && payload.error !== 'Internal server error.') {
         console.error('[Server Internal Error Logged Safely]:', payload.error);
         payload = {
           ...payload,
           error: 'Internal server error.',
         };
       }
-      if (!isSafe503Message && payload.message && typeof payload.message === 'string' && !payload.success) {
+      if (!isSafe503Message && !isSafeOrderErrorMessage && payload.message && typeof payload.message === 'string' && !payload.success) {
         console.error('[Server Internal Message Logged Safely]:', payload.message);
         payload = {
           ...payload,
@@ -301,7 +305,7 @@ function jsonResponse(data: any, status = 200, customHeaders: Record<string, str
       // 3. Defense-in-depth for 4xx responses: Intercept any accidental SQL, D1 driver, or filesystem leaks
       const errStr = typeof payload.error === 'string' ? payload.error : '';
       const isLeakingInternals =
-        /sqlite|syntax error|d1_error|table |column |foreign key|prepare|bind|database disk|file not found|\/app\/|\/src\/|\.ts:\d+|\.js:\d+/i.test(errStr);
+        /sqlite|syntax error|d1_error|table |column |foreign key|prepare|bind|database disk|file not found|\/app\/|\/src\/|\.ts:\d+|\.js:\d+|cloudflare d1/i.test(errStr);
       if (isLeakingInternals) {
         console.error('[Server Internal Leak Intercepted & Masked Safely]:', errStr);
         payload = {
@@ -326,6 +330,57 @@ function jsonResponse(data: any, status = 200, customHeaders: Record<string, str
       ...customHeaders,
     },
   });
+}
+
+export interface SafeLogContext {
+  route: string;
+  method: string;
+  userId?: string;
+  orderId?: string;
+  orderNumber?: string;
+  action?: string;
+  error?: any;
+  extra?: Record<string, any>;
+}
+
+/**
+ * Server-Side Safe Diagnostic Error Logging
+ * Logs safe diagnostic context (timestamp, route, method, user ID, error type/message)
+ * strictly without leaking passwords, tokens, ADMIN_SECRET, courier secrets, or sensitive customer data.
+ */
+export function logServerError(ctx: SafeLogContext): void {
+  const timestamp = new Date().toISOString();
+  const safeLog: Record<string, any> = {
+    timestamp,
+    route: ctx.route,
+    method: ctx.method,
+  };
+  if (ctx.userId) safeLog.userId = ctx.userId;
+  if (ctx.orderId) safeLog.orderId = ctx.orderId;
+  if (ctx.orderNumber) safeLog.orderNumber = ctx.orderNumber;
+  if (ctx.action) safeLog.action = ctx.action;
+
+  if (ctx.error) {
+    const err = ctx.error;
+    safeLog.errorType = err?.name || typeof err;
+    safeLog.errorMessage = err?.message
+      ? String(err.message).replace(/(bearer\s+)[^\s]+/gi, '$1[REDACTED]')
+      : String(err);
+  }
+
+  if (ctx.extra) {
+    const sanitized: Record<string, any> = {};
+    for (const [k, v] of Object.entries(ctx.extra)) {
+      if (/password|token|secret|api[_-]?key|auth|cookie|credential/i.test(k)) {
+        sanitized[k] = '[REDACTED]';
+      } else {
+        sanitized[k] = v;
+      }
+    }
+    safeLog.extra = sanitized;
+  }
+
+  console.error('[Safe Diagnostic Error]:', JSON.stringify(safeLog));
 }
 
 /**
@@ -1795,7 +1850,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     }
 
     // Target user protection: super_admin permissions cannot be modified via this API!
-    if (isSuperAdminUserServer(targetUserRow, env)) {
+    if (isSuperAdminUserServer(targetUserRow, env) || targetUserRow.role === 'super_admin') {
       return jsonResponse(
         { success: false, error: 'Forbidden: Super Administrator permissions cannot be modified.' },
         403
@@ -3322,6 +3377,14 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           );
         }
 
+        // Sub-admin or admin can NEVER configure roles or permissions during account creation!
+        if (auth!.role !== 'super_admin' && (userData.role !== undefined || userData.permissions || userData.permissions_json)) {
+          return jsonResponse(
+            { success: false, error: 'Forbidden: Only Super Administrator can configure account roles or permissions.' },
+            403
+          );
+        }
+
         const created = await insertUser(env.DB, userData);
         return jsonResponse({ success: true, user: created }, 201);
       } catch (err: any) {
@@ -3347,7 +3410,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
       // Check self-update vs administrative update
       const isSelf = auth!.dbUser.id === usrId;
-      const isTargetSuperAdmin = isSuperAdminUserServer(targetUser, env);
+      const isTargetSuperAdmin = isSuperAdminUserServer(targetUser, env) || targetUser.role === 'super_admin';
 
       if (isTargetSuperAdmin && auth!.role !== 'super_admin') {
         return jsonResponse(
@@ -3372,11 +3435,32 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         delete updates.updatedAt;
         delete updates.updated_at;
 
-        // Self-updates cannot alter role or permissions
-        if (isSelf && auth!.role !== 'super_admin') {
-          delete updates.role;
-          delete updates.permissions;
-          delete updates.permissions_json;
+        // Strict Privilege Escalation Protection:
+        // Non-super_admin accounts can NEVER modify roles or permissions for any account (including their own).
+        if (auth!.role !== 'super_admin') {
+          const hasRoleChange =
+            (updates.role !== undefined && updates.role !== auth!.dbUser.role) ||
+            (body.role !== undefined && body.role !== auth!.dbUser.role);
+          const hasPermissionChange =
+            updates.permissions !== undefined ||
+            body.permissions !== undefined ||
+            updates.permissions_json !== undefined ||
+            body.permissions_json !== undefined;
+
+          if (hasRoleChange || hasPermissionChange) {
+            return jsonResponse(
+              { success: false, error: 'Forbidden: Only Super Administrator can modify account roles or permissions.' },
+              403
+            );
+          }
+        }
+
+        // Even Super Admins cannot alter an existing Super Admin account's role away from super_admin via user update
+        if (isTargetSuperAdmin && updates.role && updates.role !== 'super_admin') {
+          return jsonResponse(
+            { success: false, error: 'Forbidden: Super Administrator role cannot be modified.' },
+            403
+          );
         }
 
         const isChangingEmail = Boolean(
@@ -3566,7 +3650,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       return jsonResponse({ success: false, error: 'User account not found.' }, 404);
     }
 
-    const isTargetSuper = isSuperAdminUserServer(targetUser, env);
+    const isTargetSuper = isSuperAdminUserServer(targetUser, env) || targetUser.role === 'super_admin';
 
     // STRICT RULE (Section 11): ONLY the currently authenticated Super Admin can change their OWN Super Admin password!
     if (isTargetSuper) {
@@ -3692,10 +3776,12 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
   }
 
   if (path === '/api/orders' && method === 'POST') {
+    let clientIp = '127.0.0.1';
+    let verifiedTokenUser: TokenPayload | null = null;
     try {
       cleanupOrderAbuseMaps();
       const isDev = isDevEnvironment(env);
-      const clientIp = getClientIp(request, isDev);
+      clientIp = getClientIp(request, isDev);
 
       // 1. Abuse Protection: Short burst protection (maximum 2 order submissions in 10 seconds per IP)
       const burstCheck = await checkRateLimit(`order_burst:${clientIp}`, 2, 10, env.DB);
@@ -3745,7 +3831,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       // Authoritative Identity Determination:
       // If user is authenticated, derive userId & userEmail authoritatively from verified token.
       // If user is guest/unauthenticated, strip client-supplied userId and userEmail to prevent account impersonation.
-      let verifiedTokenUser: TokenPayload | null = null;
+      verifiedTokenUser = null;
       const authHeader = request.headers.get('Authorization') || '';
       if (authHeader.startsWith('Bearer ')) {
         const token = authHeader.slice(7).trim();
@@ -3905,7 +3991,13 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         201
       );
     } catch (err: any) {
-      console.error('Error saving order to D1:', err);
+      logServerError({
+        route: '/api/orders',
+        method: 'POST',
+        error: err,
+        userId: verifiedTokenUser?.userId,
+        extra: { clientIp },
+      });
       const errMsg = err?.message || '';
       const isClientValidationError = [
         'required',
@@ -3925,7 +4017,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       if (isClientValidationError && !hasSqlOrDbLeak) {
         return jsonResponse({ success: false, error: errMsg }, 400);
       }
-      return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+      return jsonResponse({ success: false, error: 'Unable to place the order right now. Please try again.' }, 500);
     }
   }
 
@@ -5330,7 +5422,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
   // ==========================================
   // 10. PROFIT ANALYTICS & EXPENSES ROUTES (STRICTLY SUPER ADMIN ONLY)
   // ==========================================
-  if (path === '/api/analytics/profit' && method === 'GET') {
+  if ((path === '/api/analytics/profit' || path === '/api/admin/profit-analytics') && method === 'GET') {
     const { auth, errorResponse } = await requireAuth(request, env);
     if (errorResponse) return errorResponse;
     const permErr = requirePermission(auth!, 'report.profit');

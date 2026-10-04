@@ -304,6 +304,15 @@ function localApiDevPlugin(): Plugin {
         );
         if (!foundUser && (email === 'admin' || email === 'superadmin' || devSuperAdminEmails.includes(email))) {
           foundUser = devUsers.find((u) => u.email === devSuperAdminEmails[0]) || devSuperAdminAccounts[0];
+        } else if (!foundUser && decoded.role === 'customer') {
+          foundUser = {
+            id: userId || `user-cust-${Date.now()}`,
+            name: decoded.name || 'Customer User',
+            email: email || 'customer@gmail.com',
+            role: 'customer',
+            permissions: {},
+          };
+          devUsers.push(foundUser);
         }
 
         if (!foundUser) {
@@ -394,7 +403,7 @@ function localApiDevPlugin(): Plugin {
       if (permStr.startsWith('category.') && auth.permissions.canManageCategories) return true;
       if (permStr.startsWith('user.') && auth.permissions.canManageAccounts) return true;
       if (permStr.startsWith('customer.') && auth.permissions.canManageAccounts) return true;
-      if (permStr.startsWith('settings.') && auth.permissions.canManageSettings) {
+      if (permStr.startsWith('settings.') && permStr !== 'settings.manage' && auth.permissions.canManageSettings) {
         return true;
       }
     }
@@ -438,6 +447,52 @@ function localApiDevPlugin(): Plugin {
   const sendDevError = (res: any, err: { status: number; body: { success: boolean; error: string; requiredPermission?: string } }) => {
     res.statusCode = err.status;
     return res.end(JSON.stringify(err.body));
+  };
+
+  interface SafeDevLogContext {
+    route: string;
+    method: string;
+    userId?: string;
+    orderId?: string;
+    orderNumber?: string;
+    action?: string;
+    error?: any;
+    extra?: Record<string, any>;
+  }
+
+  const logDevServerError = (ctx: SafeDevLogContext) => {
+    const timestamp = new Date().toISOString();
+    const safeLog: Record<string, any> = {
+      timestamp,
+      route: ctx.route,
+      method: ctx.method,
+    };
+    if (ctx.userId) safeLog.userId = ctx.userId;
+    if (ctx.orderId) safeLog.orderId = ctx.orderId;
+    if (ctx.orderNumber) safeLog.orderNumber = ctx.orderNumber;
+    if (ctx.action) safeLog.action = ctx.action;
+
+    if (ctx.error) {
+      const err = ctx.error;
+      safeLog.errorType = err?.name || typeof err;
+      safeLog.errorMessage = err?.message
+        ? String(err.message).replace(/(bearer\s+)[^\s]+/gi, '$1[REDACTED]')
+        : String(err);
+    }
+
+    if (ctx.extra) {
+      const sanitized: Record<string, any> = {};
+      for (const [k, v] of Object.entries(ctx.extra)) {
+        if (/password|token|secret|api[_-]?key|auth|cookie|credential/i.test(k)) {
+          sanitized[k] = '[REDACTED]';
+        } else {
+          sanitized[k] = v;
+        }
+      }
+      safeLog.extra = sanitized;
+    }
+
+    console.error('[Safe Diagnostic Error]:', JSON.stringify(safeLog));
   };
 
   const formatDevUserResponse = (u: any): any => {
@@ -2402,6 +2457,9 @@ function localApiDevPlugin(): Plugin {
               if (u.role === 'super_admin' && authResult.auth!.role !== 'super_admin') {
                 return sendDevError(res, { status: 403, body: { success: false, error: 'Forbidden: Only Super Administrator can create a Super Admin account.' } });
               }
+              if (authResult.auth!.role !== 'super_admin' && (u.role !== undefined || u.permissions || u.permissions_json)) {
+                return sendDevError(res, { status: 403, body: { success: false, error: 'Forbidden: Only Super Administrator can configure account roles or permissions.' } });
+              }
               const { password: rawPassword, ...restUser } = u;
               const newU = { id: u.id || `user-${Date.now()}`, ...restUser, createdAt: new Date().toISOString() };
               if (rawPassword && String(rawPassword).trim() && newU.email) {
@@ -2445,10 +2503,28 @@ function localApiDevPlugin(): Plugin {
               delete updates.createdAt;
               delete updates.updatedAt;
 
-              if (isSelf && authResult.auth!.role !== 'super_admin') {
-                delete updates.role;
-                delete updates.permissions;
-                delete updates.permissions_json;
+              // Strict Privilege Escalation Protection:
+              // Non-super_admin accounts can NEVER modify roles or permissions for any account (including their own).
+              if (authResult.auth!.role !== 'super_admin') {
+                const hasRoleChange =
+                  (updates.role !== undefined && updates.role !== authResult.auth!.user.role) ||
+                  (body.role !== undefined && body.role !== authResult.auth!.user.role);
+                const hasPermissionChange =
+                  updates.permissions !== undefined ||
+                  body.permissions !== undefined ||
+                  updates.permissions_json !== undefined ||
+                  body.permissions_json !== undefined;
+
+                if (hasRoleChange || hasPermissionChange) {
+                  return sendDevError(res, {
+                    status: 403,
+                    body: { success: false, error: 'Forbidden: Only Super Administrator can modify account roles or permissions.' },
+                  });
+                }
+              }
+
+              if (isTargetSuper && updates.role && updates.role !== 'super_admin') {
+                return sendDevError(res, { status: 403, body: { success: false, error: 'Forbidden: Super Administrator role cannot be modified.' } });
               }
 
               const isChangingEmail = Boolean(updates.email && updates.email.toLowerCase().trim() !== targetUser.email.toLowerCase().trim());
@@ -2795,131 +2871,162 @@ function localApiDevPlugin(): Plugin {
 
         if (url.pathname === '/api/orders' && method === 'POST') {
           return readBody((body) => {
-            const rawOrder = body.order || body;
+            try {
+              const rawOrder = body.order || body;
 
-            // Authoritative server-side cost and gross profit calculation
-            let totalCost = 0;
-            const verifiedItems = (rawOrder.items || []).map((it: any) => {
-              const prodId = it.product?.id || it.productId || it.id;
-              const prod = devProducts.find((p) => p.id === prodId);
-              const qty = Number(it.quantity) || 1;
-              const buyingPrice = prod?.buyingPrice != null ? Number(prod.buyingPrice) : Math.round((Number(prod?.price || it.product?.price || it.price || 0) * 0.6));
-              const sellingPrice = Number(prod?.price || it.product?.price || it.price || 0);
-              const itemCost = buyingPrice * qty;
-              const itemRev = sellingPrice * qty;
-              const itemGrossProfit = itemRev - itemCost;
-              totalCost += itemCost;
-              return {
-                ...it,
-                quantity: qty,
-                buyingPriceSnapshot: buyingPrice,
-                sellingPriceSnapshot: sellingPrice,
-                productCost: itemCost,
-                productGrossProfit: itemGrossProfit,
-                product: prod ? { ...prod, buyingPrice: undefined, unitProfit: undefined } : (it.product || { id: prodId, title: it.title, price: sellingPrice }),
-              };
-            });
-
-            const totalGrossProfit = Math.max(0, (Number(rawOrder.subtotal) || 0) - totalCost);
-
-            const cleanPhone = (rawOrder.customer?.phone || '').replace(/\D/g, '');
-            if (cleanPhone.length < 11) {
-              res.statusCode = 400;
-              return res.end(JSON.stringify({ success: false, error: 'A valid 11-digit contact number is required.' }));
-            }
-
-            // Anti-Spam check
-            if (devSettings.blockedPhoneNumbers && Array.isArray(devSettings.blockedPhoneNumbers)) {
-              const isBlocked = devSettings.blockedPhoneNumbers.some((p: string) => {
-                const cleanP = (p || '').replace(/\D/g, '');
-                return cleanP && (cleanPhone === cleanP || cleanPhone.endsWith(cleanP));
+              // Authoritative server-side cost and gross profit calculation
+              let totalCost = 0;
+              const verifiedItems = (rawOrder.items || []).map((it: any) => {
+                const prodId = it.product?.id || it.productId || it.id;
+                const prod = devProducts.find((p) => p.id === prodId);
+                const qty = Number(it.quantity) || 1;
+                const buyingPrice = prod?.buyingPrice != null ? Number(prod.buyingPrice) : Math.round((Number(prod?.price || it.product?.price || it.price || 0) * 0.6));
+                const sellingPrice = Number(prod?.price || it.product?.price || it.price || 0);
+                const itemCost = buyingPrice * qty;
+                const itemRev = sellingPrice * qty;
+                const itemGrossProfit = itemRev - itemCost;
+                totalCost += itemCost;
+                return {
+                  ...it,
+                  quantity: qty,
+                  buyingPriceSnapshot: buyingPrice,
+                  sellingPriceSnapshot: sellingPrice,
+                  productCost: itemCost,
+                  productGrossProfit: itemGrossProfit,
+                  product: prod ? { ...prod, buyingPrice: undefined, unitProfit: undefined } : (it.product || { id: prodId, title: it.title, price: sellingPrice }),
+                };
               });
-              if (isBlocked) {
-                res.statusCode = 403;
-                return res.end(JSON.stringify({ success: false, error: 'Order submission restricted for this contact number.' }));
-              }
-            }
 
-            const idempotencyKey = ((req.headers['idempotency-key'] || req.headers['x-idempotency-key'] || rawOrder.idempotencyKey || '') as string).trim();
-            if (idempotencyKey) {
-              const cached = devOrderIdempotencyMap.get(idempotencyKey);
-              if (cached && Date.now() - cached.timestamp < 15 * 60 * 1000) {
-                res.statusCode = 200;
-                return res.end(JSON.stringify({ success: true, order: sanitizeDevOrder(cached.order, false), idempotent: true }));
-              }
-            }
+              const totalGrossProfit = Math.max(0, (Number(rawOrder.subtotal) || 0) - totalCost);
 
-            const clientIp = ((req.headers['cf-connecting-ip'] || req.headers['x-real-ip'] || req.socket?.remoteAddress || '127.0.0.1') as string).trim();
-            if (!checkDevRateLimit(`order_burst:${clientIp}`, 2, 10)) {
-              res.statusCode = 429;
-              res.setHeader('Retry-After', '10');
-              return res.end(JSON.stringify({ success: false, error: 'Please wait a moment before submitting another order.' }));
-            }
-            recordDevRateAttempt(`order_burst:${clientIp}`, 10);
-
-            if (!checkDevRateLimit(`order_ip:${clientIp}`, 10, 600)) {
-              res.statusCode = 429;
-              res.setHeader('Retry-After', '300');
-              return res.end(JSON.stringify({ success: false, error: 'Order submission rate limit reached. Please wait a few minutes before trying again.' }));
-            }
-            recordDevRateAttempt(`order_ip:${clientIp}`, 600);
-
-            // Verify stock availability for all items before placing order
-            for (const it of verifiedItems) {
-              const prodId = it.product?.id || it.productId || it.id;
-              const prod = devProducts.find((p) => p.id === prodId);
-              if (!prod) {
+              const cleanPhone = (rawOrder.customer?.phone || '').replace(/\D/g, '');
+              if (cleanPhone.length < 11) {
                 res.statusCode = 400;
-                return res.end(JSON.stringify({ success: false, error: `Product "${it.product?.title || it.title || prodId}" not found.` }));
+                return res.end(JSON.stringify({ success: false, error: 'A valid 11-digit contact number is required.' }));
               }
-              if (prod.stock < it.quantity) {
+
+              // Anti-Spam check
+              if (devSettings.blockedPhoneNumbers && Array.isArray(devSettings.blockedPhoneNumbers)) {
+                const isBlocked = devSettings.blockedPhoneNumbers.some((p: string) => {
+                  const cleanP = (p || '').replace(/\D/g, '');
+                  return cleanP && (cleanPhone === cleanP || cleanPhone.endsWith(cleanP));
+                });
+                if (isBlocked) {
+                  res.statusCode = 403;
+                  return res.end(JSON.stringify({ success: false, error: 'Order submission restricted for this contact number.' }));
+                }
+              }
+
+              const idempotencyKey = ((req.headers['idempotency-key'] || req.headers['x-idempotency-key'] || rawOrder.idempotencyKey || '') as string).trim();
+              if (idempotencyKey) {
+                const cached = devOrderIdempotencyMap.get(idempotencyKey);
+                if (cached && Date.now() - cached.timestamp < 15 * 60 * 1000) {
+                  res.statusCode = 200;
+                  return res.end(JSON.stringify({ success: true, order: sanitizeDevOrder(cached.order, false), idempotent: true }));
+                }
+              }
+
+              const clientIp = ((req.headers['cf-connecting-ip'] || req.headers['x-real-ip'] || req.socket?.remoteAddress || '127.0.0.1') as string).trim();
+              if (!checkDevRateLimit(`order_burst:${clientIp}`, 2, 10)) {
+                res.statusCode = 429;
+                res.setHeader('Retry-After', '10');
+                return res.end(JSON.stringify({ success: false, error: 'Please wait a moment before submitting another order.' }));
+              }
+              recordDevRateAttempt(`order_burst:${clientIp}`, 10);
+
+              if (!checkDevRateLimit(`order_ip:${clientIp}`, 10, 600)) {
+                res.statusCode = 429;
+                res.setHeader('Retry-After', '300');
+                return res.end(JSON.stringify({ success: false, error: 'Order submission rate limit reached. Please wait a few minutes before trying again.' }));
+              }
+              recordDevRateAttempt(`order_ip:${clientIp}`, 600);
+
+              // Verify stock availability for all items before placing order
+              for (const it of verifiedItems) {
+                const prodId = it.product?.id || it.productId || it.id;
+                const prod = devProducts.find((p) => p.id === prodId);
+                if (!prod) {
+                  res.statusCode = 400;
+                  return res.end(JSON.stringify({ success: false, error: `Product "${it.product?.title || it.title || prodId}" not found.` }));
+                }
+                if (prod.stock < it.quantity) {
+                  res.statusCode = 400;
+                  return res.end(
+                    JSON.stringify({
+                      success: false,
+                      error: `One or more items in your cart sold out during checkout. Insufficient stock for "${prod.title}".`,
+                    })
+                  );
+                }
+              }
+
+              const freshOrderId = `ord-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+              const freshOrderNum = `RT-${new Date().getFullYear()}-${10000000 + Math.floor(Math.random() * 90000000)}`;
+
+              // Force initial payment & shipping status: prevent client spoofing
+              const paymentMethod = rawOrder.paymentMethod === 'dbbl' ? 'dbbl' : 'COD';
+              const paymentStatus = paymentMethod === 'dbbl' ? 'Unverified' : 'Pending';
+              const shippingStatus = 'Pending';
+
+              const order = {
+                ...rawOrder,
+                id: freshOrderId,
+                orderNumber: freshOrderNum,
+                items: verifiedItems,
+                paymentMethod,
+                paymentStatus,
+                shippingStatus,
+                totalCost,
+                totalGrossProfit,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+              };
+
+              // Deduct stock in devProducts atomically (all items guaranteed to have stock)
+              for (const it of verifiedItems) {
+                const prod = devProducts.find((p) => p.id === it.product?.id);
+                if (prod) {
+                  prod.stock = Math.max(0, prod.stock - it.quantity);
+                }
+              }
+
+              devOrders.unshift(order);
+              if (idempotencyKey) {
+                devOrderIdempotencyMap.set(idempotencyKey, { order, timestamp: Date.now() });
+              }
+
+              res.statusCode = 201;
+              return res.end(JSON.stringify({ success: true, order: sanitizeDevOrder(order, false), message: 'Order saved in dev memory store' }));
+            } catch (err: any) {
+              const clientIp = ((req.headers['cf-connecting-ip'] || req.headers['x-real-ip'] || req.socket?.remoteAddress || '127.0.0.1') as string).trim();
+              logDevServerError({
+                route: '/api/orders',
+                method: 'POST',
+                error: err,
+                extra: { clientIp },
+              });
+              const errMsg = err?.message || '';
+              const isClientValidationError = [
+                'required',
+                'Bangladeshi contact phone number',
+                'restricted for this contact number',
+                'Daily order limit',
+                'at least one item',
+                'missing a valid product ID',
+                'Invalid item quantity',
+                'Insufficient stock',
+                'sold out during checkout',
+                'does not exist',
+                'already exists',
+              ].some((pattern) => errMsg.includes(pattern));
+              const hasSqlOrDbLeak = /sqlite|syntax error|d1_error|table |column |foreign key|prepare|bind|database/i.test(errMsg);
+              if (isClientValidationError && !hasSqlOrDbLeak) {
                 res.statusCode = 400;
-                return res.end(
-                  JSON.stringify({
-                    success: false,
-                    error: `One or more items in your cart sold out during checkout. Insufficient stock for "${prod.title}".`,
-                  })
-                );
+                return res.end(JSON.stringify({ success: false, error: errMsg }));
               }
+              res.statusCode = 500;
+              return res.end(JSON.stringify({ success: false, error: 'Unable to place the order right now. Please try again.' }));
             }
-
-            const freshOrderId = `ord-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-            const freshOrderNum = `RT-${new Date().getFullYear()}-${10000000 + Math.floor(Math.random() * 90000000)}`;
-
-            // Force initial payment & shipping status: prevent client spoofing
-            const paymentMethod = rawOrder.paymentMethod === 'dbbl' ? 'dbbl' : 'COD';
-            const paymentStatus = paymentMethod === 'dbbl' ? 'Unverified' : 'Pending';
-            const shippingStatus = 'Pending';
-
-            const order = {
-              ...rawOrder,
-              id: freshOrderId,
-              orderNumber: freshOrderNum,
-              items: verifiedItems,
-              paymentMethod,
-              paymentStatus,
-              shippingStatus,
-              totalCost,
-              totalGrossProfit,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-            };
-
-            // Deduct stock in devProducts atomically (all items guaranteed to have stock)
-            for (const it of verifiedItems) {
-              const prod = devProducts.find((p) => p.id === it.product?.id);
-              if (prod) {
-                prod.stock = Math.max(0, prod.stock - it.quantity);
-              }
-            }
-
-            devOrders.unshift(order);
-            if (idempotencyKey) {
-              devOrderIdempotencyMap.set(idempotencyKey, { order, timestamp: Date.now() });
-            }
-
-            res.statusCode = 201;
-            return res.end(JSON.stringify({ success: true, order: sanitizeDevOrder(order, false), message: 'Order saved in dev memory store' }));
           });
         }
 
@@ -4450,7 +4557,7 @@ function localApiDevPlugin(): Plugin {
         }
 
         // 10. PROFIT ANALYTICS (DEV MODE - SUPER ADMIN ONLY)
-        if (url.pathname === '/api/analytics/profit' && method === 'GET') {
+        if ((url.pathname === '/api/analytics/profit' || url.pathname === '/api/admin/profit-analytics') && method === 'GET') {
           const authResult = requireDevAuth(req);
           if (authResult.error) return sendDevError(res, authResult.error);
           const permErr = requireDevPermission(authResult, 'report.profit');
@@ -4647,6 +4754,12 @@ function localApiDevPlugin(): Plugin {
           devExpenses = devExpenses.filter((e) => e.id !== id);
           res.statusCode = 200;
           return res.end(JSON.stringify({ success: true, message: `Expense "${id}" deleted.` }));
+        }
+
+        if (url.pathname.startsWith('/api/')) {
+          res.setHeader('Content-Type', 'application/json');
+          res.statusCode = 404;
+          return res.end(JSON.stringify({ success: false, error: `API route not found: ${method} ${url.pathname}` }));
         }
 
         next();

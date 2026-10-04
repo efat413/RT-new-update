@@ -102,7 +102,7 @@ export const orderApi = {
 
       const data: OrderApiResponse = await res.json().catch(() => ({ success: false }));
       if (!res.ok) {
-        const errorMsg = data.error || data.message || `HTTP ${res.status}: Failed to fetch orders from D1`;
+        const errorMsg = data.error || data.message || 'Failed to fetch orders. Please try again.';
         if (isSessionUnauthorizedError(res.status, errorMsg)) {
           notifyAuthUnauthorized({ url: url.toString(), error: errorMsg });
         }
@@ -198,14 +198,14 @@ export const orderApi = {
 
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.success) {
-        const errorMsg = data.error || data.message || `HTTP ${res.status}: Database rejected order creation`;
+        const errorMsg = data.error || data.message || 'Unable to place the order right now. Please try again.';
         return { success: false, error: errorMsg };
       }
 
       return {
         success: true,
         order: data.order || order,
-        message: data.message || 'Order successfully persisted in Cloudflare D1',
+        message: data.message || 'Order successfully placed',
       };
     } catch (err: any) {
       clearTimeout(timeoutId);
@@ -237,7 +237,7 @@ export const orderApi = {
 
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.success) {
-        const errorMsg = data.error || data.message || `HTTP ${res.status}: Failed to update order in D1`;
+        const errorMsg = data.error || data.message || 'Failed to update order. Please try again.';
         if (res.status === 401) {
           notifyAuthUnauthorized({ url: `${API_BASE}/orders/${encodeURIComponent(orderId)}`, error: errorMsg });
         }
@@ -247,7 +247,7 @@ export const orderApi = {
       return {
         success: true,
         order: data.order,
-        message: data.message || 'Order successfully updated in Cloudflare D1',
+        message: data.message || 'Order successfully updated',
       };
     } catch (err: any) {
       clearTimeout(timeoutId);
@@ -277,14 +277,14 @@ export const orderApi = {
 
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.success) {
-        const errorMsg = data.error || `HTTP ${res.status}: Failed to delete order`;
+        const errorMsg = data.error || 'Failed to delete order. Please try again.';
         if (res.status === 401) {
           notifyAuthUnauthorized({ url: `${API_BASE}/orders/${encodeURIComponent(orderId)}`, error: errorMsg });
         }
         return { success: false, error: errorMsg };
       }
 
-      return { success: true, message: data.message || 'Order deleted from D1' };
+      return { success: true, message: data.message || 'Order deleted successfully' };
     } catch (err: any) {
       clearTimeout(timeoutId);
       console.error('orderApi.deleteOrder error:', err);
