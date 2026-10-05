@@ -249,8 +249,26 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   });
 
   const [products, setProducts] = useState<Product[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [slides, setSlides] = useState<CarouselSlide[]>([]);
+  const [categories, setCategories] = useState<Category[]>(() => {
+    try {
+      const saved = localStorage.getItem('rongdhonu_cached_categories');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return [];
+  });
+  const [slides, setSlides] = useState<CarouselSlide[]>(() => {
+    try {
+      const saved = localStorage.getItem('rongdhonu_cached_slides');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return [];
+  });
   const [featuredProducts, setFeaturedProducts] = useState<Product[]>([]);
   const [homepageCategoryProducts, setHomepageCategoryProducts] = useState<Record<string, Product[]>>({});
   const [categoryListingProducts, setCategoryListingProducts] = useState<Product[]>([]);
@@ -816,6 +834,9 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       if (homepageRes.success && homepageRes.data) {
         const hpData = homepageRes.data;
         if (Array.isArray(hpData.categories)) {
+          try {
+            localStorage.setItem('rongdhonu_cached_categories', JSON.stringify(hpData.categories));
+          } catch {}
           setCategories((prev) => {
             if (
               prev.length === hpData.categories.length &&
@@ -827,6 +848,9 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           });
         }
         if (Array.isArray(hpData.slides)) {
+          try {
+            localStorage.setItem('rongdhonu_cached_slides', JSON.stringify(hpData.slides));
+          } catch {}
           setSlides(hpData.slides);
         }
         if (hpData.settings) {

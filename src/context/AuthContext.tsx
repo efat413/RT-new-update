@@ -15,6 +15,7 @@ export interface AuthContextType {
   setIsAuthModalOpen: (open: boolean) => void;
   authModalMode: 'login' | 'signup' | 'forgot-password';
   setAuthModalMode: (mode: 'login' | 'signup' | 'forgot-password') => void;
+  verifySession?: (force?: boolean) => Promise<UserAccount | null>;
   loginUser: (emailOrUsername: string, password: string) => Promise<{ success: boolean; message?: string; user?: UserAccount }>;
   registerUser: (data: { name: string; email: string; password: string; phone?: string; role?: UserRole }) => Promise<{ success: boolean; message?: string; user?: UserAccount }>;
   logout: () => void;
@@ -28,12 +29,52 @@ export interface AuthContextType {
 
 export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+// Helper to determine if immediate authoritative auth verification is critical
+function isImmediateAuthRequired(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const path = window.location.pathname;
+    if (path.startsWith('/admin') || path === '/reset-password') return true;
+    if (
+      localStorage.getItem(STORAGE_KEYS.CURRENT_USER) ||
+      localStorage.getItem(STORAGE_KEYS.ADMIN_AUTH) === 'true'
+    ) {
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   // Authoritative State: Identity and role are strictly resolved from server session (/api/auth/me)
-  // Frontend localStorage is NEVER the authoritative source for passwords, user identity, role, or admin access.
-  const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
-  const [isAdminLoggedIn, setIsAdminLoggedIn] = useState<boolean>(false);
-  const [isAuthInitializing, setIsAuthInitializing] = useState<boolean>(true);
+  // Frontend localStorage provides instant layout preservation while background revalidation executes.
+  const [currentUser, setCurrentUser] = useState<UserAccount | null>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.CURRENT_USER);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object' && parsed.id) {
+          return parsed;
+        }
+      }
+    } catch {}
+    return null;
+  });
+
+  const [isAdminLoggedIn, setIsAdminLoggedIn] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(STORAGE_KEYS.ADMIN_AUTH) === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  // Only initialize in pending auth state if the visitor actually has a stored session or is on /admin
+  // Anonymous storefront visitors start with isAuthInitializing: false immediately to unblock FCP / LCP!
+  const [isAuthInitializing, setIsAuthInitializing] = useState<boolean>(() => {
+    return isImmediateAuthRequired();
+  });
+
   const hadActiveSessionRef = useRef<boolean>(false);
   const hasInitializedAuthRef = useRef<boolean>(false);
 
@@ -71,56 +112,83 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch {}
   };
 
-  // Verify server session via /api/auth/me on startup
+  // Authoritative server session verification via /api/auth/me
+  const verifySession = useCallback(async (force = false): Promise<UserAccount | null> => {
+    try {
+      const res = await authApi.me({ force });
+      if (res.success && res.user) {
+        hadActiveSessionRef.current = true;
+        setCurrentUser(res.user);
+        const isPrivileged =
+          res.user.role === 'admin' ||
+          res.user.role === 'super_admin' ||
+          res.user.role === 'sub_admin';
+
+        setIsAdminLoggedIn(isPrivileged);
+        persistAdminAuthToStorage(isPrivileged);
+        persistCurrentUserToStorage(res.user);
+        return res.user;
+      } else {
+        hadActiveSessionRef.current = false;
+        setCurrentUser(null);
+        setIsAdminLoggedIn(false);
+        persistAdminAuthToStorage(false);
+        persistCurrentUserToStorage(null);
+        return null;
+      }
+    } catch {
+      hadActiveSessionRef.current = false;
+      setCurrentUser(null);
+      setIsAdminLoggedIn(false);
+      return null;
+    } finally {
+      setIsAuthInitializing(false);
+    }
+  }, []);
+
+  // Smart Session Verification Orchestration:
+  // - Immediate for returning users or /admin visitors
+  // - Deferred to idle time (or user interaction) for anonymous storefront visitors
   useEffect(() => {
     if (hasInitializedAuthRef.current) return;
-    hasInitializedAuthRef.current = true;
-    let isMounted = true;
 
-    const initAuth = async () => {
-      setIsAuthInitializing(true);
+    if (isImmediateAuthRequired()) {
+      hasInitializedAuthRef.current = true;
+      verifySession();
+      return;
+    }
 
-      try {
-        const res = await authApi.me();
-        if (isMounted) {
-          if (res.success && res.user) {
-            hadActiveSessionRef.current = true;
-            setCurrentUser(res.user);
-            const isPrivileged =
-              res.user.role === 'admin' ||
-              res.user.role === 'super_admin' ||
-              res.user.role === 'sub_admin';
-
-            setIsAdminLoggedIn(isPrivileged);
-            persistAdminAuthToStorage(isPrivileged);
-            persistCurrentUserToStorage(res.user);
-          } else {
-            hadActiveSessionRef.current = false;
-            setCurrentUser(null);
-            setIsAdminLoggedIn(false);
-            persistAdminAuthToStorage(false);
-            persistCurrentUserToStorage(null);
-          }
-        }
-      } catch {
-        if (isMounted) {
-          hadActiveSessionRef.current = false;
-          setCurrentUser(null);
-          setIsAdminLoggedIn(false);
-        }
-      } finally {
-        if (isMounted) {
-          setIsAuthInitializing(false);
-        }
-      }
+    // Anonymous visitor: Defer session discovery to browser idle time so it NEVER
+    // blocks the initial homepage network requests, TTFB, or LCP.
+    let cancelIdle: (() => void) | null = null;
+    const scheduleDeferredCheck = () => {
+      if (hasInitializedAuthRef.current) return;
+      hasInitializedAuthRef.current = true;
+      verifySession();
     };
 
-    initAuth();
+    if (typeof window !== 'undefined') {
+      if ('requestIdleCallback' in window) {
+        const id = (window as any).requestIdleCallback(scheduleDeferredCheck, { timeout: 4000 });
+        cancelIdle = () => (window as any).cancelIdleCallback(id);
+      } else {
+        const timer = setTimeout(scheduleDeferredCheck, 3500);
+        cancelIdle = () => clearTimeout(timer);
+      }
+    }
 
     return () => {
-      isMounted = false;
+      if (cancelIdle) cancelIdle();
     };
-  }, []);
+  }, [verifySession]);
+
+  // On-demand session verification when user explicitly opens the authentication modal
+  useEffect(() => {
+    if (isAuthModalOpen && !hasInitializedAuthRef.current) {
+      hasInitializedAuthRef.current = true;
+      verifySession();
+    }
+  }, [isAuthModalOpen, verifySession]);
 
   // 401 Unauthorized Event Synchronization
   useEffect(() => {
@@ -324,6 +392,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setIsAuthModalOpen,
     authModalMode,
     setAuthModalMode,
+    verifySession,
     loginUser,
     registerUser,
     logout,
@@ -339,6 +408,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     isAuthInitializing,
     isAuthModalOpen,
     authModalMode,
+    verifySession,
     loginUser,
     registerUser,
     logout,

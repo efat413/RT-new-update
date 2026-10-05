@@ -64,7 +64,18 @@ export const HeroCarousel: React.FC = () => {
         </div>
       );
     }
-    return null;
+    // Zero-CLS aspect-ratio container placeholder while slides are loading or resolving
+    return (
+      <div
+        id="hero-banner-slider-placeholder"
+        className="relative w-full overflow-hidden rounded-2xl sm:rounded-3xl bg-slate-900 text-white shadow-xl mt-4 select-none"
+        style={{ aspectRatio: masterRatio, minHeight: '160px' }}
+      >
+        <div className="absolute inset-0 bg-gradient-to-r from-slate-950 via-slate-900 to-slate-950 flex items-center justify-center">
+          <div className="w-8 h-8 border-2 border-rose-500/20 border-t-rose-500 rounded-full animate-spin opacity-40" />
+        </div>
+      </div>
+    );
   }
 
   const slide = activeSlides[currentSlide] || activeSlides[0];
