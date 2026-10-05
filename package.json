@@ -25,9 +25,7 @@
     "react-dom": "^19.0.1"
   },
   "devDependencies": {
-    "@rollup/rollup-linux-x64-gnu": "^4.63.5",
     "@types/node": "^22.14.0",
-    "esbuild": "^0.28.0",
     "sharp": "^0.35.5",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
