@@ -103,6 +103,11 @@ import {
   bufferToHex,
   computePasswordSignature,
   TokenPayload,
+  ADMIN_SESSION_IDLE_TIMEOUT_SECONDS,
+  ADMIN_SESSION_ABSOLUTE_TIMEOUT_SECONDS,
+  CUSTOMER_SESSION_EXPIRATION_SECONDS,
+  ADMIN_SESSION_REFRESH_THROTTLE_SECONDS,
+  isAdminRole,
 } from './auth';
 import {
   syncSingleOrderCourierStatus,
@@ -129,6 +134,7 @@ import {
 
 let activeApiRequest: Request | null = null;
 let activeEnv: Env | null = null;
+let activeRefreshedCookie: string | null = null;
 
 /**
  * Environment-aware CORS origin policy.
@@ -347,19 +353,26 @@ function jsonResponse(data: any, status = 200, customHeaders: Record<string, str
     }
   }
 
+  const responseHeaders: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...getCorsHeaders(),
+    'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
+    'Pragma': 'no-cache',
+    'Expires': '0',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'SAMEORIGIN',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+  };
+
+  if (activeRefreshedCookie && !customHeaders['Set-Cookie']) {
+    responseHeaders['Set-Cookie'] = activeRefreshedCookie;
+  }
+
+  Object.assign(responseHeaders, customHeaders);
+
   return new Response(serialized, {
     status: finalStatus,
-    headers: {
-      'Content-Type': 'application/json',
-      ...getCorsHeaders(),
-      'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
-      'Pragma': 'no-cache',
-      'Expires': '0',
-      'X-Content-Type-Options': 'nosniff',
-      'X-Frame-Options': 'SAMEORIGIN',
-      'Referrer-Policy': 'strict-origin-when-cross-origin',
-      ...customHeaders,
-    },
+    headers: responseHeaders,
   });
 }
 
@@ -872,6 +885,66 @@ async function requireAuth(
   }
 
   const role = (dbUser.role as UserRole) || 'customer';
+  const isPrivilegedAdmin = isAdminRole(role);
+
+  // Server-Enforced Admin Session Expiration (30-min idle timeout and 12-hour absolute timeout)
+  if (isPrivilegedAdmin) {
+    const now = Math.floor(Date.now() / 1000);
+    const authTime = tokenUser.authTime || tokenUser.iat || now;
+    const lastActivity = tokenUser.lastActivity || tokenUser.iat || now;
+
+    // 1. Strict Absolute Maximum Session Duration (12 hours)
+    if (now - authTime > ADMIN_SESSION_ABSOLUTE_TIMEOUT_SECONDS) {
+      return {
+        errorResponse: jsonResponse(
+          { success: false, error: 'Unauthorized: Session expired. Maximum session duration reached. Please log in again.' },
+          401
+        ),
+      };
+    }
+
+    // 2. Strict Continuous Inactivity / Idle Timeout (30 minutes)
+    if (now - lastActivity > ADMIN_SESSION_IDLE_TIMEOUT_SECONDS) {
+      return {
+        errorResponse: jsonResponse(
+          { success: false, error: 'Unauthorized: Admin session expired due to 30 minutes of inactivity. Please log in again.' },
+          401
+        ),
+      };
+    }
+
+    // 3. Sliding Session Refresh:
+    // Only refresh on legitimate user requests (skip passive background probes)
+    const isPassive =
+      request.headers.get('x-background-poll') === 'true' ||
+      request.headers.get('x-passive-probe') === 'true';
+
+    const isMutating = request.method !== 'GET' && request.method !== 'HEAD';
+    if (!isPassive && (now - lastActivity >= ADMIN_SESSION_REFRESH_THROTTLE_SECONDS || isMutating)) {
+      const remainingAbsolute = (authTime + ADMIN_SESSION_ABSOLUTE_TIMEOUT_SECONDS) - now;
+      if (remainingAbsolute > 0) {
+        const slideSeconds = Math.min(ADMIN_SESSION_IDLE_TIMEOUT_SECONDS, remainingAbsolute);
+        try {
+          const freshToken = await createAuthToken(
+            {
+              userId: dbUser.id,
+              email: dbUser.email,
+              role: dbUser.role,
+              pwdSig: tokenUser.pwdSig,
+              authTime,
+              lastActivity: now,
+            },
+            secret,
+            slideSeconds
+          );
+          activeRefreshedCookie = buildAuthCookieHeader(request, freshToken, slideSeconds, env);
+        } catch (refreshErr) {
+          console.warn('[Session Refresh Error]:', refreshErr);
+        }
+      }
+    }
+  }
+
   // Centralized permission resolution: Only super_admin has unconditional full access.
   // Admin and sub_admin permissions are strictly loaded from server-side permissions_json.
   const permissions = resolveUserPermissions(role, dbUser.permissions_json);
@@ -1243,6 +1316,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
   try {
     activeApiRequest = request;
     activeEnv = env;
+    activeRefreshedCookie = null;
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method.toUpperCase();
@@ -1495,14 +1569,20 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       }
 
       const secret = await resolveAuthSecret(env);
+      const isPrivilegedAdmin = isAdminRole(userRow.role);
+      const now = Math.floor(Date.now() / 1000);
+      const maxAgeSeconds = isPrivilegedAdmin ? ADMIN_SESSION_IDLE_TIMEOUT_SECONDS : CUSTOMER_SESSION_EXPIRATION_SECONDS;
+
       const token = await createAuthToken(
         {
           userId: userRow.id,
           email: userRow.email,
           role: userRow.role,
           pwdSig: await computePasswordSignature(userRow.password || ''),
+          ...(isPrivilegedAdmin ? { authTime: now, lastActivity: now } : {}),
         },
-        secret
+        secret,
+        maxAgeSeconds
       );
 
       const sanitizedUser = rowToUser(userRow);
@@ -1514,7 +1594,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         },
         200,
         {
-          'Set-Cookie': buildAuthCookieHeader(request, token, 7 * 86400),
+          'Set-Cookie': buildAuthCookieHeader(request, token, maxAgeSeconds, env),
         }
       );
     } catch (err: any) {
@@ -1967,14 +2047,20 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
     // Issue fresh token so the current session continues uninterrupted
     const secret = await resolveAuthSecret(env);
+    const isPrivilegedAdmin = isAdminRole(auth!.dbUser.role);
+    const now = Math.floor(Date.now() / 1000);
+    const maxAgeSeconds = isPrivilegedAdmin ? ADMIN_SESSION_IDLE_TIMEOUT_SECONDS : CUSTOMER_SESSION_EXPIRATION_SECONDS;
+
     const freshToken = await createAuthToken(
       {
         userId: auth!.dbUser.id,
         email: auth!.dbUser.email,
         role: auth!.dbUser.role,
         pwdSig: newPwdSig,
+        ...(isPrivilegedAdmin ? { authTime: auth!.tokenUser.authTime || now, lastActivity: now } : {}),
       },
-      secret
+      secret,
+      maxAgeSeconds
     );
 
     return jsonResponse(
@@ -1984,7 +2070,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       },
       200,
       {
-        'Set-Cookie': buildAuthCookieHeader(request, freshToken, 7 * 86400),
+        'Set-Cookie': buildAuthCookieHeader(request, freshToken, maxAgeSeconds, env),
       }
     );
   }
@@ -3983,16 +4069,22 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           const updatedUserRow = await getUserByEmailOrUsername(env.DB, updated.email);
           const newPwdSig = await computePasswordSignature(updatedUserRow?.password || '');
           const secret = await resolveAuthSecret(env);
+          const isPrivilegedAdmin = isAdminRole(updated.role);
+          const now = Math.floor(Date.now() / 1000);
+          const maxAgeSeconds = isPrivilegedAdmin ? ADMIN_SESSION_IDLE_TIMEOUT_SECONDS : CUSTOMER_SESSION_EXPIRATION_SECONDS;
+
           const freshToken = await createAuthToken(
             {
               userId: updated.id,
               email: updated.email,
               role: updated.role,
               pwdSig: newPwdSig,
+              ...(isPrivilegedAdmin ? { authTime: auth?.tokenUser?.authTime || now, lastActivity: now } : {}),
             },
-            secret
+            secret,
+            maxAgeSeconds
           );
-          freshCookieHeader = buildAuthCookieHeader(request, freshToken, 7 * 86400);
+          freshCookieHeader = buildAuthCookieHeader(request, freshToken, maxAgeSeconds, env);
         }
 
         const responseHeaders: Record<string, string> = {};

@@ -299,12 +299,48 @@ function localApiDevPlugin(): Plugin {
     return nodeCrypto.createHash('sha256').update(hash).digest('hex').slice(0, 32);
   };
 
+  const ADMIN_SESSION_IDLE_TIMEOUT_SECONDS = 30 * 60; // 30 minutes
+  const ADMIN_SESSION_ABSOLUTE_TIMEOUT_SECONDS = 12 * 3600; // 12 hours
+  const CUSTOMER_SESSION_EXPIRATION_SECONDS = 7 * 86400; // 7 days
+  const ADMIN_SESSION_REFRESH_THROTTLE_SECONDS = 60; // 60s throttle
+
+  const isDevAdminRole = (role?: string | null): boolean => {
+    return role === 'super_admin' || role === 'admin' || role === 'sub_admin';
+  };
+
+  const buildDevAuthCookieHelper = (req: any, token: string, maxAgeSeconds: number): string => {
+    const forwardedProto = ((req.headers['x-forwarded-proto'] || '') as string).toLowerCase();
+    const isHttps = req.connection?.encrypted || forwardedProto.includes('https');
+    const secFetchSite = ((req.headers['sec-fetch-site'] || '') as string).toLowerCase();
+    const reqHost = ((req.headers['host'] || '') as string).toLowerCase();
+    const reqOrigin = ((req.headers['origin'] || '') as string).toLowerCase();
+    const isCrossSite =
+      secFetchSite === 'cross-site' ||
+      reqHost.endsWith('.run.app') ||
+      (Boolean(reqOrigin) && !reqOrigin.includes(reqHost.split(':')[0]));
+    const sameSite = isHttps && isCrossSite ? 'None' : 'Lax';
+    const secureAttr = isHttps ? '; Secure' : '';
+    const encodedVal = token ? encodeURIComponent(token) : '';
+    const expiresAttr = maxAgeSeconds <= 0 ? '; Expires=Thu, 01 Jan 1970 00:00:00 GMT' : '';
+    return `auth_token=${encodedVal}; Path=/; HttpOnly${secureAttr}; SameSite=${sameSite}; Max-Age=${maxAgeSeconds}${expiresAttr}`;
+  };
+
   /**
    * Cryptographically signs an HMAC-SHA256 session JWT.
    * Standard 3-part format (Header.Payload.Signature) matching production verifyAuthToken.
    * Insecure dev-jwt-* tokens are strictly banned.
    */
-  const signDevSessionToken = (payload: { userId: string; email: string; role: string; pwdSig?: string }, expiresInSeconds: number = 7 * 86400): string => {
+  const signDevSessionToken = (
+    payload: {
+      userId: string;
+      email: string;
+      role: string;
+      pwdSig?: string;
+      authTime?: number;
+      lastActivity?: number;
+    },
+    expiresInSeconds: number = 7 * 86400
+  ): string => {
     const secret = process.env.ADMIN_SECRET as string;
     const now = Math.floor(Date.now() / 1000);
     const exp = now + expiresInSeconds;
@@ -342,6 +378,15 @@ function localApiDevPlugin(): Plugin {
       const payload = JSON.parse(Buffer.from(b64Payload, 'base64url').toString('utf-8'));
       const now = Math.floor(Date.now() / 1000);
       if (payload.exp && payload.exp < now) return null;
+
+      // Defense-in-depth: Strictly enforce 30-minute idle and 12-hour absolute timeout for admin roles
+      if (isDevAdminRole(payload.role)) {
+        const authTime = payload.authTime || payload.iat || now;
+        if (now - authTime > ADMIN_SESSION_ABSOLUTE_TIMEOUT_SECONDS) return null;
+        const lastActivity = payload.lastActivity || payload.iat || now;
+        if (now - lastActivity > ADMIN_SESSION_IDLE_TIMEOUT_SECONDS) return null;
+      }
+
       return payload;
     } catch {
       return null;
@@ -534,6 +579,48 @@ function localApiDevPlugin(): Plugin {
 
         // RBAC Security: Role is strictly derived from the verified user record, never from client claims
         const role = foundUser.role || 'customer';
+        const isPrivileged = isDevAdminRole(role);
+        const now = Math.floor(Date.now() / 1000);
+
+        if (isPrivileged) {
+          const authTime = decoded.authTime || decoded.iat || now;
+          if (now - authTime > ADMIN_SESSION_ABSOLUTE_TIMEOUT_SECONDS) {
+            return {
+              error: { status: 401, body: { success: false, error: 'Unauthorized: Session expired. Maximum session duration reached. Please log in again.' } },
+            };
+          }
+
+          const lastActivity = decoded.lastActivity || decoded.iat || now;
+          if (now - lastActivity > ADMIN_SESSION_IDLE_TIMEOUT_SECONDS) {
+            return {
+              error: { status: 401, body: { success: false, error: 'Unauthorized: Admin session expired due to 30 minutes of inactivity. Please log in again.' } },
+            };
+          }
+
+          // Sliding session refresh for active, non-passive admin requests
+          const isPassive =
+            req.headers['x-background-poll'] === 'true' ||
+            req.headers['x-passive-probe'] === 'true';
+
+          const isMutating = req.method !== 'GET' && req.method !== 'HEAD';
+          const targetRes = req.res;
+          if (targetRes && !isPassive && (now - lastActivity >= ADMIN_SESSION_REFRESH_THROTTLE_SECONDS || isMutating)) {
+            const remainingAbsolute = (authTime + ADMIN_SESSION_ABSOLUTE_TIMEOUT_SECONDS) - now;
+            if (remainingAbsolute > 0) {
+              const slideSeconds = Math.min(ADMIN_SESSION_IDLE_TIMEOUT_SECONDS, remainingAbsolute);
+              const refreshedToken = signDevSessionToken({
+                userId: foundUser.id,
+                email: foundUser.email,
+                role: foundUser.role,
+                pwdSig: decoded.pwdSig,
+                authTime,
+                lastActivity: now,
+              }, slideSeconds);
+              targetRes.setHeader('Set-Cookie', buildDevAuthCookieHelper(req, refreshedToken, slideSeconds));
+            }
+          }
+        }
+
         const rawPermissions = (foundUser as any).permissions_json || foundUser.permissions;
         const granularPermissions = resolveUserPermissions(role, rawPermissions);
         const legacyPermissions = generateLegacyPermissionFlags(granularPermissions);
@@ -1089,6 +1176,7 @@ function localApiDevPlugin(): Plugin {
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
         try {
+          (req as any).res = res;
           const url = new URL(req.url || '/', 'http://localhost');
           const method = (req.method || 'GET').toUpperCase();
 
@@ -1289,16 +1377,7 @@ function localApiDevPlugin(): Plugin {
         }
 
         const buildDevAuthCookie = (token: string, maxAgeSeconds: number): string => {
-          const secFetchSite = ((req.headers['sec-fetch-site'] || '') as string).toLowerCase();
-          const isCrossSite =
-            secFetchSite === 'cross-site' ||
-            reqHost.endsWith('.run.app') ||
-            (Boolean(reqOrigin) && !reqOrigin.includes(reqHost.split(':')[0]));
-          const sameSite = isHttps && isCrossSite ? 'None' : 'Lax';
-          const secureAttr = isHttps ? '; Secure' : '';
-          const encodedVal = token ? encodeURIComponent(token) : '';
-          const expiresAttr = maxAgeSeconds <= 0 ? '; Expires=Thu, 01 Jan 1970 00:00:00 GMT' : '';
-          return `auth_token=${encodedVal}; Path=/; HttpOnly${secureAttr}; SameSite=${sameSite}; Max-Age=${maxAgeSeconds}${expiresAttr}`;
+          return buildDevAuthCookieHelper(req, token, maxAgeSeconds);
         };
 
         res.setHeader('Content-Type', 'application/json');
@@ -1444,14 +1523,18 @@ function localApiDevPlugin(): Plugin {
               return res.end(JSON.stringify({ success: false, error: 'Invalid email/username or password.' }));
             }
 
+            const isPrivileged = isDevAdminRole(foundUser.role);
+            const now = Math.floor(Date.now() / 1000);
+            const sessionDuration = isPrivileged ? ADMIN_SESSION_IDLE_TIMEOUT_SECONDS : CUSTOMER_SESSION_EXPIRATION_SECONDS;
             const currentHash = devUserPasswordHashes.get(foundUser.email?.toLowerCase()) || storedHash || '';
             const sessionToken = signDevSessionToken({
               userId: foundUser.id,
               email: foundUser.email || identifier,
               role: foundUser.role || 'super_admin',
               pwdSig: computeDevPasswordSig(currentHash),
-            });
-            res.setHeader('Set-Cookie', buildDevAuthCookie(sessionToken, 7 * 86400));
+              ...(isPrivileged ? { authTime: now, lastActivity: now } : {}),
+            }, sessionDuration);
+            res.setHeader('Set-Cookie', buildDevAuthCookie(sessionToken, sessionDuration));
             res.statusCode = 200;
             return res.end(JSON.stringify({
               success: true,
@@ -1590,13 +1673,18 @@ function localApiDevPlugin(): Plugin {
               devUserPasswordHashes.set('superadmin', newHashed);
             }
 
+            const isPrivileged = isDevAdminRole(targetUser?.role);
+            const now = Math.floor(Date.now() / 1000);
+            const sessionDuration = isPrivileged ? ADMIN_SESSION_IDLE_TIMEOUT_SECONDS : CUSTOMER_SESSION_EXPIRATION_SECONDS;
+
             const freshToken = signDevSessionToken({
               userId: targetUser?.id || devSuperAdminAccounts[0]?.id || 'dev-super-admin-1',
               email: targetUser?.email || targetEmail,
               role: targetUser?.role || 'super_admin',
               pwdSig: computeDevPasswordSig(newHashed),
-            });
-            res.setHeader('Set-Cookie', buildDevAuthCookie(freshToken, 7 * 86400));
+              ...(isPrivileged ? { authTime: authResult.auth?.user?.authTime || now, lastActivity: now } : {}),
+            }, sessionDuration);
+            res.setHeader('Set-Cookie', buildDevAuthCookie(freshToken, sessionDuration));
             res.statusCode = 200;
             return res.end(JSON.stringify({
               success: true,
@@ -3138,13 +3226,17 @@ function localApiDevPlugin(): Plugin {
               if (isSelf && (isChangingPassword || isChangingEmail)) {
                 const freshHash = devUserPasswordHashes.get(devUsers[idx].email.toLowerCase());
                 const freshSig = freshHash ? computeDevPasswordSig(freshHash) : '';
+                const isPrivileged = isDevAdminRole(devUsers[idx].role);
+                const now = Math.floor(Date.now() / 1000);
+                const sessionDuration = isPrivileged ? ADMIN_SESSION_IDLE_TIMEOUT_SECONDS : CUSTOMER_SESSION_EXPIRATION_SECONDS;
                 const freshToken = signDevSessionToken({
                   userId: devUsers[idx].id,
                   email: devUsers[idx].email,
                   role: devUsers[idx].role,
                   pwdSig: freshSig,
-                });
-                res.setHeader('Set-Cookie', buildDevAuthCookie(freshToken, 7 * 86400));
+                  ...(isPrivileged ? { authTime: now, lastActivity: now } : {}),
+                }, sessionDuration);
+                res.setHeader('Set-Cookie', buildDevAuthCookie(freshToken, sessionDuration));
               }
 
               res.statusCode = 200;

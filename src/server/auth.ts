@@ -10,6 +10,18 @@ export interface TokenPayload {
   pwdSig?: string;
   iat?: number;
   exp: number; // Unix timestamp in seconds
+  authTime?: number; // Absolute initial login timestamp in seconds
+  lastActivity?: number; // Timestamp in seconds of last verified user-initiated activity
+}
+
+export const ADMIN_SESSION_IDLE_TIMEOUT_SECONDS = 30 * 60; // 30 minutes idle timeout
+export const ADMIN_SESSION_ABSOLUTE_TIMEOUT_SECONDS = 12 * 3600; // 12 hours absolute maximum session lifetime
+export const CUSTOMER_SESSION_EXPIRATION_SECONDS = 7 * 24 * 3600; // 7 days for non-admin customer accounts
+export const ADMIN_SESSION_REFRESH_THROTTLE_SECONDS = 60; // 60-second sliding refresh throttle window
+
+export function isAdminRole(role?: string | null): boolean {
+  if (!role) return false;
+  return role === 'super_admin' || role === 'admin' || role === 'sub_admin';
 }
 
 let devFallbackSecret: string | null = null;
@@ -280,6 +292,18 @@ async function verifyTokenSignature(
     const now = Math.floor(Date.now() / 1000);
     if (payload.exp && payload.exp < now) {
       return null; // Expired
+    }
+
+    // Defense-in-depth: Strictly enforce 30-minute idle and 12-hour absolute timeout for admin roles
+    if (isAdminRole(payload.role)) {
+      const authTime = payload.authTime || payload.iat || now;
+      if (now - authTime > ADMIN_SESSION_ABSOLUTE_TIMEOUT_SECONDS) {
+        return null; // Absolute maximum session lifetime reached
+      }
+      const lastActivity = payload.lastActivity || payload.iat || now;
+      if (now - lastActivity > ADMIN_SESSION_IDLE_TIMEOUT_SECONDS) {
+        return null; // 30-minute continuous inactivity timeout reached
+      }
     }
 
     return payload;
