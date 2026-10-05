@@ -198,7 +198,10 @@ export const orderApi = {
 
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.success) {
-        const errorMsg = data.error || data.message || 'Unable to place the order right now. Please try again.';
+        let errorMsg = data.error || data.message || 'Unable to place the order right now. Please try again.';
+        if (/sqlite|syntax error|d1|table |column |foreign key|prepare|bind|database disk|file not found|\/app\/|\/src\/|\.ts:\d+|\.js:\d+|admin_secret|token|credential|api[_-]?key/i.test(errorMsg)) {
+          errorMsg = 'Unable to place the order right now. Please try again.';
+        }
         return { success: false, error: errorMsg };
       }
 
@@ -213,7 +216,7 @@ export const orderApi = {
       if (err?.name === 'AbortError' || err?.message?.toLowerCase().includes('abort')) {
         return { success: false, error: 'Request timed out while contacting the server. Please try again.' };
       }
-      return { success: false, error: err?.message || 'Network error creating order' };
+      return { success: false, error: 'Unable to place the order right now. Please try again.' };
     }
   },
 

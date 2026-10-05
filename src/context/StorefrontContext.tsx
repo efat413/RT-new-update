@@ -1082,10 +1082,10 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       showNotification(
         'error',
         'Order Placement Failed',
-        res.error || 'Could not save order to database. Please check connection and try again.',
+        res.error || 'Unable to place the order right now. Please try again.',
         6000
       );
-      throw new Error(res.error || 'Failed to save order');
+      throw new Error(res.error || 'Unable to place the order right now. Please try again.');
     }
 
     const canonicalOrder: Order = res.order || newOrder;

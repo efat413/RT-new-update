@@ -287,7 +287,7 @@ function jsonResponse(data: any, status = 200, customHeaders: Record<string, str
         typeof payload.error === 'string' &&
         payload.error === 'Unable to place the order right now. Please try again.';
 
-      if (!isSafe503Message && !isSafeOrderErrorMessage && payload.error && payload.error !== 'Internal server error.') {
+      if (!isSafe503Message && !isSafeOrderErrorMessage && payload.error && payload.error !== 'Internal server error.' && payload.error !== 'Something went wrong. Please try again.') {
         console.error('[Server Internal Error Logged Safely]:', payload.error);
         payload = {
           ...payload,
@@ -305,7 +305,7 @@ function jsonResponse(data: any, status = 200, customHeaders: Record<string, str
       // 3. Defense-in-depth for 4xx responses: Intercept any accidental SQL, D1 driver, or filesystem leaks
       const errStr = typeof payload.error === 'string' ? payload.error : '';
       const isLeakingInternals =
-        /sqlite|syntax error|d1_error|table |column |foreign key|prepare|bind|database disk|file not found|\/app\/|\/src\/|\.ts:\d+|\.js:\d+|cloudflare d1/i.test(errStr);
+        /sqlite|syntax error|d1|table |column |foreign key|prepare|bind|database disk|file not found|\/app\/|\/src\/|\.ts:\d+|\.js:\d+|cloudflare d1|admin_secret|resend_api_key|token|auth_token|typeerror|referenceerror|rangeerror|evalerror/i.test(errStr);
       if (isLeakingInternals) {
         console.error('[Server Internal Leak Intercepted & Masked Safely]:', errStr);
         payload = {
@@ -1210,7 +1210,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
   // Check if D1 database binding exists for data routes
   if (!env.DB) {
     return jsonResponse(
-      { success: false, error: 'Cloudflare D1 database binding "DB" is not bound in environment.' },
+      { success: false, error: 'Database service is currently unavailable.' },
       503
     );
   }
@@ -1761,7 +1761,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     return jsonResponse(
       {
         success: true,
-        message: 'Password updated successfully in Cloudflare D1.',
+        message: 'Password updated successfully.',
       },
       200,
       {
@@ -2223,8 +2223,14 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           201
         );
       } catch (err: any) {
-        console.error('Error creating product in D1:', err);
-        return jsonResponse({ success: false, error: err?.message || 'Failed to create product in database.' }, 500);
+        logServerError({
+          route: '/api/products',
+          method: 'POST',
+          action: 'product.create',
+          userId: auth?.dbUser?.id,
+          error: err,
+        });
+        return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
       }
     }
   }
@@ -2361,9 +2367,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
       try {
         await deleteProductFromD1(env.DB, prodId);
-        return jsonResponse({ success: true, message: `Product "${prodId}" deleted from D1.` });
+        return jsonResponse({ success: true, message: `Product "${prodId}" deleted successfully.` });
       } catch (err: any) {
-        console.error('Error deleting product:', err);
+        logServerError({ route: path, method, error: err, action: 'product.delete' });
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
       }
     }
@@ -2450,9 +2456,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
       try {
         await deleteCategoryFromD1(env.DB, catId);
-        return jsonResponse({ success: true, message: `Category "${catId}" deleted from Cloudflare D1.` });
+        return jsonResponse({ success: true, message: `Category "${catId}" deleted successfully.` });
       } catch (err: any) {
-        console.error('Error deleting category:', err);
+        logServerError({ route: path, method, error: err, action: 'category.delete' });
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
       }
     }
@@ -2470,7 +2476,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           'Vary': 'Origin, Accept-Encoding',
         });
       } catch (err: any) {
-        console.error('Error fetching sliders:', err);
+        logServerError({ route: path, method, error: err, action: 'sliders.list' });
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
       }
     }
@@ -2487,7 +2493,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         const created = await insertSlider(env.DB, slideData);
         return jsonResponse({ success: true, slider: created }, 201);
       } catch (err: any) {
-        console.error('Error creating slider:', err);
+        logServerError({ route: path, method, error: err, action: 'slider.create' });
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
       }
     }
@@ -2513,7 +2519,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
             success: true,
             count: updated.length,
             sliders: updated,
-            message: 'Slider ordering updated successfully in D1 database.',
+            message: 'Slider ordering updated successfully.',
           },
           200,
           {
@@ -2521,8 +2527,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           }
         );
       } catch (err: any) {
-        console.error('Error reordering sliders:', err);
-        return jsonResponse({ success: false, error: err?.message || 'Failed to reorder sliders in D1.' }, 400);
+        logServerError({ route: path, method, error: err, action: 'slider.reorder' });
+        return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
       }
     }
   }
@@ -2573,9 +2579,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
       try {
         await deleteSliderFromD1(env.DB, slideId);
-        return jsonResponse({ success: true, message: `Slider deleted from D1.` });
+        return jsonResponse({ success: true, message: `Slider deleted successfully.` });
       } catch (err: any) {
-        console.error('Error deleting slider:', err);
+        logServerError({ route: path, method, error: err, action: 'slider.delete' });
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
       }
     }
@@ -2640,11 +2646,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
         return jsonResponse({
           success: true,
-          message: 'Website settings saved and verified in Cloudflare D1 central database!',
+          message: 'Website settings saved successfully!',
           settings: maskSettings(canonical, true, canViewCourier, env),
         });
       } catch (err: any) {
-        console.error('Failed to update store settings in D1:', err);
+        logServerError({ route: path, method, error: err, action: 'settings.update' });
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
       }
     }
@@ -3149,9 +3155,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
       try {
         await deleteCouponFromD1(env.DB, code);
-        return jsonResponse({ success: true, message: `Coupon deleted from D1.` });
+        return jsonResponse({ success: true, message: `Coupon deleted successfully.` });
       } catch (err: any) {
-        console.error('Error deleting coupon:', err);
+        logServerError({ route: path, method, error: err, action: 'coupon.delete' });
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
       }
     }
@@ -3314,9 +3320,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
     try {
       await deleteReviewFromD1(env.DB, revId);
-      return jsonResponse({ success: true, message: `Review deleted from D1.` });
+      return jsonResponse({ success: true, message: `Review deleted successfully.` });
     } catch (err: any) {
-      console.error('Error deleting review:', err);
+      logServerError({ route: path, method, error: err, action: 'review.delete' });
       return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
     }
   }
@@ -3409,7 +3415,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       // Check target user in D1
       const targetUser = await env.DB.prepare('SELECT id, email, role FROM users WHERE id = ?').bind(usrId).first<{ id: string; email: string; role: string }>();
       if (!targetUser) {
-        return jsonResponse({ success: false, error: 'User not found in D1.' }, 404);
+        return jsonResponse({ success: false, error: 'User not found.' }, 404);
       }
 
       // Check self-update vs administrative update
@@ -3636,11 +3642,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       try {
         const deleteSuccess = await deleteUserFromD1(env.DB, targetUser.id);
         if (!deleteSuccess) {
-          return jsonResponse({ success: false, error: 'Failed to delete user account from database.' }, 500);
+          return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
         }
         return jsonResponse({ success: true, message: `Account for ${targetUser.email} has been permanently deleted.` });
       } catch (err: any) {
-        console.error('Error deleting user:', err);
+        logServerError({ route: path, method, error: err, action: 'user.delete' });
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
       }
     }
@@ -4004,7 +4010,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       return jsonResponse(
         {
           success: true,
-          message: `Order #${saved.orderNumber} successfully saved to Cloudflare D1 central database!`,
+          message: `Order #${saved.orderNumber} placed successfully!`,
           order: sanitizeOrderForRole(saved, false),
         },
         201
@@ -4245,11 +4251,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
         return jsonResponse({
           success: true,
-          message: `Order #${updated.orderNumber} successfully updated in Cloudflare D1!`,
+          message: `Order #${updated.orderNumber} updated successfully!`,
           order: sanitizeOrderForRole(updated, { isSuperAdmin, canViewBuyingPrice, canViewProfit }),
         });
       } catch (err: any) {
-        console.error('Error updating order in D1:', err);
+        logServerError({ route: path, method, error: err, action: 'order.update', orderId });
         if (err?.message?.includes('not found')) {
           return jsonResponse({ success: false, error: 'Order not found' }, 404);
         }
@@ -4267,10 +4273,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         await deleteOrderFromD1(env.DB, orderId);
         return jsonResponse({
           success: true,
-          message: `Order #${orderId} permanently removed from Cloudflare D1.`,
+          message: `Order #${orderId} deleted successfully.`,
         });
       } catch (err: any) {
-        console.error('Error deleting order from D1:', err);
+        logServerError({ route: path, method, error: err, action: 'order.delete', orderId });
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
       }
     }
@@ -4417,7 +4423,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       // Read authoritative order from Cloudflare D1
       const order = await getOrderById(env.DB, orderParam.id || orderParam.orderNumber);
       if (!order) {
-        return jsonResponse({ success: false, error: 'Order not found in Cloudflare D1 database.' }, 404);
+        return jsonResponse({ success: false, error: 'Order not found.' }, 404);
       }
 
       // Retrieve server credentials strictly from server environment or D1

@@ -446,7 +446,19 @@ function localApiDevPlugin(): Plugin {
 
   const sendDevError = (res: any, err: { status: number; body: { success: boolean; error: string; requiredPermission?: string } }) => {
     res.statusCode = err.status;
-    return res.end(JSON.stringify(err.body));
+    let safeBody = { ...err.body };
+    if (err.status >= 500) {
+      if (safeBody.error !== 'Unable to place the order right now. Please try again.' && safeBody.error !== 'Internal server error.' && safeBody.error !== 'Something went wrong. Please try again.') {
+        safeBody.error = 'Internal server error.';
+      }
+    } else {
+      const errStr = typeof safeBody.error === 'string' ? safeBody.error : '';
+      const isLeaking = /sqlite|syntax error|d1|table |column |foreign key|prepare|bind|database disk|file not found|\/app\/|\/src\/|\.ts:\d+|\.js:\d+|admin_secret|token|credential|api[_-]?key/i.test(errStr);
+      if (isLeaking) {
+        safeBody.error = 'Invalid request.';
+      }
+    }
+    return res.end(JSON.stringify(safeBody));
   };
 
   interface SafeDevLogContext {
@@ -1213,7 +1225,7 @@ function localApiDevPlugin(): Plugin {
             res.statusCode = 200;
             return res.end(JSON.stringify({
               success: true,
-              message: 'Password updated successfully in Cloudflare D1.',
+              message: 'Password updated successfully.',
             }));
           });
         }
@@ -2889,9 +2901,25 @@ function localApiDevPlugin(): Plugin {
             try {
               const rawOrder = body.order || body;
 
+              if (!rawOrder?.customer?.fullName || !rawOrder?.customer?.phone || !rawOrder?.customer?.fullAddress) {
+                res.statusCode = 400;
+                return res.end(JSON.stringify({ success: false, error: 'Customer full name, phone number, and delivery address are required.' }));
+              }
+
+              const cleanPhone = (rawOrder.customer?.phone || '').replace(/\D/g, '');
+              if (cleanPhone.length < 11) {
+                res.statusCode = 400;
+                return res.end(JSON.stringify({ success: false, error: 'A valid 11-digit Bangladeshi contact phone number is required.' }));
+              }
+
+              if (!Array.isArray(rawOrder.items) || rawOrder.items.length === 0) {
+                res.statusCode = 400;
+                return res.end(JSON.stringify({ success: false, error: 'Order must contain at least one item.' }));
+              }
+
               // Authoritative server-side cost and gross profit calculation
               let totalCost = 0;
-              const verifiedItems = (rawOrder.items || []).map((it: any) => {
+              const verifiedItems = rawOrder.items.map((it: any) => {
                 const prodId = it.product?.id || it.productId || it.id;
                 const prod = devProducts.find((p) => p.id === prodId);
                 const qty = Number(it.quantity) || 1;
@@ -2913,12 +2941,6 @@ function localApiDevPlugin(): Plugin {
               });
 
               const totalGrossProfit = Math.max(0, (Number(rawOrder.subtotal) || 0) - totalCost);
-
-              const cleanPhone = (rawOrder.customer?.phone || '').replace(/\D/g, '');
-              if (cleanPhone.length < 11) {
-                res.statusCode = 400;
-                return res.end(JSON.stringify({ success: false, error: 'A valid 11-digit contact number is required.' }));
-              }
 
               // Anti-Spam check
               if (devSettings.blockedPhoneNumbers && Array.isArray(devSettings.blockedPhoneNumbers)) {

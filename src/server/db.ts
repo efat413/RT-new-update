@@ -2667,7 +2667,12 @@ export async function insertOrder(db: D1Database, order: Order): Promise<Order> 
     throw new Error('A valid 11-digit Bangladeshi contact phone number is required.');
   }
 
-  // 3. Parallel Batch Fetch: Retrieve Store Settings, Product records, and optional Coupon concurrently
+  // 3. Validate items & prevent missing items
+  if (!Array.isArray(order.items) || order.items.length === 0) {
+    throw new Error('Order must contain at least one item.');
+  }
+
+  // 4. Parallel Batch Fetch: Retrieve Store Settings, Product records, and optional Coupon concurrently
   const productIds = Array.from(
     new Set(
       order.items

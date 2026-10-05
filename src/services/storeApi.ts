@@ -22,6 +22,15 @@ export interface ApiResponse<T> {
   error?: string;
 }
 
+function safeErrorMessage(rawMsg: any, status: number = 200): string {
+  const fallback = status >= 500 ? 'Something went wrong. Please try again.' : 'Invalid request.';
+  if (!rawMsg || typeof rawMsg !== 'string') return fallback;
+  if (/sqlite|syntax error|d1|table |column |foreign key|prepare|bind|database disk|file not found|\/app\/|\/src\/|\.ts:\d+|\.js:\d+|admin_secret|token|credential|api[_-]?key/i.test(rawMsg)) {
+    return fallback;
+  }
+  return rawMsg;
+}
+
 async function apiRequest<T>(url: string, options?: RequestInit, timeoutMs = 45000): Promise<{ success: boolean; data?: T; error?: string }> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -48,7 +57,8 @@ async function apiRequest<T>(url: string, options?: RequestInit, timeoutMs = 450
 
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const errorMsg = json.error || json.message || `HTTP ${res.status}: ${res.statusText}`;
+      const rawError = json.error || json.message || (res.status >= 500 ? 'Something went wrong. Please try again.' : `Request failed (status ${res.status}).`);
+      const errorMsg = safeErrorMessage(rawError, res.status);
       if (isSessionUnauthorizedError(res.status, errorMsg)) {
         // Authenticated request rejected with 401: Cookie is invalid, expired, or revoked
         notifyAuthUnauthorized({ url, error: errorMsg });
@@ -61,7 +71,7 @@ async function apiRequest<T>(url: string, options?: RequestInit, timeoutMs = 450
     if (json && json.success === false && json.error) {
       return {
         success: false,
-        error: json.error,
+        error: safeErrorMessage(json.error, res.status),
       };
     }
     return {
@@ -78,7 +88,7 @@ async function apiRequest<T>(url: string, options?: RequestInit, timeoutMs = 450
     }
     return {
       success: false,
-      error: err?.message || 'Network error communicating with server. Please try again.',
+      error: 'Unable to communicate with the server. Please try again.',
     };
   }
 }
@@ -759,7 +769,8 @@ export const uploadApi = {
 
       const json = await res.json().catch(() => ({}));
       if (!res.ok || !json.success) {
-        const errorMsg = json.error || `Upload failed with status HTTP ${res.status}`;
+        const rawErr = json.error || (res.status >= 500 ? 'Something went wrong. Please try again.' : `Upload failed with status HTTP ${res.status}`);
+        const errorMsg = safeErrorMessage(rawErr, res.status);
         if (res.status === 401) {
           notifyAuthUnauthorized({ url: `${API_BASE}/upload`, error: errorMsg });
         }
@@ -777,7 +788,7 @@ export const uploadApi = {
     } catch (err: any) {
       return {
         success: false,
-        error: err?.message || 'Network error during media upload',
+        error: 'Network error during media upload. Please try again.',
       };
     }
   },

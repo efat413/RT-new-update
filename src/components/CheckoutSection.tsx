@@ -312,9 +312,11 @@ export const CheckoutSection: React.FC = () => {
       handleRemovePromo();
     } catch (err: any) {
       setIsSubmitting(false);
-      setErrorMessage(
-        err?.message || 'Could not place order. Please verify your details and connection and try again.'
-      );
+      let msg = err?.message || 'Unable to place the order right now. Please try again.';
+      if (/sqlite|syntax error|d1|table |column |foreign key|prepare|bind|database disk|file not found|\/app\/|\/src\/|\.ts:\d+|\.js:\d+|admin_secret|token|credential|api[_-]?key/i.test(msg)) {
+        msg = 'Unable to place the order right now. Please try again.';
+      }
+      setErrorMessage(msg);
     }
   };
 
