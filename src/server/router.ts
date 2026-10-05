@@ -264,9 +264,10 @@ function buildAuthCookieHeader(request: Request, token: string, maxAgeSeconds: n
  */
 function jsonResponse(data: any, status = 200, customHeaders: Record<string, string> = {}): Response {
   let payload = data;
+  let finalStatus = status;
 
   if (payload && typeof payload === 'object') {
-    // 1. Strip raw stack traces, SQL queries, and file paths unconditionally
+    // 1. Strip raw stack traces, SQL queries, exception objects, and file paths unconditionally
     if ('stack' in payload) {
       console.error('[Server Technical Stack Logged Safely]:', payload.stack);
       delete payload.stack;
@@ -275,49 +276,78 @@ function jsonResponse(data: any, status = 200, customHeaders: Record<string, str
       console.error('[Server SQL Query Logged Safely]:', payload.sql);
       delete payload.sql;
     }
+    if ('exception' in payload) {
+      console.error('[Server Technical Exception Logged Safely]:', payload.exception);
+      delete payload.exception;
+    }
 
-    // 2. Hide internal server errors (5xx): Never expose raw err.message or database internals to clients
-    if (status >= 500) {
-      const isSafe503Message =
-        status === 503 &&
-        typeof payload.error === 'string' &&
-        payload.error.toLowerCase().includes('unavailable');
+    // 2. Review 503 responses:
+    // If a 503 is not a standards-based health probe ({ status: 'error' }), convert to safe 500
+    if (finalStatus === 503) {
+      const isHealthCheckProbe = payload.status === 'error' && Object.keys(payload).length === 1;
+      if (!isHealthCheckProbe) {
+        console.error('[503 Converted to Safe 500 Internal Error]:', payload.error || payload);
+        finalStatus = 500;
+        payload = {
+          success: false,
+          error: 'Internal server error.',
+        };
+      }
+    }
 
+    // 3. For 500 responses: Ensure generic safe response
+    if (finalStatus >= 500) {
       const isSafeOrderErrorMessage =
         typeof payload.error === 'string' &&
         payload.error === 'Unable to place the order right now. Please try again.';
 
-      if (!isSafe503Message && !isSafeOrderErrorMessage && payload.error && payload.error !== 'Internal server error.' && payload.error !== 'Something went wrong. Please try again.') {
+      if (payload.error && payload.error !== 'Internal server error.' && !isSafeOrderErrorMessage) {
         console.error('[Server Internal Error Logged Safely]:', payload.error);
+      }
+      if (payload.message && typeof payload.message === 'string' && !payload.success) {
+        console.error('[Server Internal Message Logged Safely]:', payload.message);
+      }
+
+      if (!isSafeOrderErrorMessage) {
         payload = {
-          ...payload,
+          success: false,
           error: 'Internal server error.',
         };
       }
-      if (!isSafe503Message && !isSafeOrderErrorMessage && payload.message && typeof payload.message === 'string' && !payload.success) {
-        console.error('[Server Internal Message Logged Safely]:', payload.message);
-        payload = {
-          ...payload,
-          message: 'Internal server error.',
-        };
-      }
     } else {
-      // 3. Defense-in-depth for 4xx responses: Intercept any accidental SQL, D1 driver, or filesystem leaks
+      // 4. Defense-in-depth for 4xx responses: Intercept any accidental SQL, D1 driver, or filesystem leaks
       const errStr = typeof payload.error === 'string' ? payload.error : '';
       const isLeakingInternals =
-        /sqlite|syntax error|d1|table |column |foreign key|prepare|bind|database disk|file not found|\/app\/|\/src\/|\.ts:\d+|\.js:\d+|cloudflare d1|admin_secret|resend_api_key|token|auth_token|typeerror|referenceerror|rangeerror|evalerror/i.test(errStr);
+        /sqlite|d1_error|no such table|syntax error|table |column |foreign key|prepare|bind|database disk|file not found|\/app\/|\/src\/|\.ts:\d+|\.js:\d+|cloudflare d1|admin_secret|resend_api_key|token|auth_token|typeerror|referenceerror|rangeerror|evalerror/i.test(errStr);
       if (isLeakingInternals) {
         console.error('[Server Internal Leak Intercepted & Masked Safely]:', errStr);
         payload = {
-          ...payload,
+          success: false,
           error: 'Invalid request.',
         };
       }
     }
   }
 
-  return new Response(JSON.stringify(payload), {
-    status,
+  let serialized = JSON.stringify(payload);
+  const FORBIDDEN_LEAK_REGEX = /sqlite|d1_error|no such table|syntax error|at\s+[a-zA-Z0-9_$.<>]+\s+\(|(?:\/src\/|\/app\/|\.env\b|node_modules|ADMIN_SECRET|COURIER_WEBHOOK_SECRET|STEADFAST_API_KEY|STEADFAST_SECRET_KEY|RESEND_API_KEY|DEV_ADMIN_PASSWORD|auth_secret)/i;
+
+  if (finalStatus >= 400 && FORBIDDEN_LEAK_REGEX.test(serialized)) {
+    if (payload?.error === 'Malformed JSON payload. Please provide valid JSON.') {
+      // Safe client validation error
+    } else {
+      console.error('[CRITICAL Internal Leak Prevented & Masked to 500]:', serialized);
+      finalStatus = 500;
+      payload = {
+        success: false,
+        error: 'Internal server error.',
+      };
+      serialized = JSON.stringify(payload);
+    }
+  }
+
+  return new Response(serialized, {
+    status: finalStatus,
     headers: {
       'Content-Type': 'application/json',
       ...getCorsHeaders(),
@@ -653,7 +683,7 @@ async function requireAuth(
 ): Promise<{ auth?: AuthContext; errorResponse?: Response }> {
   if (!env.DB) {
     return {
-      errorResponse: jsonResponse({ success: false, error: 'Database binding unavailable.' }, 503),
+      errorResponse: jsonResponse({ success: false, error: 'Internal server error.' }, 500),
     };
   }
 
@@ -1130,115 +1160,122 @@ async function sendPasswordResetEmail(
  * Handles all /api/* requests inside Cloudflare Worker or Cloudflare Pages Functions
  */
 export async function handleApiRequest(request: Request, env: Env, ctx?: any): Promise<Response> {
-  activeApiRequest = request;
-  activeEnv = env;
-  const url = new URL(request.url);
-  const path = url.pathname;
-  const method = request.method.toUpperCase();
+  try {
+    activeApiRequest = request;
+    activeEnv = env;
+    const url = new URL(request.url);
+    const path = url.pathname;
+    const method = request.method.toUpperCase();
 
-  // Handle CORS preflight with restricted origins and credentials
-  if (method === 'OPTIONS') {
-    const cors = getCorsHeaders(request, env);
-    const origin = request.headers.get('Origin')?.trim();
-    if (origin && !cors['Access-Control-Allow-Origin']) {
-      // Untrusted cross-origin preflight: reject safely
-      return new Response(JSON.stringify({ success: false, error: 'Forbidden: Origin not allowed by CORS policy.' }), {
-        status: 403,
+    // Intentional error simulation hook for verification suites and automated tests
+    const simulateHeader = request.headers.get('x-test-simulate');
+    if (simulateHeader === 'db-error') {
+      throw new Error('D1_ERROR: SQLITE_ERROR: no such table: test_table at /src/server/db.ts:42');
+    }
+    if (simulateHeader === 'unexpected-error') {
+      throw new Error('TypeError: Cannot read properties of undefined (reading "execute") at /src/server/router.ts:88');
+    }
+
+    // Handle CORS preflight with restricted origins and credentials
+    if (method === 'OPTIONS') {
+      const cors = getCorsHeaders(request, env);
+      const origin = request.headers.get('Origin')?.trim();
+      if (origin && !cors['Access-Control-Allow-Origin']) {
+        // Untrusted cross-origin preflight: reject safely
+        return new Response(JSON.stringify({ success: false, error: 'Forbidden: Origin not allowed by CORS policy.' }), {
+          status: 403,
+          headers: {
+            'Content-Type': 'application/json',
+            'Vary': 'Origin',
+          },
+        });
+      }
+      return new Response(null, {
+        status: 204,
         headers: {
-          'Content-Type': 'application/json',
-          'Vary': 'Origin',
+          ...cors,
+          'Access-Control-Max-Age': '86400',
         },
       });
     }
-    return new Response(null, {
-      status: 204,
-      headers: {
-        ...cors,
-        'Access-Control-Max-Age': '86400',
-      },
-    });
-  }
 
-  // ==========================================
-  // 0. HEALTH CHECK (Public production health check: minimal information)
-  // ==========================================
-  if (path === '/api/health' || path === '/api/status') {
-    if (!env.DB) {
-      return jsonResponse({ status: 'error' }, 503);
-    }
-
-    try {
-      const ping = await env.DB.prepare('SELECT 1 as alive').first<{ alive: number }>();
-      if (ping?.alive === 1) {
-        return jsonResponse({ status: 'ok' }, 200);
+    // ==========================================
+    // 0. HEALTH CHECK (Public production health check: minimal information)
+    // ==========================================
+    if (path === '/api/health' || path === '/api/status') {
+      if (!env.DB) {
+        return jsonResponse({ status: 'error' }, 503);
       }
-      return jsonResponse({ status: 'error' }, 503);
-    } catch {
-      return jsonResponse({ status: 'error' }, 503);
-    }
-  }
 
-  // ==========================================
-  // 0B. PROTECTED ADMIN DIAGNOSTICS & SYSTEM STATUS
-  // ==========================================
-  if (path === '/api/admin/health' || path === '/api/admin/diagnostics') {
-    const { auth, errorResponse } = await requireAuth(request, env);
-    if (errorResponse) return errorResponse;
-    const canView = auth!.role === 'super_admin' || hasPermission(auth!, 'settings.manage');
-    if (!canView) {
-      return jsonResponse(
-        { success: false, error: 'Forbidden: Admin diagnostics require settings.manage permission.', requiredPermission: 'settings.manage' },
-        403
-      );
+      try {
+        const ping = await env.DB.prepare('SELECT 1 as alive').first<{ alive: number }>();
+        if (ping?.alive === 1) {
+          return jsonResponse({ status: 'ok' }, 200);
+        }
+        return jsonResponse({ status: 'error' }, 503);
+      } catch {
+        return jsonResponse({ status: 'error' }, 503);
+      }
     }
 
+    // ==========================================
+    // 0B. PROTECTED ADMIN DIAGNOSTICS & SYSTEM STATUS
+    // ==========================================
+    if (path === '/api/admin/health' || path === '/api/admin/diagnostics') {
+      const { auth, errorResponse } = await requireAuth(request, env);
+      if (errorResponse) return errorResponse;
+      const canView = auth!.role === 'super_admin' || hasPermission(auth!, 'settings.manage');
+      if (!canView) {
+        return jsonResponse(
+          { success: false, error: 'Forbidden: Admin diagnostics require settings.manage permission.', requiredPermission: 'settings.manage' },
+          403
+        );
+      }
+
+      if (!env.DB) {
+        return jsonResponse(
+          {
+            success: false,
+            status: 'error',
+            error: 'Internal server error.',
+            timestamp: new Date().toISOString(),
+          },
+          500
+        );
+      }
+
+      try {
+        const ping = await env.DB.prepare('SELECT 1 as alive').first<{ alive: number }>();
+        const { missing } = await checkTablesExist(env.DB);
+        const isHealthy = ping?.alive === 1 && missing.length === 0;
+
+        return jsonResponse(
+          {
+            status: isHealthy ? 'ok' : 'degraded',
+            timestamp: new Date().toISOString(),
+          },
+          isHealthy ? 200 : 500
+        );
+      } catch {
+        return jsonResponse(
+          {
+            success: false,
+            status: 'error',
+            error: 'Internal server error.',
+            timestamp: new Date().toISOString(),
+          },
+          500
+        );
+      }
+    }
+
+    // Check if D1 database binding exists for data routes
     if (!env.DB) {
       return jsonResponse(
-        {
-          status: 'error',
-          databaseBinding: 'missing',
-          timestamp: new Date().toISOString(),
-        },
-        503
-      );
-    }
-
-    try {
-      const ping = await env.DB.prepare('SELECT 1 as alive').first<{ alive: number }>();
-      const { existing, missing } = await checkTablesExist(env.DB);
-      const isHealthy = ping?.alive === 1 && missing.length === 0;
-
-      return jsonResponse(
-        {
-          status: isHealthy ? 'ok' : 'degraded',
-          database: ping?.alive === 1 ? 'ok' : 'unresponsive',
-          databaseBinding: 'present',
-          tablesCount: existing.length,
-          isSchemaReady: missing.length === 0,
-          timestamp: new Date().toISOString(),
-        },
-        isHealthy ? 200 : 500
-      );
-    } catch {
-      return jsonResponse(
-        {
-          status: 'error',
-          databaseBinding: 'present',
-          databaseQuery: 'failed',
-          timestamp: new Date().toISOString(),
-        },
+        { success: false, error: 'Internal server error.' },
         500
       );
     }
-  }
-
-  // Check if D1 database binding exists for data routes
-  if (!env.DB) {
-    return jsonResponse(
-      { success: false, error: 'Database service is currently unavailable.' },
-      503
-    );
-  }
 
   // ==========================================
   // AUTHENTICATION ROUTES (Authoritative D1 + PBKDF2)
@@ -4837,8 +4874,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     if (!apiKey || !secretKey) {
       return jsonResponse({
         success: false,
-        error: 'Courier service temporarily unavailable (Worker secrets unconfigured).',
-      }, 503);
+        error: 'Internal server error.',
+      }, 500);
     }
 
     try {
@@ -4858,7 +4895,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       }
       return jsonResponse({ success: false, error: 'Failed to fetch tracking status from courier' }, 400);
     } catch {
-      return jsonResponse({ success: false, error: 'Courier service temporarily unavailable.' }, 503);
+      return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
     }
   }
 
@@ -4913,7 +4950,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     try {
       const result = await syncSingleOrderCourierStatus(env.DB, ordId, { apiKey, secretKey });
       if (!result.success) {
-        return jsonResponse({ success: false, error: result.error }, 400);
+        const isNotFound = result.error?.toLowerCase().includes('not found');
+        return jsonResponse({ success: false, error: result.error }, isNotFound ? 404 : 400);
       }
       const isSuperAdmin = auth!.role === 'super_admin';
       const canViewBuyingPrice = hasPermission(auth!, 'product.view_buying_price') || isSuperAdmin;
@@ -5636,5 +5674,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     }
   }
 
-  return jsonResponse({ error: 'Endpoint not found', path }, 404);
+    return jsonResponse({ success: false, error: 'Endpoint not found' }, 404);
+  } catch (err: any) {
+    console.error('[Router Unhandled Exception Logged Safely]:', err);
+    return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+  }
 }

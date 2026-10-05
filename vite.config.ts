@@ -571,20 +571,85 @@ function localApiDevPlugin(): Plugin {
   };
 
   const sendDevError = (res: any, err: { status: number; body: { success: boolean; error: string; requiredPermission?: string } }) => {
-    res.statusCode = err.status;
+    let finalStatus = err.status;
     let safeBody = { ...err.body };
-    if (err.status >= 500) {
-      if (safeBody.error !== 'Unable to place the order right now. Please try again.' && safeBody.error !== 'Internal server error.' && safeBody.error !== 'Something went wrong. Please try again.') {
-        safeBody.error = 'Internal server error.';
-      }
-    } else {
-      const errStr = typeof safeBody.error === 'string' ? safeBody.error : '';
-      const isLeaking = /sqlite|syntax error|d1|table |column |foreign key|prepare|bind|database disk|file not found|\/app\/|\/src\/|\.ts:\d+|\.js:\d+|admin_secret|token|credential|api[_-]?key/i.test(errStr);
-      if (isLeaking) {
-        safeBody.error = 'Invalid request.';
+
+    // 1. Strip raw stack traces, SQL queries, and exception objects unconditionally
+    if ('stack' in safeBody) {
+      console.error('[Dev Server Technical Stack Logged Safely]:', (safeBody as any).stack);
+      delete (safeBody as any).stack;
+    }
+    if ('sql' in safeBody) {
+      console.error('[Dev Server SQL Query Logged Safely]:', (safeBody as any).sql);
+      delete (safeBody as any).sql;
+    }
+    if ('exception' in safeBody) {
+      console.error('[Dev Server Exception Logged Safely]:', (safeBody as any).exception);
+      delete (safeBody as any).exception;
+    }
+
+    // 2. Review 503 responses:
+    if (finalStatus === 503) {
+      const isHealthCheck = (safeBody as any).status === 'error' && Object.keys(safeBody).length === 1;
+      if (!isHealthCheck) {
+        console.error('[Dev 503 Converted to Safe 500 Internal Error]:', safeBody.error || safeBody);
+        finalStatus = 500;
+        safeBody = {
+          success: false,
+          error: 'Internal server error.',
+        };
       }
     }
-    return res.end(JSON.stringify(safeBody));
+
+    // 3. For 500 responses: Ensure generic safe response
+    if (finalStatus >= 500) {
+      const isSafeOrderErrorMessage =
+        safeBody.error === 'Unable to place the order right now. Please try again.';
+
+      if (safeBody.error && safeBody.error !== 'Internal server error.' && !isSafeOrderErrorMessage) {
+        console.error('[Dev Server Internal Error Logged Safely]:', safeBody.error);
+      }
+
+      if (!isSafeOrderErrorMessage) {
+        safeBody = {
+          success: false,
+          error: 'Internal server error.',
+        };
+      }
+    } else {
+      // 4. Defense-in-depth for 4xx responses: Intercept any accidental SQL, D1 driver, or filesystem leaks
+      const errStr = typeof safeBody.error === 'string' ? safeBody.error : '';
+      const isLeaking =
+        /sqlite|d1_error|no such table|syntax error|table |column |foreign key|prepare|bind|database disk|file not found|\/app\/|\/src\/|\.ts:\d+|\.js:\d+|admin_secret|token|credential|api[_-]?key/i.test(errStr);
+      if (isLeaking) {
+        console.error('[Dev Server Internal Leak Intercepted & Masked Safely]:', errStr);
+        safeBody = {
+          success: false,
+          error: 'Invalid request.',
+        };
+      }
+    }
+
+    let serialized = JSON.stringify(safeBody);
+    const FORBIDDEN_LEAK_REGEX = /sqlite|d1_error|no such table|syntax error|at\s+[a-zA-Z0-9_$.<>]+\s+\(|(?:\/src\/|\/app\/|\.env\b|node_modules|ADMIN_SECRET|COURIER_WEBHOOK_SECRET|STEADFAST_API_KEY|RESEND_API_KEY|DEV_ADMIN_PASSWORD|auth_secret)/i;
+
+    if (finalStatus >= 400 && FORBIDDEN_LEAK_REGEX.test(serialized)) {
+      if (safeBody.error === 'Malformed JSON payload. Please provide valid JSON.') {
+        // Safe validation error
+      } else {
+        console.error('[CRITICAL Dev Leak Prevented & Masked to 500]:', serialized);
+        finalStatus = 500;
+        safeBody = {
+          success: false,
+          error: 'Internal server error.',
+        };
+        serialized = JSON.stringify(safeBody);
+      }
+    }
+
+    res.statusCode = finalStatus;
+    res.setHeader('Content-Type', 'application/json');
+    return res.end(serialized);
   };
 
   interface SafeDevLogContext {
@@ -867,8 +932,17 @@ function localApiDevPlugin(): Plugin {
     name: 'local-api-dev-middleware',
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
-        const url = new URL(req.url || '/', 'http://localhost');
-        const method = (req.method || 'GET').toUpperCase();
+        try {
+          const url = new URL(req.url || '/', 'http://localhost');
+          const method = (req.method || 'GET').toUpperCase();
+
+          const simulateHeader = req.headers['x-test-simulate'];
+          if (simulateHeader === 'db-error') {
+            throw new Error('D1_ERROR: SQLITE_ERROR: no such table: test_table at /src/server/db.ts:42');
+          }
+          if (simulateHeader === 'unexpected-error') {
+            throw new Error('TypeError: Cannot read properties of undefined (reading "execute") at /src/server/router.ts:88');
+          }
 
         // Technical Webhook: Prevent 404 if a webhook destination is sent to the root or generic API path
         if (
@@ -4947,12 +5021,16 @@ function localApiDevPlugin(): Plugin {
         if (url.pathname.startsWith('/api/')) {
           res.setHeader('Content-Type', 'application/json');
           res.statusCode = 404;
-          return res.end(JSON.stringify({ success: false, error: `API route not found: ${method} ${url.pathname}` }));
+          return res.end(JSON.stringify({ success: false, error: 'Endpoint not found' }));
         }
 
         next();
-      });
-    },
+      } catch (err: any) {
+        console.error('[Dev Server Unhandled Exception Logged Safely]:', err);
+        return sendDevError(res, { status: 500, body: { success: false, error: 'Internal server error.' } });
+      }
+    });
+  },
     transformIndexHtml(html: string, ctx: any) {
       try {
         const reqUrl = ctx.originalUrl || ctx.url || '';

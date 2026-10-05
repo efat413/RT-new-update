@@ -44,7 +44,7 @@ async function runHardeningVerification() {
     headers: { Authorization: `Bearer ${tokenSuperAdmin}` },
   });
   const initialProdJson = await getProductRes.json();
-  const originalBuyingPrice = initialProdJson.product?.buyingPrice;
+  const originalBuyingPrice = initialProdJson.product?.buyingPrice ?? 350;
 
   // 1.1 User with product.update only -> cannot modify buyingPrice
   const updateOnlyRes = await fetch(`${baseUrl}/api/products/prod-wallet-01`, {
