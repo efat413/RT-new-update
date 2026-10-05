@@ -198,8 +198,6 @@ export interface HashedUserData {
   ct?: string;
   country?: string;
   external_id?: string;
-  rawEmailPreview?: string;
-  rawPhonePreview?: string;
 }
 
 export function prepareHashedUserData(userData?: TrackingUserData): HashedUserData | null {
@@ -220,13 +218,11 @@ export function prepareHashedUserData(userData?: TrackingUserData): HashedUserDa
 
   if (sanitizedEmail) {
     hashed.em = sha256Sync(sanitizedEmail);
-    hashed.rawEmailPreview = sanitizedEmail;
     hasAnyData = true;
   }
 
   if (sanitizedPhone) {
     hashed.ph = sha256Sync(sanitizedPhone);
-    hashed.rawPhonePreview = sanitizedPhone;
     hasAnyData = true;
   }
 
@@ -246,6 +242,38 @@ export function prepareHashedUserData(userData?: TrackingUserData): HashedUserDa
   }
 
   return hasAnyData ? hashed : null;
+}
+
+/**
+ * Builds a Meta Conversions API (CAPI) compliant user_data object.
+ * Adheres strictly to Meta Graph API specifications:
+ * - Em, ph, fn, ln, ct, country are SHA-256 hashed strings in string arrays.
+ * - Zero raw emails, phones, or names are ever included or stored.
+ */
+export function buildMetaCapiUserData(
+  userData?: TrackingUserData | null,
+  clientIp?: string,
+  userAgent?: string,
+  fbp?: string,
+  fbc?: string
+): Record<string, any> {
+  const hashed = prepareHashedUserData(userData || undefined);
+  const capiData: Record<string, any> = {};
+
+  if (hashed?.em) capiData.em = [hashed.em];
+  if (hashed?.ph) capiData.ph = [hashed.ph];
+  if (hashed?.fn) capiData.fn = [hashed.fn];
+  if (hashed?.ln) capiData.ln = [hashed.ln];
+  if (hashed?.ct) capiData.ct = [hashed.ct];
+  if (hashed?.country) {
+    capiData.country = [sha256Sync(hashed.country.toLowerCase().trim())];
+  }
+  if (clientIp) capiData.client_ip_address = clientIp;
+  if (userAgent) capiData.client_user_agent = userAgent;
+  if (fbp) capiData.fbp = fbp;
+  if (fbc) capiData.fbc = fbc;
+
+  return capiData;
 }
 
 // ============================================================================
@@ -628,14 +656,144 @@ function flushPendingEventsQueue(): void {
 }
 
 // ============================================================================
-// 6. EVENT LOGGING & PERSISTENCE
+// 6. EVENT LOGGING & PRIVACY-COMPLIANT PERSISTENCE
 // ============================================================================
+
+/**
+ * Sanitizes an event payload prior to storing in localStorage.
+ * Automatically hashes email and phone fields and strips sensitive physical addresses.
+ */
+export function sanitizePayloadForStorage(payload: Record<string, any>): Record<string, any> {
+  if (!payload || typeof payload !== 'object') return {};
+  const sanitized: Record<string, any> = {};
+
+  const PII_KEYS_TO_HASH = new Set([
+    'email',
+    'customer_email',
+    'user_email',
+    'customeremail',
+    'useremail',
+    'phone',
+    'customer_phone',
+    'user_phone',
+    'customerphone',
+    'userphone',
+    'phone_number',
+  ]);
+
+  const PII_KEYS_TO_SCRUB = new Set([
+    'address',
+    'customer_address',
+    'street',
+    'street_address',
+    'full_address',
+    'shipping_address',
+    'password',
+    'card_number',
+    'cvv',
+  ]);
+
+  for (const [key, value] of Object.entries(payload)) {
+    const lowerKey = key.toLowerCase();
+    if (PII_KEYS_TO_SCRUB.has(lowerKey)) {
+      continue;
+    }
+
+    if (PII_KEYS_TO_HASH.has(lowerKey)) {
+      if (typeof value === 'string' && value.trim()) {
+        sanitized[`${key}_sha256`] = sha256Sync(value.trim().toLowerCase());
+      }
+      continue;
+    }
+
+    if (value && typeof value === 'object') {
+      if (Array.isArray(value)) {
+        sanitized[key] = value.map((item) =>
+          typeof item === 'object' && item !== null ? sanitizePayloadForStorage(item) : item
+        );
+      } else {
+        sanitized[key] = sanitizePayloadForStorage(value);
+      }
+    } else {
+      sanitized[key] = value;
+    }
+  }
+
+  return sanitized;
+}
+
+/**
+ * Sanitizes any raw customer data from a log entry before saving or after retrieving.
+ * Completely expunges raw email/phone addresses, leaving SHA-256 hashes only.
+ */
+export function sanitizePixelLogForPrivacy(log: any): PixelEventLog {
+  if (!log || typeof log !== 'object') {
+    return log;
+  }
+
+  let summary = typeof log.userDataSummary === 'string' ? log.userDataSummary : '';
+
+  // Scrub any legacy raw email patterns: Email (foo@bar.com) -> Email (SHA-256)
+  summary = summary.replace(/Email\s*\([^)]*@[^)]*\)/gi, (match) => {
+    const emailMatch = match.match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
+    if (emailMatch) {
+      const hash = sha256Sync(emailMatch[1].trim().toLowerCase());
+      return `Email (SHA-256: ${hash.slice(0, 8)}...)`;
+    }
+    return 'Email (SHA-256)';
+  });
+
+  // Scrub any legacy raw phone patterns: Phone (017... or 8801...) -> Phone (SHA-256)
+  summary = summary.replace(/Phone\s*\([^)]*\d{6,}[^)]*\)/gi, (match) => {
+    const digits = match.replace(/\D/g, '');
+    if (digits) {
+      const hash = sha256Sync(digits);
+      return `Phone (SHA-256: ${hash.slice(0, 8)}...)`;
+    }
+    return 'Phone (SHA-256)';
+  });
+
+  // Remove any raw properties in hashedUserData
+  let hashedUserData = log.hashedUserData;
+  if (hashedUserData) {
+    const { rawEmailPreview, rawPhonePreview, email, phone, ...cleanHashed } = hashedUserData;
+    hashedUserData = cleanHashed;
+  }
+
+  const cleanPayload = sanitizePayloadForStorage(log.payload || {});
+
+  return {
+    ...log,
+    userDataSummary: summary,
+    hashedUserData,
+    payload: cleanPayload,
+  };
+}
 
 export function getStoredPixelLogs(): PixelEventLog[] {
   if (typeof window === 'undefined') return [];
   try {
     const raw = localStorage.getItem(PIXEL_LOGS_KEY);
-    return raw ? JSON.parse(raw) : [];
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+
+    let modified = false;
+    const sanitized = parsed.map((log) => {
+      const cleaned = sanitizePixelLogForPrivacy(log);
+      if (JSON.stringify(cleaned) !== JSON.stringify(log)) {
+        modified = true;
+      }
+      return cleaned;
+    });
+
+    if (modified) {
+      try {
+        localStorage.setItem(PIXEL_LOGS_KEY, JSON.stringify(sanitized));
+      } catch {}
+    }
+
+    return sanitized;
   } catch {
     return [];
   }
@@ -644,10 +802,11 @@ export function getStoredPixelLogs(): PixelEventLog[] {
 export function savePixelLog(log: PixelEventLog): void {
   if (typeof window === 'undefined') return;
   try {
+    const sanitizedLog = sanitizePixelLogForPrivacy(log);
     const existing = getStoredPixelLogs();
-    const updated = [log, ...existing].slice(0, MAX_LOGS);
+    const updated = [sanitizedLog, ...existing].slice(0, MAX_LOGS);
     localStorage.setItem(PIXEL_LOGS_KEY, JSON.stringify(updated));
-    window.dispatchEvent(new CustomEvent('rongdhonu_pixel_log_update', { detail: log }));
+    window.dispatchEvent(new CustomEvent('rongdhonu_pixel_log_update', { detail: sanitizedLog }));
   } catch (err) {
     console.error('[Rongdhonu Pixels] Log save error:', err);
   }
@@ -739,7 +898,7 @@ export function trackSocialEvent(
     currency: params.currency || 'BDT',
   };
 
-  // 1. Prepare Advanced Matching User Data
+  // 1. Prepare Advanced Matching User Data (Strictly SHA-256 Hashed)
   let hashedUser: HashedUserData | null = null;
   let userDataSummary = '';
 
@@ -747,9 +906,11 @@ export function trackSocialEvent(
     hashedUser = prepareHashedUserData(userData);
     if (hashedUser) {
       const summaryItems: string[] = [];
-      if (hashedUser.em) summaryItems.push(`Email (${hashedUser.rawEmailPreview || '***'})`);
-      if (hashedUser.ph) summaryItems.push(`Phone (${hashedUser.rawPhonePreview || '***'})`);
-      if (hashedUser.fn) summaryItems.push('First Name');
+      if (hashedUser.em) summaryItems.push(`Email (SHA-256: ${hashedUser.em.slice(0, 8)}...)`);
+      if (hashedUser.ph) summaryItems.push(`Phone (SHA-256: ${hashedUser.ph.slice(0, 8)}...)`);
+      if (hashedUser.fn) summaryItems.push('First Name (SHA-256)');
+      if (hashedUser.ln) summaryItems.push('Last Name (SHA-256)');
+      if (hashedUser.ct) summaryItems.push('District (SHA-256)');
       userDataSummary = summaryItems.join(', ');
     }
   }
@@ -767,9 +928,17 @@ export function trackSocialEvent(
       status: 'skipped',
       hasUserData: !!userDataSummary,
       userDataSummary,
+      hashedUserData: hashedUser ? {
+        em: hashedUser.em,
+        ph: hashedUser.ph,
+        fn: hashedUser.fn,
+        ln: hashedUser.ln,
+        ct: hashedUser.ct,
+        country: hashedUser.country,
+      } : undefined,
       value: standardParams.value,
       currency: standardParams.currency,
-      payload: standardParams,
+      payload: sanitizePayloadForStorage(standardParams),
       source: 'privacy-toggle',
     };
     savePixelLog(skippedLog);
@@ -799,9 +968,17 @@ export function trackSocialEvent(
           isDuplicate: true,
           hasUserData: !!userDataSummary,
           userDataSummary,
+          hashedUserData: hashedUser ? {
+            em: hashedUser.em,
+            ph: hashedUser.ph,
+            fn: hashedUser.fn,
+            ln: hashedUser.ln,
+            ct: hashedUser.ct,
+            country: hashedUser.country,
+          } : undefined,
           value: standardParams.value,
           currency: standardParams.currency,
-          payload: standardParams,
+          payload: sanitizePayloadForStorage(standardParams),
           source: 'deduplication-guard',
         };
         savePixelLog(duplicateLog);
@@ -962,7 +1139,7 @@ export function trackSocialEvent(
     console.groupEnd();
   }
 
-  // 8. Record in Event Activity Log
+  // 8. Record in Event Activity Log (Privacy compliant, hashed identifiers only)
   const eventLog: PixelEventLog = {
     id: `evt-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
     timestamp: new Date().toLocaleTimeString(),
@@ -971,9 +1148,17 @@ export function trackSocialEvent(
     status: platformsReached.length > 0 ? 'success' : 'queued',
     hasUserData: !!userDataSummary,
     userDataSummary,
+    hashedUserData: hashedUser ? {
+      em: hashedUser.em,
+      ph: hashedUser.ph,
+      fn: hashedUser.fn,
+      ln: hashedUser.ln,
+      ct: hashedUser.ct,
+      country: hashedUser.country,
+    } : undefined,
     value: standardParams.value,
     currency: standardParams.currency,
-    payload: standardParams,
+    payload: sanitizePayloadForStorage(standardParams),
     source: 'universal-dispatcher',
   };
 

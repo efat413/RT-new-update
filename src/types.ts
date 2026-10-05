@@ -336,6 +336,15 @@ export interface PixelEventLog {
   status: 'success' | 'queued' | 'skipped';
   hasUserData: boolean;
   userDataSummary?: string;
+  hashedUserData?: {
+    em?: string;
+    ph?: string;
+    fn?: string;
+    ln?: string;
+    ct?: string;
+    country?: string;
+    [key: string]: string | undefined;
+  };
   value?: number;
   currency?: string;
   payload: Record<string, any>;

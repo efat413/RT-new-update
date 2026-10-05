@@ -642,13 +642,28 @@ export const AdminMarketingPixelsTab: React.FC = () => {
                     {isExpanded && (
                       <div className="mt-3 p-3 bg-slate-900 rounded-xl text-slate-200 font-mono text-[11px] overflow-x-auto space-y-2">
                         <div className="flex items-center justify-between text-[10px] text-slate-400 border-b border-slate-800 pb-1">
-                          <span>Event Payload Inspector</span>
+                          <span>Event Payload Inspector (Privacy Protected)</span>
                           {log.userDataSummary && (
                             <span className="text-emerald-400">
-                              SHA-256 Hashed Identifiers: {log.userDataSummary}
+                              SHA-256 Identifiers: {log.userDataSummary}
                             </span>
                           )}
                         </div>
+                        {log.hashedUserData && (
+                          <div className="p-2 bg-slate-950/60 rounded-lg border border-slate-800 space-y-1">
+                            <span className="text-[10px] font-bold text-slate-400 block">
+                              Meta CAPI / Advanced Matching Hashes (SHA-256 Only):
+                            </span>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-1 text-[10px]">
+                              {Object.entries(log.hashedUserData).map(([key, val]) => (
+                                <div key={key} className="flex gap-1.5 truncate">
+                                  <span className="text-slate-500 uppercase">{key}:</span>
+                                  <span className="text-emerald-300 font-mono truncate">{val}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                         <pre className="text-emerald-300">
                           {JSON.stringify(log.payload, null, 2)}
                         </pre>
