@@ -171,6 +171,112 @@ export interface SanitizationOptions {
 }
 
 /**
+ * Normalizes an object key and checks if it matches any sensitive Buying Price or Cost field/alias.
+ * Covers camelCase, snake_case, PascalCase, lowercase, and common procurement aliases.
+ */
+export function isBuyingPriceOrCostKey(key: string): boolean {
+  const norm = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return (
+    norm === 'buyingprice' ||
+    norm === 'buyingcost' ||
+    norm === 'purchaseprice' ||
+    norm === 'purchasecost' ||
+    norm === 'costprice' ||
+    norm === 'productcost' ||
+    norm === 'unitcost' ||
+    norm === 'totalcost' ||
+    norm === 'buyingpricesnapshot' ||
+    norm === 'suppliercost' ||
+    norm === 'supplierprice' ||
+    norm === 'wholesaleprice' ||
+    norm === 'wholesalecost' ||
+    norm === 'itemcost'
+  );
+}
+
+/**
+ * Normalizes an object key and checks if it matches any sensitive Profit or Margin field/alias.
+ * Covers camelCase, snake_case, PascalCase, lowercase, and common analytical aliases.
+ */
+export function isProfitKey(key: string): boolean {
+  const norm = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return (
+    norm === 'profit' ||
+    norm === 'unitprofit' ||
+    norm === 'unitgrossprofit' ||
+    norm === 'unitnetprofit' ||
+    norm === 'grossprofit' ||
+    norm === 'netprofit' ||
+    norm === 'profitmargin' ||
+    norm === 'grossmargin' ||
+    norm === 'netmargin' ||
+    norm === 'totalprofit' ||
+    norm === 'totalgrossprofit' ||
+    norm === 'productgrossprofit' ||
+    norm === 'productcost' ||
+    norm === 'averageprofitperorder'
+  );
+}
+
+/**
+ * Universal recursive data scrubber that strips all unauthorized Buying Price, Cost, and Profit
+ * fields from any nested object or array at arbitrary depth.
+ */
+export function deepSanitizeCostAndProfit<T>(
+  data: T,
+  roleOrOptions: boolean | SanitizationOptions
+): T {
+  const isSuper = typeof roleOrOptions === 'boolean' ? roleOrOptions : Boolean(roleOrOptions?.isSuperAdmin);
+  const canViewBuyingPrice = isSuper || (typeof roleOrOptions === 'object' && Boolean(roleOrOptions.canViewBuyingPrice));
+  const canViewProfit = isSuper || (typeof roleOrOptions === 'object' && Boolean(roleOrOptions.canViewProfit));
+
+  // If Super Admin or user has both permissions, all fields remain legitimately accessible
+  if (isSuper || (canViewBuyingPrice && canViewProfit)) {
+    return data;
+  }
+
+  function scrub(val: any, seen: WeakSet<object> = new WeakSet()): any {
+    if (val === null || val === undefined) return val;
+    if (typeof val !== 'object') {
+      if (typeof val === 'string') {
+        if ((val.startsWith('{') && val.endsWith('}')) || (val.startsWith('[') && val.endsWith(']'))) {
+          try {
+            const parsed = JSON.parse(val);
+            if (parsed && typeof parsed === 'object') {
+              const sanitized = scrub(parsed, seen);
+              return JSON.stringify(sanitized);
+            }
+          } catch {}
+        }
+      }
+      return val;
+    }
+
+    if (val instanceof Date || val instanceof RegExp) return val;
+    if (seen.has(val)) return val;
+    seen.add(val);
+
+    if (Array.isArray(val)) {
+      return val.map((item) => scrub(item, seen));
+    }
+
+    const result: Record<string, any> = {};
+    for (const [key, value] of Object.entries(val)) {
+      if (!canViewBuyingPrice && isBuyingPriceOrCostKey(key)) {
+        continue;
+      }
+      if (!canViewProfit && isProfitKey(key)) {
+        continue;
+      }
+      result[key] = scrub(value, seen);
+    }
+    return result;
+  }
+
+  return scrub(data);
+}
+
+/**
  * Sanitizes product objects so that internal Buying Price & Unit Profit
  * are STRICTLY visible only when authorized.
  */
@@ -183,42 +289,31 @@ export function sanitizeProductForRole(
   const canViewProfit = isSuper || (typeof roleOrOptions === 'object' && Boolean(roleOrOptions.canViewProfit));
 
   const price = Number(product.price) || 0;
-  // Root cause remediation: Support both camelCase buyingPrice and snake_case buying_price
   const rawBuyingPrice = product.buyingPrice != null
     ? product.buyingPrice
     : ((product as any).buying_price != null ? (product as any).buying_price : undefined);
   const buyingPrice = canViewBuyingPrice && rawBuyingPrice != null ? Number(rawBuyingPrice) : undefined;
   const unitProfit = canViewProfit && rawBuyingPrice != null ? Math.max(0, price - Number(rawBuyingPrice)) : undefined;
 
-  const safeProduct: Product = {
+  const safeProduct: any = {
     ...product,
-    buyingPrice,
-    unitProfit,
   };
 
-  if (!canViewBuyingPrice) {
-    delete (safeProduct as any).buyingPrice;
-    delete (safeProduct as any).buying_price;
-    delete (safeProduct as any).purchasePrice;
-    delete (safeProduct as any).purchase_price;
-    delete (safeProduct as any).productCost;
-    delete (safeProduct as any).product_cost;
-    delete (safeProduct as any).costPrice;
-    delete (safeProduct as any).cost_price;
-  }
-  if (!canViewProfit) {
-    delete (safeProduct as any).unitProfit;
-    delete (safeProduct as any).unit_profit;
-    delete (safeProduct as any).profit;
-    delete (safeProduct as any).grossProfit;
-    delete (safeProduct as any).gross_profit;
-    delete (safeProduct as any).netProfit;
-    delete (safeProduct as any).net_profit;
-    delete (safeProduct as any).profitMargin;
-    delete (safeProduct as any).profit_margin;
+  if (canViewBuyingPrice && buyingPrice !== undefined) {
+    safeProduct.buyingPrice = buyingPrice;
+  } else {
+    delete safeProduct.buyingPrice;
+    delete safeProduct.buying_price;
   }
 
-  return safeProduct;
+  if (canViewProfit && unitProfit !== undefined) {
+    safeProduct.unitProfit = unitProfit;
+  } else {
+    delete safeProduct.unitProfit;
+    delete safeProduct.unit_profit;
+  }
+
+  return deepSanitizeCostAndProfit(safeProduct, { isSuperAdmin: isSuper, canViewBuyingPrice, canViewProfit }) as Product;
 }
 
 /**
@@ -235,23 +330,21 @@ export function sanitizeOrderForRole(
 
   const safeItems = (order.items || []).map((item) => {
     const safeProduct = sanitizeProductForRole(item.product, { isSuperAdmin: isSuper, canViewBuyingPrice, canViewProfit });
-    const { buyingPriceSnapshot, productCost, productGrossProfit, ...restItem } = item;
-
     const modifiedItem: any = {
-      ...restItem,
+      ...item,
       product: safeProduct,
     };
 
-    if (canViewBuyingPrice && buyingPriceSnapshot != null) {
-      modifiedItem.buyingPriceSnapshot = Number(buyingPriceSnapshot);
+    if (canViewBuyingPrice && item.buyingPriceSnapshot != null) {
+      modifiedItem.buyingPriceSnapshot = Number(item.buyingPriceSnapshot);
     } else {
       delete modifiedItem.buyingPriceSnapshot;
       delete modifiedItem.buying_price_snapshot;
     }
 
     if (canViewProfit) {
-      if (productCost != null) modifiedItem.productCost = Number(productCost);
-      if (productGrossProfit != null) modifiedItem.productGrossProfit = Number(productGrossProfit);
+      if (item.productCost != null) modifiedItem.productCost = Number(item.productCost);
+      if (item.productGrossProfit != null) modifiedItem.productGrossProfit = Number(item.productGrossProfit);
     } else {
       delete modifiedItem.productCost;
       delete modifiedItem.product_cost;
@@ -263,15 +356,14 @@ export function sanitizeOrderForRole(
     return modifiedItem;
   });
 
-  const { totalCost, totalGrossProfit, ...safeOrderRest } = order;
   const safeOrder: any = {
-    ...safeOrderRest,
+    ...order,
     items: safeItems,
   };
 
   if (canViewProfit) {
-    if (totalCost != null) safeOrder.totalCost = Number(totalCost);
-    if (totalGrossProfit != null) safeOrder.totalGrossProfit = Number(totalGrossProfit);
+    if (order.totalCost != null) safeOrder.totalCost = Number(order.totalCost);
+    if (order.totalGrossProfit != null) safeOrder.totalGrossProfit = Number(order.totalGrossProfit);
   } else {
     delete safeOrder.totalCost;
     delete safeOrder.total_cost;
@@ -279,10 +371,16 @@ export function sanitizeOrderForRole(
     delete safeOrder.total_gross_profit;
     delete safeOrder.netProfit;
     delete safeOrder.net_profit;
+    delete safeOrder.totalProfit;
+    delete safeOrder.total_profit;
     delete safeOrder.profit;
+    delete safeOrder.grossProfit;
+    delete safeOrder.gross_profit;
+    delete safeOrder.profitMargin;
+    delete safeOrder.profit_margin;
   }
 
-  return safeOrder as Order;
+  return deepSanitizeCostAndProfit(safeOrder, { isSuperAdmin: isSuper, canViewBuyingPrice, canViewProfit }) as Order;
 }
 
 /**

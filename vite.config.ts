@@ -51,8 +51,31 @@ function localApiDevPlugin(): Plugin {
   const SETTINGS_FILE = path.resolve(__dirname, '.dev-settings.json');
 
   // In-memory dev collections initialized from seed data
-  let devOrders: any[] = [...INITIAL_ORDERS];
-  let devProducts: any[] = [...INITIAL_PRODUCTS];
+  let devOrders: any[] = INITIAL_ORDERS.map((o) => {
+    const items = (o.items || []).map((it: any) => {
+      const bp = it.buyingPriceSnapshot ?? Math.round(Number(it.product?.price || 0) * 0.6);
+      const itemCost = bp * (Number(it.quantity) || 1);
+      const itemRev = Number(it.product?.price || 0) * (Number(it.quantity) || 1);
+      return {
+        ...it,
+        buyingPriceSnapshot: bp,
+        productCost: itemCost,
+        productGrossProfit: Math.max(0, itemRev - itemCost),
+      };
+    });
+    const totalCost = o.totalCost ?? items.reduce((s: number, it: any) => s + (it.productCost || 0), 0);
+    const totalGrossProfit = o.totalGrossProfit ?? Math.max(0, (Number(o.subtotal) || 0) - totalCost);
+    return {
+      ...o,
+      items,
+      totalCost,
+      totalGrossProfit,
+    };
+  });
+  let devProducts: any[] = INITIAL_PRODUCTS.map((p) => ({
+    ...p,
+    buyingPrice: p.buyingPrice ?? Math.round(Number(p.price) * 0.6),
+  }));
   let devCategories: any[] = [...INITIAL_CATEGORIES];
   let devSliders: any[] = [...INITIAL_SLIDES];
   let devSettings: any = { ...INITIAL_SETTINGS };
@@ -784,6 +807,99 @@ function localApiDevPlugin(): Plugin {
     return Boolean(auth.auth && (auth.auth.role === 'super_admin' || auth.auth.role === 'admin' || auth.auth.role === 'sub_admin'));
   };
 
+  const isDevBuyingPriceOrCostKey = (key: string): boolean => {
+    const norm = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+    return (
+      norm === 'buyingprice' ||
+      norm === 'buyingcost' ||
+      norm === 'purchaseprice' ||
+      norm === 'purchasecost' ||
+      norm === 'costprice' ||
+      norm === 'productcost' ||
+      norm === 'unitcost' ||
+      norm === 'totalcost' ||
+      norm === 'buyingpricesnapshot' ||
+      norm === 'suppliercost' ||
+      norm === 'supplierprice' ||
+      norm === 'wholesaleprice' ||
+      norm === 'wholesalecost' ||
+      norm === 'itemcost'
+    );
+  };
+
+  const isDevProfitKey = (key: string): boolean => {
+    const norm = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+    return (
+      norm === 'profit' ||
+      norm === 'unitprofit' ||
+      norm === 'unitgrossprofit' ||
+      norm === 'unitnetprofit' ||
+      norm === 'grossprofit' ||
+      norm === 'netprofit' ||
+      norm === 'profitmargin' ||
+      norm === 'grossmargin' ||
+      norm === 'netmargin' ||
+      norm === 'totalprofit' ||
+      norm === 'totalgrossprofit' ||
+      norm === 'productgrossprofit' ||
+      norm === 'productcost' ||
+      norm === 'averageprofitperorder'
+    );
+  };
+
+  const deepSanitizeDevCostAndProfit = (
+    data: any,
+    options: { isSuperAdmin?: boolean; canViewBuyingPrice?: boolean; canViewProfit?: boolean } | boolean
+  ): any => {
+    const isSuper = typeof options === 'boolean' ? options : Boolean(options.isSuperAdmin);
+    const canBuying = typeof options === 'boolean' ? options : Boolean(options.isSuperAdmin || options.canViewBuyingPrice);
+    const canProfit = typeof options === 'boolean' ? options : Boolean(options.isSuperAdmin || options.canViewProfit);
+
+    if (isSuper || (canBuying && canProfit)) {
+      return data;
+    }
+
+    const scrub = (val: any, seen: WeakSet<object> = new WeakSet()): any => {
+      if (val === null || val === undefined) return val;
+      if (typeof val !== 'object') {
+        if (typeof val === 'string') {
+          if ((val.startsWith('{') && val.endsWith('}')) || (val.startsWith('[') && val.endsWith(']'))) {
+            try {
+              const parsed = JSON.parse(val);
+              if (parsed && typeof parsed === 'object') {
+                const sanitized = scrub(parsed, seen);
+                return JSON.stringify(sanitized);
+              }
+            } catch {}
+          }
+        }
+        return val;
+      }
+
+      if (val instanceof Date || val instanceof RegExp) return val;
+      if (seen.has(val)) return val;
+      seen.add(val);
+
+      if (Array.isArray(val)) {
+        return val.map((item) => scrub(item, seen));
+      }
+
+      const result: Record<string, any> = {};
+      for (const [key, value] of Object.entries(val)) {
+        if (!canBuying && isDevBuyingPriceOrCostKey(key)) {
+          continue;
+        }
+        if (!canProfit && isDevProfitKey(key)) {
+          continue;
+        }
+        result[key] = scrub(value, seen);
+      }
+      return result;
+    };
+
+    return scrub(data);
+  };
+
   const sanitizeDevProduct = (
     p: any,
     options: { isSuperAdmin?: boolean; canViewBuyingPrice?: boolean; canViewProfit?: boolean } | boolean
@@ -803,27 +919,14 @@ function localApiDevPlugin(): Plugin {
     } else {
       delete result.buyingPrice;
       delete result.buying_price;
-      delete result.purchasePrice;
-      delete result.purchase_price;
-      delete result.costPrice;
-      delete result.cost_price;
-      delete result.productCost;
-      delete result.product_cost;
     }
-    if (canProfit) {
+    if (canProfit && unitProfit !== undefined) {
       result.unitProfit = unitProfit;
     } else {
       delete result.unitProfit;
       delete result.unit_profit;
-      delete result.profit;
-      delete result.grossProfit;
-      delete result.gross_profit;
-      delete result.netProfit;
-      delete result.net_profit;
-      delete result.profitMargin;
-      delete result.profit_margin;
     }
-    return result;
+    return deepSanitizeDevCostAndProfit(result, { isSuperAdmin: isSuper, canViewBuyingPrice: canBuying, canViewProfit: canProfit });
   };
 
   const sanitizeDevOrder = (
@@ -837,31 +940,44 @@ function localApiDevPlugin(): Plugin {
     const safeItems = (o.items || []).map((it: any) => {
       const safeProduct = sanitizeDevProduct(it.product || {}, options);
       const itemResult = { ...it, product: safeProduct };
-      if (!canBuying) {
+      if (canBuying && it.buyingPriceSnapshot != null) {
+        itemResult.buyingPriceSnapshot = Number(it.buyingPriceSnapshot);
+      } else {
         delete itemResult.buyingPriceSnapshot;
         delete itemResult.buying_price_snapshot;
       }
-      if (!canProfit) {
+      if (canProfit) {
+        if (it.productCost != null) itemResult.productCost = Number(it.productCost);
+        if (it.productGrossProfit != null) itemResult.productGrossProfit = Number(it.productGrossProfit);
+      } else {
         delete itemResult.productCost;
         delete itemResult.product_cost;
         delete itemResult.productGrossProfit;
         delete itemResult.product_gross_profit;
-        delete itemResult.profit;
       }
       return itemResult;
     });
 
     const safeOrder = { ...o, items: safeItems };
-    if (!canProfit) {
+    if (canProfit) {
+      if (o.totalCost != null) safeOrder.totalCost = Number(o.totalCost);
+      if (o.totalGrossProfit != null) safeOrder.totalGrossProfit = Number(o.totalGrossProfit);
+    } else {
       delete safeOrder.totalCost;
       delete safeOrder.total_cost;
       delete safeOrder.totalGrossProfit;
       delete safeOrder.total_gross_profit;
       delete safeOrder.netProfit;
       delete safeOrder.net_profit;
+      delete safeOrder.totalProfit;
+      delete safeOrder.total_profit;
       delete safeOrder.profit;
+      delete safeOrder.grossProfit;
+      delete safeOrder.gross_profit;
+      delete safeOrder.profitMargin;
+      delete safeOrder.profit_margin;
     }
-    return safeOrder;
+    return deepSanitizeDevCostAndProfit(safeOrder, { isSuperAdmin: isSuper, canViewBuyingPrice: canBuying, canViewProfit: canProfit });
   };
 
   const sanitizeDevOrderForPublicTracking = (order: any) => {
@@ -1863,16 +1979,47 @@ function localApiDevPlugin(): Plugin {
           const totalPages = Math.ceil(total / limit) || 1;
           const pagedLogs = sorted.slice(offset, offset + limit);
 
+          const isSuperAdmin = authResult.auth?.role === 'super_admin';
+          const canViewBuyingPrice = Boolean(
+            authResult.auth &&
+            (isSuperAdmin || hasDevPermission(authResult.auth, 'product.view_buying_price') || hasDevPermission(authResult.auth, 'product.buying_price'))
+          );
+          const canViewProfit = Boolean(
+            authResult.auth &&
+            (isSuperAdmin || hasDevPermission(authResult.auth, 'product.view_profit') || hasDevPermission(authResult.auth, 'report.profit'))
+          );
+
+          const safeLogs = pagedLogs.map((log) => {
+            const sanitizedLog: any = deepSanitizeDevCostAndProfit(log, { isSuperAdmin, canViewBuyingPrice, canViewProfit });
+            if (!canViewBuyingPrice || !canViewProfit) {
+              if (typeof sanitizedLog.details === 'string') {
+                if (!canViewBuyingPrice) {
+                  sanitizedLog.details = sanitizedLog.details.replace(
+                    /((?:buying|purchase|cost|wholesale)[_\s]*price|(?:unit|total|product)[_\s]*cost)[\s:=]+[\d,.]+(?:\s*(?:BDT|Tk|৳))?/gi,
+                    '[CONFIDENTIAL COST REDACTED]'
+                  );
+                }
+                if (!canViewProfit) {
+                  sanitizedLog.details = sanitizedLog.details.replace(
+                    /((?:unit|gross|net|total)[_\s]*profit|profit[_\s]*margin)[\s:=]+[\d,.]+(?:\s*(?:BDT|Tk|৳|%))?/gi,
+                    '[CONFIDENTIAL PROFIT REDACTED]'
+                  );
+                }
+              }
+            }
+            return sanitizedLog;
+          });
+
           res.setHeader('Content-Type', 'application/json');
           res.statusCode = 200;
           return res.end(JSON.stringify({
             success: true,
-            count: pagedLogs.length,
+            count: safeLogs.length,
             total,
             page,
             limit,
             totalPages,
-            logs: pagedLogs,
+            logs: safeLogs,
           }));
         }
 

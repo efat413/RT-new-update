@@ -68,6 +68,7 @@ import {
   sanitizeProductForRole,
   sanitizeOrderForRole,
   sanitizeOrderForPublicTracking,
+  deepSanitizeCostAndProfit,
   // Expenses & Analytics
   getAllExpenses,
   insertExpense,
@@ -2057,14 +2058,43 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       offset,
     });
 
+    const isSuperAdmin = auth!.role === 'super_admin';
+    const canViewBuyingPrice = Boolean(
+      isSuperAdmin || hasPermission(auth!, 'product.view_buying_price') || hasPermission(auth!, 'product.buying_price')
+    );
+    const canViewProfit = Boolean(
+      isSuperAdmin || hasPermission(auth!, 'product.view_profit') || hasPermission(auth!, 'report.profit')
+    );
+
+    const safeLogs = paginated.logs.map((log) => {
+      const sanitizedLog: any = deepSanitizeCostAndProfit(log, { isSuperAdmin, canViewBuyingPrice, canViewProfit });
+      if (!canViewBuyingPrice || !canViewProfit) {
+        if (typeof sanitizedLog.details === 'string') {
+          if (!canViewBuyingPrice) {
+            sanitizedLog.details = sanitizedLog.details.replace(
+              /((?:buying|purchase|cost|wholesale)[_\s]*price|(?:unit|total|product)[_\s]*cost)[\s:=]+[\d,.]+(?:\s*(?:BDT|Tk|৳))?/gi,
+              '[CONFIDENTIAL COST REDACTED]'
+            );
+          }
+          if (!canViewProfit) {
+            sanitizedLog.details = sanitizedLog.details.replace(
+              /((?:unit|gross|net|total)[_\s]*profit|profit[_\s]*margin)[\s:=]+[\d,.]+(?:\s*(?:BDT|Tk|৳|%))?/gi,
+              '[CONFIDENTIAL PROFIT REDACTED]'
+            );
+          }
+        }
+      }
+      return sanitizedLog;
+    });
+
     return jsonResponse({
       success: true,
-      count: paginated.logs.length,
+      count: safeLogs.length,
       total: paginated.total,
       page: paginated.page,
       limit: paginated.limit,
       totalPages: paginated.totalPages,
-      logs: paginated.logs,
+      logs: safeLogs,
     });
   }
 
