@@ -1467,7 +1467,7 @@ function localApiDevPlugin(): Plugin {
           }));
         }
 
-        const devPermGetMatch = url.pathname.match(/^\/api\/(?:admin\/)?users\/([^/]+)\/permissions$/);
+        const devPermGetMatch = url.pathname.match(/^\/api\/(?:admin\/)?users\/([^/]+)\/permissions\/?$/);
         if (devPermGetMatch && method === 'GET') {
           const authResult = requireDevAuth(req);
           if (authResult.error) return sendDevError(res, authResult.error);
@@ -1499,7 +1499,7 @@ function localApiDevPlugin(): Plugin {
           }));
         }
 
-        if (devPermGetMatch && (method === 'PUT' || method === 'PATCH')) {
+        if (devPermGetMatch && method !== 'GET') {
           const authResult = requireDevAuth(req);
           if (authResult.error) return sendDevError(res, authResult.error);
 
@@ -1509,6 +1509,11 @@ function localApiDevPlugin(): Plugin {
               status: 403,
               body: { success: false, error: 'Forbidden: Only Super Administrator can modify permissions.' },
             });
+          }
+
+          if (method !== 'PUT' && method !== 'PATCH') {
+            res.statusCode = 405;
+            return res.end(JSON.stringify({ success: false, error: 'Method not allowed.' }));
           }
 
           const targetUserId = decodeURIComponent(devPermGetMatch[1]);
@@ -2418,7 +2423,7 @@ function localApiDevPlugin(): Plugin {
         }
 
         // 7. USERS
-        if (url.pathname === '/api/users') {
+        if (url.pathname === '/api/users' || url.pathname === '/api/users/' || url.pathname === '/api/admin/users' || url.pathname === '/api/admin/users/') {
           if (method === 'GET') {
             const authResult = requireDevAuth(req);
             if (authResult.error) return sendDevError(res, authResult.error);
@@ -2473,30 +2478,36 @@ function localApiDevPlugin(): Plugin {
           }
         }
 
-        const devUserMatch = url.pathname.match(/^\/api\/users\/([^/]+)$/);
+        const devUserMatch = url.pathname.match(/^\/api\/(?:admin\/)?users\/([^/]+)\/?$/);
         if (devUserMatch) {
           const usrId = decodeURIComponent(devUserMatch[1]);
           if (method === 'PUT' || method === 'PATCH') {
             const authResult = requireDevAuth(req);
             if (authResult.error) return sendDevError(res, authResult.error);
 
+            const idx = devUsers.findIndex((u) => u.id === usrId);
+            if (idx < 0) {
+              res.statusCode = 404;
+              return res.end(JSON.stringify({ success: false, error: 'User not found' }));
+            }
+            const targetUser = devUsers[idx];
             const isSelf = authResult.auth!.user.id === usrId;
+            const isTargetSuper = targetUser.role === 'super_admin' || devSuperAdminEmails.includes(targetUser.email?.toLowerCase());
+            if (isTargetSuper && authResult.auth!.role !== 'super_admin') {
+              return sendDevError(res, { status: 403, body: { success: false, error: 'Forbidden: Super Administrator account cannot be modified by other users.' } });
+            }
+
+            // Privilege escalation & tamper protection: Normal Admin/Sub Admin can NEVER modify another Admin/Sub Admin
+            if (!isSelf && targetUser.role !== 'customer' && authResult.auth!.role !== 'super_admin') {
+              return sendDevError(res, { status: 403, body: { success: false, error: 'Forbidden: Only Super Administrator can modify administrative accounts.' } });
+            }
+
             if (!isSelf) {
               const permErr = requireDevPermission(authResult, 'user.manage');
               if (permErr) return sendDevError(res, permErr);
             }
 
             return readBody(async (body) => {
-              const idx = devUsers.findIndex((u) => u.id === usrId);
-              if (idx < 0) {
-                res.statusCode = 404;
-                return res.end(JSON.stringify({ success: false, error: 'User not found' }));
-              }
-              const targetUser = devUsers[idx];
-              const isTargetSuper = targetUser.role === 'super_admin' || devSuperAdminEmails.includes(targetUser.email?.toLowerCase());
-              if (isTargetSuper && authResult.auth!.role !== 'super_admin') {
-                return sendDevError(res, { status: 403, body: { success: false, error: 'Forbidden: Super Administrator account cannot be modified by other users.' } });
-              }
               const updates = body.updates || body.user || body || {};
 
               delete updates.id;
@@ -2506,16 +2517,14 @@ function localApiDevPlugin(): Plugin {
               // Strict Privilege Escalation Protection:
               // Non-super_admin accounts can NEVER modify roles or permissions for any account (including their own).
               if (authResult.auth!.role !== 'super_admin') {
-                const hasRoleChange =
-                  (updates.role !== undefined && updates.role !== authResult.auth!.user.role) ||
-                  (body.role !== undefined && body.role !== authResult.auth!.user.role);
-                const hasPermissionChange =
+                const hasRoleField = updates.role !== undefined || body.role !== undefined;
+                const hasPermissionField =
                   updates.permissions !== undefined ||
                   body.permissions !== undefined ||
                   updates.permissions_json !== undefined ||
                   body.permissions_json !== undefined;
 
-                if (hasRoleChange || hasPermissionChange) {
+                if (hasRoleField || hasPermissionField) {
                   return sendDevError(res, {
                     status: 403,
                     body: { success: false, error: 'Forbidden: Only Super Administrator can modify account roles or permissions.' },
@@ -2646,7 +2655,7 @@ function localApiDevPlugin(): Plugin {
           }
         }
 
-        const devUserResetMatch = url.pathname.match(/^\/api\/users\/([^/]+)\/reset-password$/);
+        const devUserResetMatch = url.pathname.match(/^\/api\/(?:admin\/)?users\/([^/]+)\/reset-password\/?$/);
         if (devUserResetMatch && method === 'POST') {
           const authResult = requireDevAuth(req);
           if (authResult.error) return sendDevError(res, authResult.error);
@@ -2674,6 +2683,12 @@ function localApiDevPlugin(): Plugin {
             }
 
             const isSelf = authResult.auth!.user.id === targetUser.id;
+
+            // Privilege protection: Non-super_admin can NEVER reset password for other administrative accounts (admin / sub_admin)
+            if (!isSelf && targetUser.role !== 'customer' && authResult.auth!.role !== 'super_admin') {
+              return sendDevError(res, { status: 403, body: { success: false, error: 'Forbidden: Only Super Administrator can reset administrative account passwords.' } });
+            }
+
             const canManageUsers = hasDevPermission(authResult.auth!, 'user.manage');
             const canManageCust = targetUser.role === 'customer' && (hasDevPermission(authResult.auth!, 'customer.manage') || hasDevPermission(authResult.auth!, 'user.manage'));
 

@@ -1797,7 +1797,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     });
   }
 
-  const permGetMatch = path.match(/^\/api\/(?:admin\/)?users\/([^/]+)\/permissions$/);
+  const permGetMatch = path.match(/^\/api\/(?:admin\/)?users\/([^/]+)\/permissions\/?$/);
   if (permGetMatch && method === 'GET') {
     const { auth, errorResponse } = await requireAuth(request, env);
     if (errorResponse) return errorResponse;
@@ -1827,8 +1827,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     });
   }
 
-  const permUpdateMatch = path.match(/^\/api\/(?:admin\/)?users\/([^/]+)\/permissions$/);
-  if (permUpdateMatch && (method === 'PUT' || method === 'PATCH')) {
+  const permUpdateMatch = path.match(/^\/api\/(?:admin\/)?users\/([^/]+)\/permissions\/?$/);
+  if (permUpdateMatch && method !== 'GET') {
     const { auth, errorResponse } = await requireAuth(request, env);
     if (errorResponse) return errorResponse;
 
@@ -1838,6 +1838,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         { success: false, error: 'Forbidden: Only Super Administrator can modify permissions.' },
         403
       );
+    }
+
+    if (method !== 'PUT' && method !== 'PATCH') {
+      return jsonResponse({ success: false, error: 'Method not allowed.' }, 405);
     }
 
     const targetUserId = decodeURIComponent(permUpdateMatch[1]);
@@ -3320,7 +3324,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
   // ==========================================
   // 7. USERS CRUD ROUTES (Strict Server-Side RBAC & Super Admin Privacy)
   // ==========================================
-  if (path === '/api/users') {
+  if (path === '/api/users' || path === '/api/users/' || path === '/api/admin/users' || path === '/api/admin/users/') {
     if (method === 'GET') {
       const { auth, errorResponse } = await requireAuth(request, env);
       if (errorResponse) return errorResponse;
@@ -3394,7 +3398,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     }
   }
 
-  const userIdMatch = path.match(/^\/api\/users\/([^/]+)$/);
+  const userIdMatch = path.match(/^\/api\/(?:admin\/)?users\/([^/]+)\/?$/);
   if (userIdMatch) {
     const usrId = decodeURIComponent(userIdMatch[1]);
 
@@ -3419,6 +3423,14 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         );
       }
 
+      // Privilege escalation & tamper protection: Normal Admin/Sub Admin can NEVER modify another Admin/Sub Admin
+      if (!isSelf && targetUser.role !== 'customer' && auth!.role !== 'super_admin') {
+        return jsonResponse(
+          { success: false, error: 'Forbidden: Only Super Administrator can modify administrative accounts.' },
+          403
+        );
+      }
+
       if (!isSelf) {
         const permErr = requirePermission(auth!, 'user.manage');
         if (permErr) return permErr;
@@ -3438,16 +3450,14 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         // Strict Privilege Escalation Protection:
         // Non-super_admin accounts can NEVER modify roles or permissions for any account (including their own).
         if (auth!.role !== 'super_admin') {
-          const hasRoleChange =
-            (updates.role !== undefined && updates.role !== auth!.dbUser.role) ||
-            (body.role !== undefined && body.role !== auth!.dbUser.role);
-          const hasPermissionChange =
+          const hasRoleField = updates.role !== undefined || body.role !== undefined;
+          const hasPermissionField =
             updates.permissions !== undefined ||
             body.permissions !== undefined ||
             updates.permissions_json !== undefined ||
             body.permissions_json !== undefined;
 
-          if (hasRoleChange || hasPermissionChange) {
+          if (hasRoleField || hasPermissionField) {
             return jsonResponse(
               { success: false, error: 'Forbidden: Only Super Administrator can modify account roles or permissions.' },
               403
@@ -3639,7 +3649,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
   // ==========================================
   // 7.1 USER PASSWORD RESET (ADMIN PANEL & SUPER ADMIN SELF-RESET)
   // ==========================================
-  const userResetPwMatch = path.match(/^\/api\/users\/([^/]+)\/reset-password$/);
+  const userResetPwMatch = path.match(/^\/api\/(?:admin\/)?users\/([^/]+)\/reset-password\/?$/);
   if (userResetPwMatch && method === 'POST') {
     const { auth, errorResponse } = await requireAuth(request, env);
     if (errorResponse) return errorResponse;
@@ -3672,6 +3682,15 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       }
 
       const isSelf = auth!.dbUser.id === targetUser.id;
+
+      // Privilege protection: Non-super_admin can NEVER reset password for other administrative accounts (admin / sub_admin)
+      if (!isSelf && targetUser.role !== 'customer' && auth!.role !== 'super_admin') {
+        return jsonResponse(
+          { success: false, error: 'Forbidden: Only Super Administrator can reset administrative account passwords.' },
+          403
+        );
+      }
+
       const canManageUsers = hasPermission(auth!, 'user.manage');
       const canManageCust = targetUser.role === 'customer' && (hasPermission(auth!, 'customer.manage') || hasPermission(auth!, 'user.manage'));
 
