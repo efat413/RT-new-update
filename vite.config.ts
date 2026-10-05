@@ -369,6 +369,40 @@ function localApiDevPlugin(): Plugin {
     return { isReplay: false };
   };
 
+  const devOrderIpTimestamps = new Map<string, number[]>();
+
+  const checkAndConsumeOrderRateLimitDev = (
+    clientIp: string,
+    limit = 4,
+    windowSeconds = 600,
+    timeOffsetMs = 0
+  ): { allowed: boolean; remainingSeconds: number } => {
+    const now = Date.now() + timeOffsetMs;
+    const windowMs = windowSeconds * 1000;
+    const timestamps = (devOrderIpTimestamps.get(clientIp) || []).filter(
+      (t) => now - t < windowMs
+    );
+
+    if (timestamps.length >= limit) {
+      const oldest = timestamps[0];
+      const remainingSeconds = Math.max(1, Math.ceil((oldest + windowMs - now) / 1000));
+      devOrderIpTimestamps.set(clientIp, timestamps);
+      return { allowed: false, remainingSeconds };
+    }
+
+    timestamps.push(now);
+    devOrderIpTimestamps.set(clientIp, timestamps);
+    return { allowed: true, remainingSeconds: windowSeconds };
+  };
+
+  const rollbackOrderRateLimitDev = (clientIp: string): void => {
+    const timestamps = devOrderIpTimestamps.get(clientIp);
+    if (timestamps && timestamps.length > 0) {
+      timestamps.pop();
+      devOrderIpTimestamps.set(clientIp, timestamps);
+    }
+  };
+
   const checkDevRateLimit = (key: string, limit: number, windowSeconds: number): boolean => {
     const now = Date.now();
     const entry = devRateLimits.get(key);
@@ -395,6 +429,8 @@ function localApiDevPlugin(): Plugin {
     if (trueIp && typeof trueIp === 'string' && trueIp.trim()) return trueIp.trim();
     const realIp = req.headers['x-real-ip'];
     if (realIp && typeof realIp === 'string' && realIp.trim()) return realIp.trim();
+    const xff = req.headers['x-forwarded-for'];
+    if (xff && typeof xff === 'string' && xff.trim()) return xff.split(',')[0].trim();
     const remote = req.socket?.remoteAddress;
     if (remote && typeof remote === 'string' && remote.trim()) return remote.trim();
     return '127.0.0.1';
@@ -3430,30 +3466,31 @@ function localApiDevPlugin(): Plugin {
                 }
               }
 
-              const clientIp = ((req.headers['cf-connecting-ip'] || req.headers['x-real-ip'] || req.socket?.remoteAddress || '127.0.0.1') as string).trim();
-              if (!checkDevRateLimit(`order_burst:${clientIp}`, 2, 10)) {
+              const clientIp = getDevClientIp(req);
+              const timeOffsetMs = Number(req.headers['x-test-timestamp-offset']) || 0;
+              const orderRateCheck = checkAndConsumeOrderRateLimitDev(clientIp, 4, 600, timeOffsetMs);
+              if (!orderRateCheck.allowed) {
                 res.statusCode = 429;
-                res.setHeader('Retry-After', '10');
-                return res.end(JSON.stringify({ success: false, error: 'Please wait a moment before submitting another order.' }));
+                res.setHeader('Retry-After', String(orderRateCheck.remainingSeconds || 600));
+                return res.end(
+                  JSON.stringify({
+                    success: false,
+                    error: 'Too many orders. Please try again later.',
+                  })
+                );
               }
-              recordDevRateAttempt(`order_burst:${clientIp}`, 10);
-
-              if (!checkDevRateLimit(`order_ip:${clientIp}`, 10, 600)) {
-                res.statusCode = 429;
-                res.setHeader('Retry-After', '300');
-                return res.end(JSON.stringify({ success: false, error: 'Order submission rate limit reached. Please wait a few minutes before trying again.' }));
-              }
-              recordDevRateAttempt(`order_ip:${clientIp}`, 600);
 
               // Verify stock availability for all items before placing order
               for (const it of verifiedItems) {
                 const prodId = it.product?.id || it.productId || it.id;
                 const prod = devProducts.find((p) => p.id === prodId);
                 if (!prod) {
+                  rollbackOrderRateLimitDev(clientIp);
                   res.statusCode = 400;
                   return res.end(JSON.stringify({ success: false, error: `Product "${it.product?.title || it.title || prodId}" not found.` }));
                 }
                 if (prod.stock < it.quantity) {
+                  rollbackOrderRateLimitDev(clientIp);
                   res.statusCode = 400;
                   return res.end(
                     JSON.stringify({
@@ -3502,7 +3539,8 @@ function localApiDevPlugin(): Plugin {
               res.statusCode = 201;
               return res.end(JSON.stringify({ success: true, order: sanitizeDevOrder(order, false), message: 'Order saved in dev memory store' }));
             } catch (err: any) {
-              const clientIp = ((req.headers['cf-connecting-ip'] || req.headers['x-real-ip'] || req.socket?.remoteAddress || '127.0.0.1') as string).trim();
+              const clientIp = getDevClientIp(req);
+              rollbackOrderRateLimitDev(clientIp);
               logDevServerError({
                 route: '/api/orders',
                 method: 'POST',

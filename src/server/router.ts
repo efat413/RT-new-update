@@ -636,6 +636,83 @@ async function clearFailedAttempts(key: string, db?: D1Database): Promise<void> 
   }
 }
 
+// In-memory sliding log for IP order attempts (atomic per edge isolate)
+const orderIpRateLimitMap = new Map<string, number[]>();
+
+export async function checkAndConsumeOrderRateLimit(
+  clientIp: string,
+  limit = 4,
+  windowSeconds = 600,
+  db?: D1Database,
+  timeOffsetMs = 0
+): Promise<{ allowed: boolean; remainingSeconds?: number }> {
+  const now = Date.now() + timeOffsetMs;
+  const windowMs = windowSeconds * 1000;
+  const key = `order_ip:${clientIp}`;
+
+  // 1. Sliding window check & update in memory (atomic for isolate)
+  const timestamps = (orderIpRateLimitMap.get(key) || []).filter((t) => now - t < windowMs);
+  if (timestamps.length >= limit) {
+    const oldest = timestamps[0];
+    const rem = Math.max(1, Math.ceil((oldest + windowMs - now) / 1000));
+    orderIpRateLimitMap.set(key, timestamps);
+    return { allowed: false, remainingSeconds: rem };
+  }
+
+  // 2. Multi-edge Cloudflare D1 distributed check (if DB is bound)
+  if (db) {
+    try {
+      const resetAt = now + windowMs;
+      // Atomic upsert with RETURNING count, reset_at
+      const result = await db
+        .prepare(
+          `INSERT INTO rate_limits (key, count, reset_at)
+           VALUES (?, 1, ?)
+           ON CONFLICT(key) DO UPDATE SET
+             count = CASE WHEN reset_at <= ? THEN 1 ELSE count + 1 END,
+             reset_at = CASE WHEN reset_at <= ? THEN ? ELSE reset_at END
+           RETURNING count, reset_at`
+        )
+        .bind(key, resetAt, now, now, resetAt)
+        .first<{ count: number; reset_at: number }>();
+
+      if (result && result.count > limit && result.reset_at > now) {
+        const rem = Math.max(1, Math.ceil((result.reset_at - now) / 1000));
+        return { allowed: false, remainingSeconds: rem };
+      }
+    } catch (d1Err) {
+      console.error('[RateLimit Error] Atomic order rate limit check failed in D1:', d1Err);
+    }
+  }
+
+  // Reserve slot
+  timestamps.push(now);
+  orderIpRateLimitMap.set(key, timestamps);
+
+  return { allowed: true };
+}
+
+export async function rollbackOrderRateLimit(
+  clientIp: string,
+  db?: D1Database
+): Promise<void> {
+  const key = `order_ip:${clientIp}`;
+  const timestamps = orderIpRateLimitMap.get(key);
+  if (timestamps && timestamps.length > 0) {
+    timestamps.pop();
+    orderIpRateLimitMap.set(key, timestamps);
+  }
+  if (db) {
+    try {
+      await db
+        .prepare(`UPDATE rate_limits SET count = MAX(0, count - 1) WHERE key = ?`)
+        .bind(key)
+        .run()
+        .catch(() => {});
+    } catch {}
+  }
+}
+
 import {
   PermissionKey,
   PERMISSION_KEYS,
@@ -4068,49 +4145,34 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const isDev = isDevEnvironment(env);
       clientIp = getClientIp(request, isDev);
 
-      // 1. Abuse Protection: Short burst protection (maximum 2 order submissions in 10 seconds per IP)
-      const burstCheck = await checkRateLimit(`order_burst:${clientIp}`, 2, 10, env.DB);
-      if (!burstCheck.allowed) {
-        const retrySecs = burstCheck.remainingSeconds || 10;
+      // 1. Backend Enforced IP Rate Limit: Maximum 4 successful order attempts in a rolling 10-minute window
+      const timeOffsetMs = isDev ? (Number(request.headers.get('x-test-timestamp-offset')) || 0) : 0;
+      const rateLimitCheck = await checkAndConsumeOrderRateLimit(clientIp, 4, 600, env.DB, timeOffsetMs);
+      if (!rateLimitCheck.allowed) {
+        const retrySecs = rateLimitCheck.remainingSeconds || 600;
         return jsonResponse(
           {
             success: false,
-            error: 'Please wait a moment before submitting another order.',
-            retryAfter: retrySecs,
+            error: 'Too many orders. Please try again later.',
           },
           429,
           {
             'Retry-After': String(retrySecs),
-            'X-RateLimit-Limit': '2',
-            'X-RateLimit-Remaining': '0',
-          }
-        );
-      }
-
-      // 2. Abuse Protection: Sustained rate limit (maximum 10 orders per 10 minutes per IP)
-      const sustainedCheck = await checkRateLimit(`order_ip:${clientIp}`, 10, 600, env.DB);
-      if (!sustainedCheck.allowed) {
-        const retrySecs = sustainedCheck.remainingSeconds || 300;
-        return jsonResponse(
-          {
-            success: false,
-            error: 'Order submission rate limit reached. Please wait a few minutes before trying again.',
-            retryAfter: retrySecs,
-          },
-          429,
-          {
-            'Retry-After': String(retrySecs),
-            'X-RateLimit-Limit': '10',
+            'X-RateLimit-Limit': '4',
             'X-RateLimit-Remaining': '0',
           }
         );
       }
 
       const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
-      if (jsonErr) return jsonErr;
+      if (jsonErr) {
+        await rollbackOrderRateLimit(clientIp, env.DB);
+        return jsonErr;
+      }
       const orderData: Order = body?.order || body;
 
       if (!orderData) {
+        await rollbackOrderRateLimit(clientIp, env.DB);
         return jsonResponse({ success: false, error: 'Invalid order payload.' }, 400);
       }
 
@@ -4137,31 +4199,20 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       }
 
       if (!orderData.customer?.fullName || !orderData.customer?.phone || !orderData.customer?.fullAddress) {
+        await rollbackOrderRateLimit(clientIp, env.DB);
         return jsonResponse({ success: false, error: 'Missing required customer delivery information.' }, 400);
       }
 
       const cleanPhone = (orderData.customer.phone || '').replace(/\D/g, '');
       if (cleanPhone.length < 11) {
+        await rollbackOrderRateLimit(clientIp, env.DB);
         return jsonResponse({ success: false, error: 'A valid 11-digit Bangladeshi contact phone number is required.' }, 400);
       }
 
-      // 2b. Abuse Protection: Phone-based throttling (burst protection: max 2 in 60s; sustained: max 6 in 1 hour)
-      const phoneBurstCheck = await checkRateLimit(`order_ph_burst:${cleanPhone}`, 2, 60, env.DB);
-      if (!phoneBurstCheck.allowed) {
-        const retrySecs = phoneBurstCheck.remainingSeconds || 30;
-        return jsonResponse(
-          {
-            success: false,
-            error: 'You have submitted an order recently with this contact number. Please wait a moment before trying again.',
-            retryAfter: retrySecs,
-          },
-          429,
-          { 'Retry-After': String(retrySecs) }
-        );
-      }
-
+      // 2. Abuse Protection: Hourly phone-based limit (maximum 6 in 1 hour; no 60s cooldown)
       const phoneSustainedCheck = await checkRateLimit(`order_ph_hour:${cleanPhone}`, 6, 3600, env.DB);
       if (!phoneSustainedCheck.allowed) {
+        await rollbackOrderRateLimit(clientIp, env.DB);
         const retrySecs = phoneSustainedCheck.remainingSeconds || 600;
         return jsonResponse(
           {
@@ -4239,11 +4290,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       // 5. Server-side authoritative validation, pricing calculation & stock deduction via insertOrder
       const saved = await insertOrder(env.DB, orderData);
 
-      // Record rate limit attempts for phone throttling
-      await Promise.all([
-        recordFailedAttempt(`order_ph_burst:${cleanPhone}`, 2, 60, env.DB),
-        recordFailedAttempt(`order_ph_hour:${cleanPhone}`, 6, 3600, env.DB),
-      ]);
+      // Record rate limit attempt for hourly phone throttling (no 60s cooldown)
+      await recordFailedAttempt(`order_ph_hour:${cleanPhone}`, 6, 3600, env.DB);
 
       // Cache for idempotency & rapid duplicate avoidance (both persistent D1 and memory)
       if (idempotencyKey) {
@@ -4277,6 +4325,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         201
       );
     } catch (err: any) {
+      await rollbackOrderRateLimit(clientIp, env.DB);
       logServerError({
         route: '/api/orders',
         method: 'POST',
