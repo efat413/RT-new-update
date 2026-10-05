@@ -205,12 +205,14 @@ async function runTests() {
   // Test H & I: LocalStorage Role & Permissions Modification Simulation
   console.log('\n[Test H & I] Client-side spoofed tokens / localStorage role modification');
   // If client crafts a bearer token claiming role: 'super_admin' with their Normal Admin user ID or email:
-  const spoofedRoleToken = `dev-jwt-${Buffer.from(JSON.stringify({
+  const tokenParts = normalAdminToken.split('.');
+  const spoofedPayload = Buffer.from(JSON.stringify({
     userId: normalAdminUser.id,
     email: normalAdminUser.email,
     role: 'super_admin', // Client pretends to be super_admin
-    exp: Date.now() + 86400000,
-  })).toString('base64')}`;
+    exp: Math.floor(Date.now() / 1000) + 86400,
+  })).toString('base64url');
+  const spoofedRoleToken = `${tokenParts[0] || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9'}.${spoofedPayload}.${tokenParts[2] || 'invalidsig'}`;
 
   // Attempt Super Admin only endpoint /api/admin/profit-analytics
   const spoofedAnalyticsRes = await fetch(`${BASE_URL}/api/admin/profit-analytics`, {

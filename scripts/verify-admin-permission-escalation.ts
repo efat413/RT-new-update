@@ -223,12 +223,14 @@ async function runSecurityTests() {
   // Test 8: Modify localStorage role → no security impact
   console.log('\n[Security Test 8] Modify localStorage role simulation');
   // Client attempts to send request with spoofed role claim in token
-  const spoofedRoleToken = `dev-jwt-${Buffer.from(JSON.stringify({
+  const tokenParts = normalAdminToken.split('.');
+  const spoofedPayload = Buffer.from(JSON.stringify({
     userId: normalAdminUser.id,
     email: normalAdminUser.email,
     role: 'super_admin', // Spoofed client-side claim
-    exp: Date.now() + 86400000,
-  })).toString('base64')}`;
+    exp: Math.floor(Date.now() / 1000) + 86400,
+  })).toString('base64url');
+  const spoofedRoleToken = `${tokenParts[0] || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9'}.${spoofedPayload}.${tokenParts[2] || 'invalidsig'}`;
 
   const t8a = await fetch(`${BASE_URL}/api/admin/profit-analytics`, {
     headers: { Authorization: `Bearer ${spoofedRoleToken}` },

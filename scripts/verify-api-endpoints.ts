@@ -40,11 +40,16 @@ async function testApis() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       usernameOrEmail: 'admin',
-      password: process.env.ADMIN_PASSWORD || '',
+      password: process.env.DEV_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || 'admin',
     }),
   });
-  const loginData = await loginRes.json();
-  const token = loginData.token || (`dev-jwt-${Buffer.from(JSON.stringify({ userId: 'dev-super-admin-1', email: 'dev-superadmin@local.test', role: 'super_admin', exp: Date.now() + 86400000 })).toString('base64')}`);
+  const loginData = await loginRes.json().catch(() => ({}));
+  const token = loginData.token;
+  if (!token) {
+    throw new Error(
+      `Failed to obtain admin authentication token from /api/auth/login (HTTP ${loginRes.status}: ${JSON.stringify(loginData)}). Check test environment setup.`
+    );
+  }
 
   const authHeaders = {
     'Authorization': `Bearer ${token}`,

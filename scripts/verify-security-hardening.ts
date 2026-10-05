@@ -119,7 +119,7 @@ async function runTests() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       usernameOrEmail: 'admin',
-      password: process.env.DEV_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || '',
+      password: process.env.DEV_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || 'admin',
     }),
   });
   if (loginRes.ok) {
@@ -127,7 +127,8 @@ async function runTests() {
     adminToken = loginJson.token;
   }
   if (!adminToken) {
-    adminToken = `dev-jwt-${Buffer.from(JSON.stringify({ userId: 'dev-super-admin-1', email: 'dev-superadmin@local.test', role: 'super_admin', exp: Date.now() + 86400000 })).toString('base64')}`;
+    const errText = await loginRes.text().catch(() => '');
+    throw new Error(`Failed to obtain Admin token from /api/auth/login (HTTP ${loginRes.status}: ${errText}). Check test environment setup.`);
   }
   console.assert(Boolean(adminToken), 'Admin login must succeed for testing');
 

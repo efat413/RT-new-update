@@ -50,16 +50,17 @@ async function verifyAuthArchitecture() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       usernameOrEmail: 'admin',
-      password: process.env.DEV_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || '',
+      password: process.env.DEV_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || 'admin',
     }),
   });
   const loginJson = await loginRes.json().catch(() => ({}));
   console.log('5. Admin login status:', loginRes.status, 'success:', loginJson.success);
-  let token = loginJson.token;
-  let user = loginJson.user;
-  if (!token) {
-    user = { id: 'dev-super-admin-1', email: 'dev-superadmin@local.test', role: 'super_admin' };
-    token = `dev-jwt-${Buffer.from(JSON.stringify({ userId: user.id, email: user.email, role: user.role, exp: Date.now() + 86400000 })).toString('base64')}`;
+  const token = loginJson.token;
+  const user = loginJson.user;
+  if (!token || !user) {
+    throw new Error(
+      `Failed to obtain valid admin authentication token from /api/auth/login (HTTP ${loginRes.status}: ${JSON.stringify(loginJson)}). Check test environment setup.`
+    );
   }
   console.log('   Authenticated user:', user.email, 'Role:', user.role);
 

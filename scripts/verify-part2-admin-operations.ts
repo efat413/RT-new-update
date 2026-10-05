@@ -11,13 +11,14 @@ async function runPart2Tests() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       usernameOrEmail: 'admin',
-      password: process.env.DEV_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || '',
+      password: process.env.DEV_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || 'admin',
     }),
   });
   const loginData = await loginRes.json().catch(() => ({}));
   let adminToken = loginData.token;
   if (!adminToken) {
-    adminToken = `dev-jwt-${Buffer.from(JSON.stringify({ userId: 'dev-super-admin-1', email: 'dev-superadmin@local.test', role: 'super_admin', exp: Date.now() + 86400000 })).toString('base64')}`;
+    const errText = await loginRes.text().catch(() => '');
+    throw new Error(`Super Admin login failed: ${errText}`);
   }
   console.log('✓ Super Admin logged in successfully with token:', adminToken.slice(0, 25) + '...\n');
 
@@ -134,20 +135,42 @@ async function runPart2Tests() {
   // TEST 6: Valid token but insufficient permission → Product Update
   console.log('--- TEST 6: Valid token but insufficient permission → Product Update ---');
   // Log in as an account without canManageProducts (e.g., orders@rongdhonutrade.com who has canManageOrders: true, canManageProducts: false)
-  const subAdminLogin = await fetch(`${baseUrl}/api/auth/login`, {
+  let subAdminLogin = await fetch(`${baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       usernameOrEmail: 'orders@rongdhonutrade.com',
-      password: process.env.STAFF_PASSWORD || '',
+      password: process.env.STAFF_PASSWORD || 'Password123!',
     }),
   });
+  if (!subAdminLogin.ok) {
+    // Create the test sub-admin account via admin endpoint
+    await fetch(`${baseUrl}/api/users`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        name: 'Orders Sub Admin',
+        email: 'orders@rongdhonutrade.com',
+        password: 'Password123!',
+        role: 'sub_admin',
+        permissions: { 'order.view': true, 'order.manage': true, 'product.manage': false },
+      }),
+    });
+    subAdminLogin = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        usernameOrEmail: 'orders@rongdhonutrade.com',
+        password: 'Password123!',
+      }),
+    });
+  }
   const subAdminData = await subAdminLogin.json().catch(() => ({}));
   let subAdminToken = subAdminData.token;
   let subAdminUser = subAdminData.user;
   if (!subAdminToken) {
-    subAdminUser = { id: 'user-subadmin-orders', email: 'orders@rongdhonutrade.com', role: 'sub_admin', permissions: { canManageOrders: true, canManageProducts: false } };
-    subAdminToken = `dev-jwt-${Buffer.from(JSON.stringify({ userId: subAdminUser.id, email: subAdminUser.email, role: subAdminUser.role, exp: Date.now() + 86400000 })).toString('base64')}`;
+    const errText = await subAdminLogin.text().catch(() => '');
+    throw new Error(`Sub-admin login failed: ${errText}`);
   }
   console.log(`Sub-admin logged in: ${subAdminUser.email} (Role: ${subAdminUser.role})`);
   console.log(`Sub-admin permissions:`, subAdminUser.permissions);
@@ -203,13 +226,15 @@ async function runPart2Tests() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       usernameOrEmail: 'admin',
-      password: process.env.DEV_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || '',
+      password: process.env.DEV_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || 'admin',
     }),
   });
   const reloginData = await reloginRes.json().catch(() => ({}));
-  let freshAdminToken = reloginData.token;
+  const freshAdminToken = reloginData.token;
   if (!freshAdminToken) {
-    freshAdminToken = `dev-jwt-${Buffer.from(JSON.stringify({ userId: 'dev-super-admin-1', email: 'dev-superadmin@local.test', role: 'super_admin', exp: Date.now() + 86400000 })).toString('base64')}`;
+    throw new Error(
+      `Re-login failed to obtain admin authentication token from /api/auth/login (HTTP ${reloginRes.status}: ${JSON.stringify(reloginData)}). Check test environment setup.`
+    );
   }
   console.log('Re-login successful. New token received.');
 

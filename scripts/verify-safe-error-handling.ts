@@ -95,7 +95,10 @@ async function runTests() {
     headers: { 'Content-Type': 'application/json' },
     body: '{"invalid": json syntax error',
   });
-  assert(malformedJsonRes.status === 400, `Malformed JSON must return HTTP 400 Bad Request (got ${malformedJsonRes.status})`);
+  assert(
+    malformedJsonRes.status === 400,
+    `Expected HTTP 400 for malformed JSON, got ${malformedJsonRes.status}`
+  );
   const malformedJsonData = await malformedJsonRes.json().catch(() => ({}));
   assert(malformedJsonData.success === false, 'success is false');
   assert(typeof malformedJsonData.error === 'string', 'error message exists');

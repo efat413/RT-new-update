@@ -57,7 +57,7 @@ async function runVerification() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       usernameOrEmail: 'admin',
-      password: process.env.DEV_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || '',
+      password: process.env.DEV_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || 'admin',
     }),
   });
   if (loginRes.ok) {
@@ -65,7 +65,10 @@ async function runVerification() {
     adminToken = loginData.token;
   }
   if (!adminToken) {
-    adminToken = `dev-jwt-${Buffer.from(JSON.stringify({ userId: 'dev-super-admin-1', email: 'dev-superadmin@local.test', role: 'super_admin', exp: Date.now() + 86400000 })).toString('base64')}`;
+    const errText = await loginRes.text().catch(() => '');
+    throw new Error(
+      `Failed to obtain Admin authentication token from /api/auth/login (HTTP ${loginRes.status}: ${errText}). Check test environment setup.`
+    );
   }
   assert(Boolean(adminToken), 'Admin login succeeded and received token');
 
@@ -176,6 +179,10 @@ async function runVerification() {
   console.log('\n--- 4. Testing Live Order Tracking Endpoint Protections ---');
 
   // 4a. Create a test order to track
+  const prodsRes = await fetch(`${baseUrl}/api/products`);
+  const prodsData = await prodsRes.json();
+  const sampleProd = prodsData.products?.[0] || { id: 'test-p1', title: 'Leather Wallet', price: 850 };
+
   const createOrderRes = await fetch(`${baseUrl}/api/orders`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -190,16 +197,16 @@ async function runVerification() {
         items: [
           {
             product: {
-              id: 'test-p1',
-              title: 'Leather Wallet',
-              price: 850,
+              id: sampleProd.id,
+              title: sampleProd.title,
+              price: sampleProd.price,
             },
             quantity: 1,
           },
         ],
-        subtotal: 850,
+        subtotal: sampleProd.price,
         deliveryFee: 60,
-        totalAmount: 910,
+        totalAmount: sampleProd.price + 60,
         paymentMethod: 'COD',
       },
     }),

@@ -69,12 +69,14 @@ async function runTests() {
   const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ usernameOrEmail: 'admin', password: process.env.DEV_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || '' }),
+    body: JSON.stringify({ usernameOrEmail: 'admin', password: process.env.DEV_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || 'admin' }),
   });
   const loginData = (await loginRes.json().catch(() => ({}))) as any;
-  let token = loginData.token;
+  const token = loginData.token;
   if (!token) {
-    token = `dev-jwt-${Buffer.from(JSON.stringify({ userId: 'dev-super-admin-1', email: 'dev-superadmin@local.test', role: 'super_admin', exp: Date.now() + 86400000 })).toString('base64')}`;
+    throw new Error(
+      `Failed to obtain Super Admin authentication token from /api/auth/login (HTTP ${loginRes.status}: ${JSON.stringify(loginData)}). Check test environment setup.`
+    );
   }
   assert(Boolean(token), 'Super Admin token obtained');
 
