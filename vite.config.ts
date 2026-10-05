@@ -44,7 +44,7 @@ import {
   MAX_IMAGE_SIZE_BYTES,
 } from './src/server/imageSecurity';
 
-process.env.ADMIN_SECRET = process.env.ADMIN_SECRET || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'dev-secret-' + Math.random().toString(36).slice(2));
+process.env.ADMIN_SECRET = process.env.ADMIN_SECRET || 'dev-secret-test-shared-999';
 process.env.COURIER_WEBHOOK_SECRET = process.env.COURIER_WEBHOOK_SECRET || 'dev-courier-webhook-secret-999';
 
 function localApiDevPlugin(): Plugin {
@@ -130,9 +130,10 @@ function localApiDevPlugin(): Plugin {
     .map((id) => id.trim())
     .filter(Boolean);
 
-  const devSuperAdminEmails: string[] = configuredSuperAdminEmails.length > 0
-    ? configuredSuperAdminEmails
-    : ['cmt413uec@gmail.com', 'dev-superadmin@local.test'];
+  const devSuperAdminEmails: string[] = Array.from(new Set([
+    ...configuredSuperAdminEmails,
+    'dev-superadmin@local.test',
+  ]));
 
   const devSuperAdminAccounts: any[] = devSuperAdminEmails.map((email, idx) => ({
     id: configuredSuperAdminUserIds[idx] || (email === 'dev-superadmin@local.test' ? 'dev-super-admin-1' : `super-admin-${idx + 1}`),
@@ -150,19 +151,107 @@ function localApiDevPlugin(): Plugin {
     createdAt: '2026-01-01T00:00:00.000Z',
   }));
 
-  const devStaffAccount = {
-    id: 'user-subadmin-staff',
-    name: 'Sub Admin Staff',
-    email: 'staff@rongdhonutrade.com',
-    role: 'sub_admin',
-    permissions: {},
-    phone: '01700000001',
-    createdAt: '2026-01-01T00:00:00.000Z',
-  };
+  const devStaffAccounts: any[] = [
+    {
+      id: 'user-subadmin-staff',
+      name: 'Sub Admin Staff',
+      email: 'staff@rongdhonutrade.com',
+      role: 'sub_admin',
+      permissions: {},
+      phone: '01700000001',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    },
+    {
+      id: 'user-subadmin-orders',
+      name: 'Logistics Dispatcher',
+      email: 'orders@rongdhonutrade.com',
+      role: 'sub_admin',
+      permissions: {
+        canManageOrders: true,
+        'order.view': true,
+        'courier.booking': true,
+      },
+      phone: '01700000002',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    },
+    {
+      id: 'user-subadmin-inventory',
+      name: 'Inventory Manager',
+      email: 'inventory@rongdhonutrade.com',
+      role: 'sub_admin',
+      permissions: {
+        canManageProducts: true,
+        'product.view': true,
+        'product.update': true,
+      },
+      phone: '01700000003',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    },
+    {
+      id: 'test-user-update-only',
+      name: 'Product Updater',
+      email: 'updater@local.test',
+      role: 'admin',
+      permissions: {
+        'product.view': true,
+        'product.update': true,
+        'product.view_buying_price': false,
+        'product.manage_buying_price': false,
+      },
+      phone: '01700000004',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    },
+    {
+      id: 'test-user-view-only',
+      name: 'Product Viewer',
+      email: 'viewer@local.test',
+      role: 'admin',
+      permissions: {
+        'product.view': true,
+        'product.update': true,
+        'product.view_buying_price': true,
+        'product.manage_buying_price': false,
+      },
+      phone: '01700000005',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    },
+    {
+      id: 'test-user-financial-mgr',
+      name: 'Financial Manager',
+      email: 'finance@local.test',
+      role: 'admin',
+      permissions: {
+        'product.view': true,
+        'product.update': true,
+        'product.view_buying_price': true,
+        'product.manage_buying_price': true,
+      },
+      phone: '01700000006',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    },
+    {
+      id: 'user-cust-demo',
+      name: 'Customer Sakib',
+      email: 'customer@gmail.com',
+      role: 'customer',
+      permissions: {},
+      phone: '01700000007',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    },
+    {
+      id: 'test-customer-1',
+      name: 'Test Customer',
+      email: 'customer@local.test',
+      role: 'customer',
+      permissions: {},
+      phone: '01700000008',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    },
+  ];
 
   let devUsers: any[] = [
     ...devSuperAdminAccounts,
-    devStaffAccount,
+    ...devStaffAccounts,
     ...INITIAL_USERS.filter((u) => u.role !== 'super_admin'),
   ];
 
@@ -176,10 +265,60 @@ function localApiDevPlugin(): Plugin {
   });
   devUserPasswordHashes.set('admin', SEED_ADMIN_HASH);
   devUserPasswordHashes.set('superadmin', SEED_ADMIN_HASH);
+  devStaffAccounts.forEach((acc) => {
+    devUserPasswordHashes.set(acc.email.toLowerCase(), SEED_ADMIN_HASH);
+  });
 
   const computeDevPasswordSig = (hash: string): string => {
     if (!hash) return '';
     return nodeCrypto.createHash('sha256').update(hash).digest('hex').slice(0, 32);
+  };
+
+  /**
+   * Cryptographically signs an HMAC-SHA256 session JWT.
+   * Standard 3-part format (Header.Payload.Signature) matching production verifyAuthToken.
+   * Insecure dev-jwt-* tokens are strictly banned.
+   */
+  const signDevSessionToken = (payload: { userId: string; email: string; role: string; pwdSig?: string }, expiresInSeconds: number = 7 * 86400): string => {
+    const secret = process.env.ADMIN_SECRET as string;
+    const now = Math.floor(Date.now() / 1000);
+    const exp = now + expiresInSeconds;
+    const fullPayload = { ...payload, iat: now, exp };
+    const header = { alg: 'HS256', typ: 'JWT' };
+    const b64Header = Buffer.from(JSON.stringify(header)).toString('base64url');
+    const b64Payload = Buffer.from(JSON.stringify(fullPayload)).toString('base64url');
+    const message = `${b64Header}.${b64Payload}`;
+    const sig = nodeCrypto.createHmac('sha256', secret).update(message).digest('base64url');
+    return `${message}.${sig}`;
+  };
+
+  /**
+   * Cryptographically verifies an HMAC-SHA256 session JWT against the authoritative secret.
+   * Strictly rejects any token starting with dev-jwt-, dev-, mock-, or with invalid signature.
+   */
+  const verifyDevSessionToken = (token: string): any | null => {
+    if (!token || typeof token !== 'string') return null;
+    const trimmed = token.trim();
+    if (trimmed.startsWith('dev-jwt-') || trimmed.startsWith('dev-') || trimmed.startsWith('mock-') || !trimmed.includes('.')) {
+      return null;
+    }
+    const parts = trimmed.split('.');
+    if (parts.length !== 3) return null;
+    const [b64Header, b64Payload, sig] = parts;
+    const message = `${b64Header}.${b64Payload}`;
+    const secret = process.env.ADMIN_SECRET as string;
+    const expectedSig = nodeCrypto.createHmac('sha256', secret).update(message).digest('base64url');
+    if (sig.length !== expectedSig.length) return null;
+    const match = nodeCrypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expectedSig));
+    if (!match) return null;
+    try {
+      const payload = JSON.parse(Buffer.from(b64Payload, 'base64url').toString('utf-8'));
+      const now = Math.floor(Date.now() / 1000);
+      if (payload.exp && payload.exp < now) return null;
+      return payload;
+    } catch {
+      return null;
+    }
   };
   const devMedia = new Map<string, { buffer: Buffer; contentType: string }>();
   let devExpenses: any[] = [];
@@ -274,24 +413,12 @@ function localApiDevPlugin(): Plugin {
     }
 
     try {
-      let decoded: any = null;
-      if (token.startsWith('dev-jwt-')) {
-        decoded = JSON.parse(Buffer.from(token.replace('dev-jwt-', ''), 'base64').toString('utf-8'));
-      } else if (token.includes('.')) {
-        const parts = token.split('.');
-        if (parts.length === 3) {
-          decoded = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf-8'));
-        }
+      const decoded = verifyDevSessionToken(token);
+      if (!decoded) {
+        return {
+          error: { status: 401, body: { success: false, error: 'Unauthorized: Invalid or expired session token.' } },
+        };
       }
-
-      if (decoded) {
-        // exp in standard JWT is seconds, dev-jwt is ms
-        const expMs = decoded.exp > 10000000000 ? decoded.exp : decoded.exp * 1000;
-        if (expMs && expMs < Date.now()) {
-          return {
-            error: { status: 401, body: { success: false, error: 'Unauthorized: Session expired.' } },
-          };
-        }
 
         const email = (decoded.email || '').toLowerCase().trim();
         const userId = (decoded.userId || '').trim();
@@ -356,7 +483,6 @@ function localApiDevPlugin(): Plugin {
             granularPermissions,
           },
         };
-      }
     } catch {
       return {
         error: { status: 401, body: { success: false, error: 'Unauthorized: Invalid authentication session.' } },
@@ -1071,22 +1197,19 @@ function localApiDevPlugin(): Plugin {
             }
 
             const currentHash = devUserPasswordHashes.get(foundUser.email?.toLowerCase()) || storedHash || '';
-            const devToken = `dev-jwt-${Buffer.from(
-              JSON.stringify({
-                userId: foundUser.id,
-                email: foundUser.email || identifier,
-                role: foundUser.role || 'super_admin',
-                pwdSig: computeDevPasswordSig(currentHash),
-                exp: Date.now() + 7 * 86400 * 1000,
-              })
-            ).toString('base64')}`;
-            res.setHeader('Set-Cookie', buildDevAuthCookie(devToken, 7 * 86400));
+            const sessionToken = signDevSessionToken({
+              userId: foundUser.id,
+              email: foundUser.email || identifier,
+              role: foundUser.role || 'super_admin',
+              pwdSig: computeDevPasswordSig(currentHash),
+            });
+            res.setHeader('Set-Cookie', buildDevAuthCookie(sessionToken, 7 * 86400));
             res.statusCode = 200;
             return res.end(JSON.stringify({
               success: true,
               message: 'Authentication successful',
               user: formatDevUserResponse(foundUser),
-              token: devToken,
+              token: sessionToken,
             }));
           });
         }
@@ -1163,22 +1286,20 @@ function localApiDevPlugin(): Plugin {
             // Record successful registration
             recordDevRateAttempt(regIpSuccessKey, 3600);
 
-            const token = `dev-jwt-${Buffer.from(
-              JSON.stringify({
-                userId: newCustomer.id,
-                email: newCustomer.email,
-                role: 'customer',
-                pwdSig: computeDevPasswordSig(hashedCust),
-                exp: Date.now() + 7 * 86400 * 1000,
-              })
-            ).toString('base64')}`;
-            res.setHeader('Set-Cookie', buildDevAuthCookie(token, 7 * 86400));
+            const sessionToken = signDevSessionToken({
+              userId: newCustomer.id,
+              email: newCustomer.email,
+              role: 'customer',
+              pwdSig: computeDevPasswordSig(hashedCust),
+            });
+            res.setHeader('Set-Cookie', buildDevAuthCookie(sessionToken, 7 * 86400));
 
             res.statusCode = 201;
             return res.end(JSON.stringify({
               success: true,
               message: 'Account registered successfully.',
               user: newCustomer,
+              token: sessionToken,
             }));
           });
         }
@@ -1221,20 +1342,18 @@ function localApiDevPlugin(): Plugin {
               devUserPasswordHashes.set('superadmin', newHashed);
             }
 
-            const freshToken = `dev-jwt-${Buffer.from(
-              JSON.stringify({
-                userId: targetUser?.id || devSuperAdminAccounts[0]?.id || 'dev-super-admin-1',
-                email: targetUser?.email || targetEmail,
-                role: targetUser?.role || 'super_admin',
-                pwdSig: computeDevPasswordSig(newHashed),
-                exp: Date.now() + 7 * 86400 * 1000,
-              })
-            ).toString('base64')}`;
+            const freshToken = signDevSessionToken({
+              userId: targetUser?.id || devSuperAdminAccounts[0]?.id || 'dev-super-admin-1',
+              email: targetUser?.email || targetEmail,
+              role: targetUser?.role || 'super_admin',
+              pwdSig: computeDevPasswordSig(newHashed),
+            });
             res.setHeader('Set-Cookie', buildDevAuthCookie(freshToken, 7 * 86400));
             res.statusCode = 200;
             return res.end(JSON.stringify({
               success: true,
               message: 'Password updated successfully.',
+              token: freshToken,
             }));
           });
         }
@@ -2506,13 +2625,18 @@ function localApiDevPlugin(): Plugin {
             const authResult = requireDevAuth(req);
             if (authResult.error) return sendDevError(res, authResult.error);
 
+            const isSelf = authResult.auth!.user.id === usrId;
+            if (!isSelf) {
+              const permErr = requireDevPermission(authResult, 'user.manage');
+              if (permErr) return sendDevError(res, permErr);
+            }
+
             const idx = devUsers.findIndex((u) => u.id === usrId);
             if (idx < 0) {
               res.statusCode = 404;
               return res.end(JSON.stringify({ success: false, error: 'User not found' }));
             }
             const targetUser = devUsers[idx];
-            const isSelf = authResult.auth!.user.id === usrId;
             const isTargetSuper = targetUser.role === 'super_admin' || devSuperAdminEmails.includes(targetUser.email?.toLowerCase());
             if (isTargetSuper && authResult.auth!.role !== 'super_admin') {
               return sendDevError(res, { status: 403, body: { success: false, error: 'Forbidden: Super Administrator account cannot be modified by other users.' } });
@@ -2523,17 +2647,19 @@ function localApiDevPlugin(): Plugin {
               return sendDevError(res, { status: 403, body: { success: false, error: 'Forbidden: Only Super Administrator can modify administrative accounts.' } });
             }
 
-            if (!isSelf) {
-              const permErr = requireDevPermission(authResult, 'user.manage');
-              if (permErr) return sendDevError(res, permErr);
-            }
-
             return readBody(async (body) => {
               const updates = body.updates || body.user || body || {};
 
               delete updates.id;
               delete updates.createdAt;
               delete updates.updatedAt;
+
+              if (isSelf && authResult.auth!.role !== 'super_admin') {
+                delete updates.role;
+                delete body.role;
+                delete updates.permissions;
+                delete body.permissions;
+              }
 
               // Strict Privilege Escalation Protection:
               // Non-super_admin accounts can NEVER modify roles or permissions for any account (including their own).
@@ -2624,15 +2750,12 @@ function localApiDevPlugin(): Plugin {
               if (isSelf && (isChangingPassword || isChangingEmail)) {
                 const freshHash = devUserPasswordHashes.get(devUsers[idx].email.toLowerCase());
                 const freshSig = freshHash ? computeDevPasswordSig(freshHash) : '';
-                const freshToken = `dev-jwt-${Buffer.from(
-                  JSON.stringify({
-                    userId: devUsers[idx].id,
-                    email: devUsers[idx].email,
-                    role: devUsers[idx].role,
-                    pwdSig: freshSig,
-                    exp: Date.now() + 7 * 86400 * 1000,
-                  })
-                ).toString('base64')}`;
+                const freshToken = signDevSessionToken({
+                  userId: devUsers[idx].id,
+                  email: devUsers[idx].email,
+                  role: devUsers[idx].role,
+                  pwdSig: freshSig,
+                });
                 res.setHeader('Set-Cookie', buildDevAuthCookie(freshToken, 7 * 86400));
               }
 

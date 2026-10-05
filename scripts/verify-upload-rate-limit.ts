@@ -12,6 +12,8 @@
  * 8. Oversized file (HTTP 413)
  */
 
+import { getTestAdminToken, getTestStaffToken, getTestCustomerToken } from './test-auth-helper';
+
 async function runUploadRateLimitTests() {
   console.log('===========================================================');
   console.log('STARTING UPLOAD RATE LIMIT & STORAGE ABUSE VERIFICATION');
@@ -31,22 +33,11 @@ async function runUploadRateLimitTests() {
   ]);
   const validDataUrl = `data:image/png;base64,${Buffer.from(validPngBytes).toString('base64')}`;
 
-  // Seeded accounts from seedData.ts
-  const adminToken = `dev-jwt-${Buffer.from(
-    JSON.stringify({ userId: 'dev-super-admin-1', email: 'dev-superadmin@local.test', role: 'super_admin', exp: Date.now() + 86400000 })
-  ).toString('base64')}`;
-
-  const staffToken = `dev-jwt-${Buffer.from(
-    JSON.stringify({ userId: 'user-subadmin-staff', email: 'staff@rongdhonutrade.com', role: 'sub_admin', exp: Date.now() + 86400000 })
-  ).toString('base64')}`;
-
-  const rateLimitTargetStaffToken = `dev-jwt-${Buffer.from(
-    JSON.stringify({ userId: 'user-subadmin-inventory', email: 'inventory@rongdhonutrade.com', role: 'sub_admin', exp: Date.now() + 86400000 })
-  ).toString('base64')}`;
-
-  const customerToken = `dev-jwt-${Buffer.from(
-    JSON.stringify({ userId: 'user-cust-demo', email: 'customer@gmail.com', role: 'customer', exp: Date.now() + 86400000 })
-  ).toString('base64')}`;
+  // Legitimate authenticated session tokens
+  const adminToken = await getTestAdminToken(baseUrl);
+  const staffToken = await getTestStaffToken(baseUrl, 'staff@rongdhonutrade.com');
+  const rateLimitTargetStaffToken = await getTestStaffToken(baseUrl, 'inventory@rongdhonutrade.com');
+  const customerToken = await getTestCustomerToken(baseUrl, 'customer@gmail.com');
 
   // =========================================================================
   // TEST 1: NORMAL ADMIN UPLOAD

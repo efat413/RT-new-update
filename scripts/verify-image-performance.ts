@@ -15,6 +15,7 @@ import {
   isValidMediaKey,
   getSafeMediaHeaders,
 } from '../src/server/imageSecurity';
+import { getTestAdminToken } from './test-auth-helper';
 
 async function runImagePerformanceTests() {
   console.log('===========================================================');
@@ -104,7 +105,7 @@ async function runImagePerformanceTests() {
   // 6. TEST LIVE SERVER MEDIA ENDPOINT WITH AND WITHOUT RESPONSIVE QUERY
   console.log('\n[TEST 6] Live Dev Server /api/media Endpoint Testing...');
   // Upload a valid high-resolution 600x600 image to test genuine resizing
-  let adminToken = `dev-jwt-${Buffer.from(JSON.stringify({ userId: 'dev-super-admin-1', email: 'dev-superadmin@local.test', role: 'super_admin', exp: Date.now() + 86400000 })).toString('base64')}`;
+  let adminToken = await getTestAdminToken(baseUrl);
 
   const sharpModule = await import('sharp');
   const sharp = (sharpModule as any).default || sharpModule;

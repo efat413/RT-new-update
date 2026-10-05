@@ -10,6 +10,7 @@
  */
 
 import { verifyCourierWebhookAuth, computeHmacSha256Hex } from '../src/server/webhookAuth';
+import { getTestAdminToken } from './test-auth-helper';
 
 async function runSecuritySeparationTests() {
   console.log('================================================================');
@@ -339,14 +340,7 @@ async function runSecuritySeparationTests() {
   // ----------------------------------------------------------------
   console.log('\n--- PART 3: LEGITIMATE ADMIN AUTHENTICATION VERIFICATION ---');
 
-  const adminToken = `dev-jwt-${Buffer.from(
-    JSON.stringify({
-      userId: 'dev-super-admin-1',
-      email: 'dev-superadmin@local.test',
-      role: 'super_admin',
-      exp: Date.now() + 86400000,
-    })
-  ).toString('base64')}`;
+  const adminToken = await getTestAdminToken(baseUrl);
 
   // 3.1 Verify /api/auth/me returns super_admin
   const adminMeRes = await fetch(`${baseUrl}/api/auth/me`, {
@@ -368,13 +362,13 @@ async function runSecuritySeparationTests() {
     '3.2 Authorized Admin can access webhook management endpoint /api/courier/webhooks (HTTP 200)'
   );
 
-  // 3.3 Verify /api/admin/orders works for authenticated admin
-  const adminOrdersRes = await fetch(`${baseUrl}/api/admin/orders`, {
+  // 3.3 Verify /api/orders works for authenticated admin
+  const adminOrdersRes = await fetch(`${baseUrl}/api/orders`, {
     headers: { Authorization: `Bearer ${adminToken}` },
   });
   assert(
     adminOrdersRes.status === 200,
-    '3.3 Authorized Admin can access /api/admin/orders (HTTP 200)'
+    '3.3 Authorized Admin can access /api/orders (HTTP 200)'
   );
 
   console.log('\n================================================================');

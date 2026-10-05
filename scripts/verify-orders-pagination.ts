@@ -18,6 +18,7 @@ import {
   getPaginatedOrders,
 } from '../src/server/db';
 import type { D1Database, OrderRow } from '../src/server/types';
+import { getTestAdminToken, getTestCustomerToken } from './test-auth-helper';
 
 function assert(condition: boolean, message: string) {
   if (!condition) {
@@ -297,24 +298,14 @@ async function runTests() {
   assert(unauthRes.status === 401, `Unauthenticated GET /api/orders returns 401 (got ${unauthRes.status})`);
 
   // 3.2 Verify customer role is forbidden (403)
-  const customerToken = 'dev-jwt-' + Buffer.from(JSON.stringify({
-    userId: 'user-cust-demo',
-    email: 'customer@gmail.com',
-    role: 'customer',
-    exp: Date.now() + 3600000,
-  })).toString('base64');
+  const customerToken = await getTestCustomerToken(baseUrl, 'customer@gmail.com');
   const custRes = await fetch(`${baseUrl}/api/orders`, {
     headers: { Cookie: `auth_token=${customerToken}` },
   });
   assert(custRes.status === 403, `Customer GET /api/orders returns 403 Forbidden (got ${custRes.status})`);
 
   // 3.3 Authenticated Super Admin live API tests
-  const adminToken = 'dev-jwt-' + Buffer.from(JSON.stringify({
-    userId: 'user-admin-01',
-    email: 'admin',
-    role: 'super_admin',
-    exp: Date.now() + 3600000,
-  })).toString('base64');
+  const adminToken = await getTestAdminToken(baseUrl);
   const cookieHeader = `auth_token=${adminToken}`;
 
   // Live Default Page Size

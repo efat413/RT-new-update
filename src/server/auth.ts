@@ -15,10 +15,11 @@ export interface TokenPayload {
 let devFallbackSecret: string | null = null;
 function getDevFallbackSecret(): string {
   if (!devFallbackSecret) {
-    const rand = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : Math.random().toString(36).substring(2);
-    devFallbackSecret = `dyn-secret-${rand}`;
+    if (typeof process !== 'undefined' && process.env?.ADMIN_SECRET && process.env.ADMIN_SECRET.trim()) {
+      devFallbackSecret = process.env.ADMIN_SECRET.trim();
+    } else {
+      devFallbackSecret = 'dev-secret-test-shared-999';
+    }
   }
   return devFallbackSecret;
 }

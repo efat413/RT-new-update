@@ -5,6 +5,7 @@
 
 import { computeHmacSha256Hex, computeWebhookFingerprint, verifyCourierWebhookAuth } from '../src/server/webhookAuth';
 import { getResponsiveImageUrl, getResponsiveSrcSet, isInternalMediaUrl, isUnsplashUrl } from '../src/utils/responsiveImage';
+import { loginAndGetToken, getTestAdminToken, getTestCustomerToken } from './test-auth-helper';
 
 async function runHardeningVerification() {
   console.log('================================================================');
@@ -31,69 +32,12 @@ async function runHardeningVerification() {
   // ================================================================
   console.log('--- 1. BUYING PRICE PERMISSION SEPARATION ---');
 
-  // Helper tokens
-  const tokenUpdateOnly = `dev-jwt-${Buffer.from(
-    JSON.stringify({
-      userId: 'test-user-update-only',
-      email: 'updater@local.test',
-      role: 'admin',
-      permissions: {
-        'product.view': true,
-        'product.update': true,
-        'product.view_buying_price': false,
-        'product.manage_buying_price': false,
-      },
-      exp: Date.now() + 86400000,
-    })
-  ).toString('base64')}`;
-
-  const tokenUpdateAndViewOnly = `dev-jwt-${Buffer.from(
-    JSON.stringify({
-      userId: 'test-user-view-only',
-      email: 'viewer@local.test',
-      role: 'admin',
-      permissions: {
-        'product.view': true,
-        'product.update': true,
-        'product.view_buying_price': true,
-        'product.manage_buying_price': false,
-      },
-      exp: Date.now() + 86400000,
-    })
-  ).toString('base64')}`;
-
-  const tokenFinancialManager = `dev-jwt-${Buffer.from(
-    JSON.stringify({
-      userId: 'test-user-financial-mgr',
-      email: 'finance@local.test',
-      role: 'admin',
-      permissions: {
-        'product.view': true,
-        'product.update': true,
-        'product.view_buying_price': true,
-        'product.manage_buying_price': true,
-      },
-      exp: Date.now() + 86400000,
-    })
-  ).toString('base64')}`;
-
-  const tokenSuperAdmin = `dev-jwt-${Buffer.from(
-    JSON.stringify({
-      userId: 'dev-super-admin-1',
-      email: 'dev-superadmin@local.test',
-      role: 'super_admin',
-      exp: Date.now() + 86400000,
-    })
-  ).toString('base64')}`;
-
-  const tokenCustomer = `dev-jwt-${Buffer.from(
-    JSON.stringify({
-      userId: 'test-customer-1',
-      email: 'sakib@gmail.com',
-      role: 'customer',
-      exp: Date.now() + 86400000,
-    })
-  ).toString('base64')}`;
+  // Helper tokens authenticated legitimately
+  const tokenUpdateOnly = await loginAndGetToken('updater@local.test', 'admin', baseUrl);
+  const tokenUpdateAndViewOnly = await loginAndGetToken('viewer@local.test', 'admin', baseUrl);
+  const tokenFinancialManager = await loginAndGetToken('finance@local.test', 'admin', baseUrl);
+  const tokenSuperAdmin = await getTestAdminToken(baseUrl);
+  const tokenCustomer = await getTestCustomerToken(baseUrl, 'customer@local.test');
 
   // Get initial state of a product
   const getProductRes = await fetch(`${baseUrl}/api/products/prod-wallet-01`, {
@@ -158,7 +102,7 @@ async function runHardeningVerification() {
   );
 
   // 1.3 Authorized Financial Manager (with product.manage_buying_price) -> CAN modify buyingPrice
-  const targetNewBuyingPrice = 1250;
+  const targetNewBuyingPrice = (originalBuyingPrice || 350) + 100;
   const financeMgrRes = await fetch(`${baseUrl}/api/products/prod-wallet-01`, {
     method: 'PUT',
     headers: {

@@ -4,6 +4,8 @@
  * Rongdhonu Trade
  */
 
+import { getTestAdminToken } from './test-auth-helper';
+
 async function runProductApiPerformanceVerification() {
   console.log('================================================================');
   console.log('STARTING PUBLIC PRODUCT API PERFORMANCE & PAGINATION VERIFICATION');
@@ -25,14 +27,7 @@ async function runProductApiPerformanceVerification() {
   const baseUrl = 'http://127.0.0.1:3000';
 
   // Admin token
-  const adminToken = `dev-jwt-${Buffer.from(
-    JSON.stringify({
-      userId: 'dev-super-admin-1',
-      email: 'dev-superadmin@local.test',
-      role: 'super_admin',
-      exp: Date.now() + 86400000,
-    })
-  ).toString('base64')}`;
+  const adminToken = await getTestAdminToken(baseUrl);
 
   // ================================================================
   // 1. PUBLIC STOREFRONT REQUESTS - SAFE DEFAULTS & HARD MAXIMUM LIMITS

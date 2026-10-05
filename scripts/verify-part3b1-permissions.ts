@@ -12,6 +12,7 @@
 
 import { hasUserPermission, canUser } from '../src/utils/permissions';
 import type { UserAccount } from '../src/types';
+import { getTestCustomerToken, getTestStaffToken } from './test-auth-helper';
 
 let passed = 0;
 let failed = 0;
@@ -164,7 +165,7 @@ async function runTests() {
   console.log('\nTest 6: Backend Authorization / LocalStorage Stale Protection');
 
   // Simulate API authorization check with an unauthorized customer bearer token
-  const customerToken = `dev-jwt-${Buffer.from(JSON.stringify({ email: 'customer@gmail.com', role: 'customer', exp: Date.now() + 3600000 })).toString('base64')}`;
+  const customerToken = await getTestCustomerToken('http://localhost:3000');
 
   try {
     const res = await fetch('http://localhost:3000/api/products', {
@@ -186,7 +187,7 @@ async function runTests() {
   }
 
   // Sub Admin attempting Super Admin action (e.g. creating/managing users)
-  const subAdminToken = `dev-jwt-${Buffer.from(JSON.stringify({ email: 'orders@rongdhonutrade.com', role: 'sub_admin', exp: Date.now() + 3600000 })).toString('base64')}`;
+  const subAdminToken = await getTestStaffToken('http://localhost:3000');
   try {
     const res = await fetch('http://localhost:3000/api/users', {
       method: 'POST',

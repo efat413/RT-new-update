@@ -1,5 +1,6 @@
 import { deleteUserFromD1 } from '../src/server/db';
 import { hashPassword, verifyPassword } from '../src/server/auth';
+import { getTestAdminToken } from './test-auth-helper';
 
 async function runTests() {
   console.log('--- STARTING ACCOUNT DELETION VERIFICATION ---');
@@ -46,31 +47,11 @@ async function runTests() {
 
   // Test 2: API Login as Super Admin and create a test Admin account
   console.log('Test 2: Super Admin login and test Admin creation');
-  const superLoginRes = await fetch('http://localhost:3000/api/auth/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      usernameOrEmail: 'cmt413uec@gmail.com',
-      password: 'password', // or seed admin password
-    }),
-  });
-  
-  // Also support cookie/token auth
-  let authCookie = superLoginRes.headers.get('set-cookie') || '';
-
-  // If password needed reset or not standard in test, let's create a direct Super Admin auth token
-  const testSuperToken = `dev-jwt-${Buffer.from(
-    JSON.stringify({
-      userId: 'super-admin-1',
-      email: 'cmt413uec@gmail.com',
-      role: 'super_admin',
-      exp: Date.now() + 86400000,
-    })
-  ).toString('base64')}`;
+  const testSuperToken = await getTestAdminToken('http://localhost:3000');
 
   const superHeaders = {
     'Content-Type': 'application/json',
-    'Cookie': authCookie || `rongdhonu_auth_token=${testSuperToken}`,
+    'Cookie': `auth_token=${testSuperToken}`,
     'Authorization': `Bearer ${testSuperToken}`,
   };
 

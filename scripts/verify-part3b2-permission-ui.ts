@@ -20,6 +20,7 @@ import {
   isSuperAdminOnlyPermission,
 } from '../src/server/permissions';
 import type { UserAccount } from '../src/types';
+import { getTestAdminToken, getTestStaffToken } from './test-auth-helper';
 
 let passed = 0;
 let failed = 0;
@@ -121,8 +122,8 @@ async function runTests() {
   // 3. Live Server API: Loading Permissions via GET /api/users/:id/permissions
   // ----------------------------------------------------------------
   console.log('\n3. Live Server API: Loading Permissions (GET /api/users/:id/permissions):');
-  const superAdminToken = `dev-jwt-${Buffer.from(JSON.stringify({ email: 'dev-superadmin@local.test', role: 'super_admin', exp: Date.now() + 3600000 })).toString('base64')}`;
-  const subAdminToken = `dev-jwt-${Buffer.from(JSON.stringify({ email: 'orders@rongdhonutrade.com', role: 'sub_admin', exp: Date.now() + 3600000 })).toString('base64')}`;
+  const superAdminToken = await getTestAdminToken('http://localhost:3000');
+  const subAdminToken = await getTestStaffToken('http://localhost:3000', 'orders@rongdhonutrade.com');
 
   try {
     const res = await fetch(`http://localhost:3000/api/users/${encodeURIComponent(subAdminUser.id)}/permissions`, {

@@ -4,6 +4,8 @@
  * Rongdhonu Trade
  */
 
+import { getTestAdminToken } from './test-auth-helper';
+
 async function runInventoryConcurrencyVerification() {
   console.log('================================================================');
   console.log('STARTING INVENTORY CONCURRENCY & STOCK ATOMICITY VERIFICATION');
@@ -188,14 +190,7 @@ async function runInventoryConcurrencyVerification() {
 
   const baseUrl = 'http://127.0.0.1:3000';
 
-  const adminToken = `dev-jwt-${Buffer.from(
-    JSON.stringify({
-      userId: 'dev-super-admin-1',
-      email: 'dev-superadmin@local.test',
-      role: 'super_admin',
-      exp: Date.now() + 86400000,
-    })
-  ).toString('base64')}`;
+  const adminToken = await getTestAdminToken(baseUrl);
 
   // 1. Get an existing product and check initial stock
   const prodRes = await fetch(`${baseUrl}/api/products/prod-wallet-01`);

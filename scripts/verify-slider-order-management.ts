@@ -1,4 +1,5 @@
 import assert from 'node:assert';
+import { getTestAdminToken, getTestStaffToken } from './test-auth-helper';
 
 const BASE_URL = 'http://localhost:3000';
 
@@ -20,20 +21,9 @@ async function runTests() {
     }
   }
 
-  // Admin tokens
-  const adminToken = `dev-jwt-${Buffer.from(JSON.stringify({
-    userId: 'super-admin-1',
-    email: 'cmt413uec@gmail.com',
-    role: 'super_admin',
-    exp: Date.now() + 86400000,
-  })).toString('base64')}`;
-
-  const staffToken = `dev-jwt-${Buffer.from(JSON.stringify({
-    userId: 'user-subadmin-staff',
-    email: 'staff@rongdhonutrade.com',
-    role: 'sub_admin',
-    exp: Date.now() + 86400000,
-  })).toString('base64')}`;
+  // Admin tokens obtained via legitimate auth
+  const adminToken = await getTestAdminToken(BASE_URL);
+  const staffToken = await getTestStaffToken(BASE_URL);
 
   // Initial fetch of sliders
   console.log('--- 1. INITIAL SLIDERS ORDER VERIFICATION ---');

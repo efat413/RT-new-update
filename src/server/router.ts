@@ -3454,6 +3454,18 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         delete updates.updated_at;
 
         // Strict Privilege Escalation Protection:
+        if (isSelf && auth!.role !== 'super_admin') {
+          delete updates.role;
+          delete updates.permissions;
+        }
+
+        if (updates.role === 'super_admin' && auth!.role !== 'super_admin') {
+          return jsonResponse(
+            { success: false, error: 'Forbidden: Cannot promote account to Super Administrator.' },
+            403
+          );
+        }
+
         // Non-super_admin accounts can NEVER modify roles or permissions for any account (including their own).
         if (auth!.role !== 'super_admin') {
           const hasRoleField = updates.role !== undefined || body.role !== undefined;

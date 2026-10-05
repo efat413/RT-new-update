@@ -3,6 +3,8 @@
  * Tests Cache-Control and Vary headers across all public, authenticated, static, and SSR endpoints.
  */
 
+import { getTestAdminToken } from './test-auth-helper';
+
 async function testCloudflareCaching() {
   const baseUrl = 'http://localhost:3000';
   console.log('--- Starting Cloudflare Caching Verification Suite ---');
@@ -99,14 +101,7 @@ async function testCloudflareCaching() {
 
   // 6. Security Check: Authenticated Requests MUST NEVER be Cached Publicly
   console.log('\n[6] Verifying Authenticated Responses are NOT Publicly Cached');
-  const devToken = `dev-jwt-${Buffer.from(
-    JSON.stringify({
-      userId: 'dev-super-admin-1',
-      email: 'dev-superadmin@local.test',
-      role: 'super_admin',
-      exp: Date.now() + 86400000,
-    })
-  ).toString('base64')}`;
+  const devToken = await getTestAdminToken(baseUrl);
 
   const authHeaders = {
     'Authorization': `Bearer ${devToken}`,

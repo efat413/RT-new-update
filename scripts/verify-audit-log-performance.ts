@@ -5,6 +5,7 @@
  */
 
 import { getPaginatedAuditLogsFromD1 } from '../src/server/db';
+import { getTestAdminToken, getTestStaffToken, getTestCustomerToken } from './test-auth-helper';
 
 async function runAuditLogPerformanceVerification() {
   console.log('================================================================');
@@ -119,35 +120,9 @@ async function runAuditLogPerformanceVerification() {
 
   const baseUrl = 'http://127.0.0.1:3000';
 
-  const superAdminToken = `dev-jwt-${Buffer.from(
-    JSON.stringify({
-      userId: 'dev-super-admin-1',
-      email: 'dev-superadmin@local.test',
-      role: 'super_admin',
-      exp: Date.now() + 86400000,
-    })
-  ).toString('base64')}`;
-
-  const staffWithoutAuditToken = `dev-jwt-${Buffer.from(
-    JSON.stringify({
-      userId: 'user-subadmin-staff',
-      email: 'staff@rongdhonutrade.com',
-      role: 'sub_admin',
-      permissions: {
-        'audit_log.view': false,
-      },
-      exp: Date.now() + 86400000,
-    })
-  ).toString('base64')}`;
-
-  const customerToken = `dev-jwt-${Buffer.from(
-    JSON.stringify({
-      userId: 'test-customer-1',
-      email: 'customer@local.test',
-      role: 'customer',
-      exp: Date.now() + 86400000,
-    })
-  ).toString('base64')}`;
+  const superAdminToken = await getTestAdminToken(baseUrl);
+  const staffWithoutAuditToken = await getTestStaffToken(baseUrl);
+  const customerToken = await getTestCustomerToken(baseUrl);
 
   // B.1 Unauthenticated request -> HTTP 401 Unauthorized
   const resB1 = await fetch(`${baseUrl}/api/admin/audit-logs`);

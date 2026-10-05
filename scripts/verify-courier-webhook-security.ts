@@ -7,6 +7,7 @@ import { controlledMergeSettings } from '../src/server/db';
 import { computePasswordSignature } from '../src/server/auth';
 import { INITIAL_SETTINGS } from '../src/data/seedData';
 import { verifyCourierWebhookAuth, computeHmacSha256Hex } from '../src/server/webhookAuth';
+import { getTestAdminToken, getTestStaffToken } from './test-auth-helper';
 
 async function runCourierSecurityTests() {
   console.log('================================================================');
@@ -196,7 +197,7 @@ async function runCourierSecurityTests() {
   );
 
   // 4.4 GET /api/courier/webhooks with non-privileged staff auth -> 403 Forbidden
-  const staffToken = `dev-jwt-${Buffer.from(JSON.stringify({ userId: 'user-subadmin-staff', email: 'staff@rongdhonutrade.com', role: 'sub_admin', exp: Date.now() + 86400000 })).toString('base64')}`;
+  const staffToken = await getTestStaffToken(baseUrl);
   const customerGetRes = await fetch(`${baseUrl}/api/courier/webhooks`, {
     headers: { Authorization: `Bearer ${staffToken}` },
   });
@@ -206,7 +207,7 @@ async function runCourierSecurityTests() {
   );
 
   // 4.5 GET /api/courier/webhooks with admin auth -> 200 with masked secrets
-  const adminToken = `dev-jwt-${Buffer.from(JSON.stringify({ userId: 'dev-super-admin-1', email: 'dev-superadmin@local.test', role: 'super_admin', exp: Date.now() + 86400000 })).toString('base64')}`;
+  const adminToken = await getTestAdminToken(baseUrl);
   const adminGetRes = await fetch(`${baseUrl}/api/courier/webhooks`, {
     headers: { Authorization: `Bearer ${adminToken}` },
   });

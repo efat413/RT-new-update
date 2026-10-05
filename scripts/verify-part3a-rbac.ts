@@ -26,6 +26,7 @@ import {
   sanitizeOrderForRole,
 } from '../src/server/db';
 import type { Product, Order } from '../src/types';
+import { getTestAdminToken, getTestCustomerToken } from './test-auth-helper';
 
 function assert(condition: boolean, message: string) {
   if (!condition) {
@@ -260,17 +261,18 @@ async function runTests() {
 
       // 2. Login as Super Admin
       let superToken = '';
-      const loginRes = await fetch('http://localhost:3000/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: 'admin', password: process.env.DEV_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || '' }),
-      });
-      if (loginRes.ok) {
-        const loginData = await loginRes.json();
-        superToken = loginData.token;
-      }
-      if (!superToken) {
-        superToken = `dev-jwt-${Buffer.from(JSON.stringify({ userId: 'dev-super-admin-1', email: 'dev-superadmin@local.test', role: 'super_admin', exp: Date.now() + 86400000 })).toString('base64')}`;
+      try {
+        superToken = await getTestAdminToken('http://localhost:3000');
+      } catch (e) {
+        const loginRes = await fetch('http://localhost:3000/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: 'admin', password: process.env.DEV_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || 'admin' }),
+        });
+        if (loginRes.ok) {
+          const loginData = await loginRes.json();
+          superToken = loginData.token;
+        }
       }
       assert(Boolean(superToken), 'Received auth token for Super Admin');
 
@@ -286,17 +288,18 @@ async function runTests() {
 
       // 4. Login as customer
       let custToken = '';
-      const custLoginRes = await fetch('http://localhost:3000/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: 'customer@gmail.com', password: process.env.CUSTOMER_PASSWORD || '' }),
-      });
-      if (custLoginRes.ok) {
-        const custData = await custLoginRes.json();
-        custToken = custData.token;
-      }
-      if (!custToken) {
-        custToken = `dev-jwt-${Buffer.from(JSON.stringify({ userId: 'user-cust-test', email: 'customer@gmail.com', role: 'customer', exp: Date.now() + 86400000 })).toString('base64')}`;
+      try {
+        custToken = await getTestCustomerToken('http://localhost:3000');
+      } catch (e) {
+        const custLoginRes = await fetch('http://localhost:3000/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: 'customer@gmail.com', password: process.env.CUSTOMER_PASSWORD || 'admin' }),
+        });
+        if (custLoginRes.ok) {
+          const custData = await custLoginRes.json();
+          custToken = custData.token;
+        }
       }
       assert(Boolean(custToken), 'Received auth token for Customer');
 

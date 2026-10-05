@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { getTestAdminToken } from './test-auth-helper';
 
 async function runFeaturedProductsVerification() {
   const baseUrl = 'http://localhost:3000';
@@ -59,14 +60,7 @@ async function runFeaturedProductsVerification() {
 
   // 4. Authenticate as Super Admin
   console.log('\n[TEST 4] Authenticating as Admin/Super Admin...');
-  const devToken = `dev-jwt-${Buffer.from(
-    JSON.stringify({
-      userId: 'dev-super-admin-1',
-      email: 'dev-superadmin@local.test',
-      role: 'super_admin',
-      exp: Date.now() + 86400000,
-    })
-  ).toString('base64')}`;
+  const devToken = await getTestAdminToken(baseUrl);
 
   const authHeaders = {
     'Authorization': `Bearer ${devToken}`,
