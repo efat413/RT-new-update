@@ -928,6 +928,16 @@ function escapeHtmlAttr(str: string): string {
 }
 
 /**
+ * Safely serializes an object to JSON for direct injection inside an HTML <script> block.
+ * Replaces '<' with '\u003c' and '>' with '\u003e' to prevent HTML script breakout / XSS.
+ */
+export function safeJsonLdStringify(data: any): string {
+  return JSON.stringify(data, null, 2)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e');
+}
+
+/**
  * Injects dynamic product SEO tags, canonical URL, OpenGraph, Twitter Cards, Schema.org,
  * and semantic crawler-fallback body HTML into initial HTML response.
  */
@@ -939,7 +949,7 @@ export function injectProductSEOIntoHtml(
 ): string {
   const meta = getProductSEOMetadata(product, siteName);
   const schema = generateProductSchema(product, categoryName, siteName);
-  const schemaScript = `<script type="application/ld+json" id="schema-product">${JSON.stringify(schema, null, 2)}</script>`;
+  const schemaScript = `<script type="application/ld+json" id="schema-product">${safeJsonLdStringify(schema)}</script>`;
 
   let modified = html;
 
@@ -1043,7 +1053,7 @@ export function injectCategorySEOIntoHtml(
     { name: category.name, url: canonicalUrl },
   ];
   const breadcrumbsSchema = generateBreadcrumbSchema(breadcrumbs);
-  const breadcrumbsScript = `<script type="application/ld+json" id="schema-breadcrumbs">${JSON.stringify(breadcrumbsSchema, null, 2)}</script>`;
+  const breadcrumbsScript = `<script type="application/ld+json" id="schema-breadcrumbs">${safeJsonLdStringify(breadcrumbsSchema)}</script>`;
 
   const categoryCollectionSchema = {
     '@context': 'https://schema.org',
@@ -1053,7 +1063,7 @@ export function injectCategorySEOIntoHtml(
     url: canonicalUrl,
     breadcrumb: breadcrumbsSchema,
   };
-  const categoryCollectionScript = `<script type="application/ld+json" id="schema-category-collection">${JSON.stringify(categoryCollectionSchema, null, 2)}</script>`;
+  const categoryCollectionScript = `<script type="application/ld+json" id="schema-category-collection">${safeJsonLdStringify(categoryCollectionSchema)}</script>`;
 
   let modified = html;
 

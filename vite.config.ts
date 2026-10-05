@@ -1322,6 +1322,22 @@ function localApiDevPlugin(): Plugin {
           return res.end();
         }
 
+        // Strict CSRF and Origin Validation on mutating requests
+        if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+          const isWebhook = url.pathname.startsWith('/api/courier/webhook') || url.pathname.startsWith('/api/steadfast/webhook');
+          if (!isWebhook) {
+            if (reqOrigin && !isOriginAllowed) {
+              res.statusCode = 403;
+              return res.end(JSON.stringify({ success: false, error: 'Forbidden: Cross-origin mutation rejected by CSRF policy.' }));
+            }
+            const secFetchSite = ((req.headers['sec-fetch-site'] || '') as string).toLowerCase();
+            if (secFetchSite === 'cross-site' && !isOriginAllowed) {
+              res.statusCode = 403;
+              return res.end(JSON.stringify({ success: false, error: 'Forbidden: Cross-site request rejected by CSRF policy.' }));
+            }
+          }
+        }
+
         // Helper to read JSON request body
         const readBody = (callback: (body: any) => void) => {
           let raw = '';

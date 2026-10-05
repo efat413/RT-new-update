@@ -18,7 +18,9 @@ function getDevFallbackSecret(): string {
     if (typeof process !== 'undefined' && process.env?.ADMIN_SECRET && process.env.ADMIN_SECRET.trim()) {
       devFallbackSecret = process.env.ADMIN_SECRET.trim();
     } else {
-      devFallbackSecret = 'dev-secret-test-shared-999';
+      const randBytes = new Uint8Array(32);
+      crypto.getRandomValues(randBytes);
+      devFallbackSecret = `dev-ephemeral-${bufferToHex(randBytes.buffer)}`;
     }
   }
   return devFallbackSecret;

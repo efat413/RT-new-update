@@ -1279,6 +1279,47 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       });
     }
 
+    // Strict CSRF and Origin Validation on mutating state-changing requests (POST, PUT, PATCH, DELETE)
+    if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+      const isExternalWebhook =
+        path.startsWith('/api/courier/webhook') ||
+        path.startsWith('/api/steadfast/webhook');
+
+      if (!isExternalWebhook) {
+        const origin = request.headers.get('Origin')?.trim();
+        const secFetchSite = (request.headers.get('sec-fetch-site') || '').toLowerCase();
+        const cors = getCorsHeaders(request, env);
+
+        // If Origin header is sent by browser, it MUST match an authorized CORS origin
+        if (origin && !cors['Access-Control-Allow-Origin']) {
+          return new Response(
+            JSON.stringify({ success: false, error: 'Forbidden: Cross-origin mutation rejected by CSRF policy.' }),
+            {
+              status: 403,
+              headers: {
+                'Content-Type': 'application/json',
+                'Vary': 'Origin',
+              },
+            }
+          );
+        }
+
+        // If sec-fetch-site is explicitly cross-site and not trusted, reject immediately
+        if (secFetchSite === 'cross-site' && !cors['Access-Control-Allow-Origin']) {
+          return new Response(
+            JSON.stringify({ success: false, error: 'Forbidden: Cross-site request rejected by CSRF policy.' }),
+            {
+              status: 403,
+              headers: {
+                'Content-Type': 'application/json',
+                'Vary': 'Origin',
+              },
+            }
+          );
+        }
+      }
+    }
+
     // ==========================================
     // 0. HEALTH CHECK (Public production health check: minimal information)
     // ==========================================
@@ -1378,13 +1419,30 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       // Brute-force rate limit protection (distributed D1 + memory)
       const isDev = isDevEnvironment(env);
       const clientIp = getClientIp(request, isDev);
+      const ipRateKey = `login:ip:${clientIp}`;
       const rateKey = `login:${clientIp}:${identifier.toLowerCase()}`;
-      const rateCheck = await checkRateLimit(rateKey, 5, 900, env.DB);
+
+      // Check both IP-level credential spray limit (25 attempts per 15 min) and target account limit (5 per 15 min)
+      const [ipRateCheck, rateCheck] = await Promise.all([
+        checkRateLimit(ipRateKey, 25, 900, env.DB),
+        checkRateLimit(rateKey, 5, 900, env.DB),
+      ]);
+
+      if (!ipRateCheck.allowed) {
+        return jsonResponse(
+          {
+            success: false,
+            error: `Too many login attempts from this network. Please wait ${ipRateCheck.remainingSeconds || 300} seconds before trying again.`,
+          },
+          429
+        );
+      }
+
       if (!rateCheck.allowed) {
         return jsonResponse(
           {
             success: false,
-            error: `Too many failed login attempts. Please wait ${rateCheck.remainingSeconds || 300} seconds before trying again.`,
+            error: `Too many failed login attempts for this account. Please wait ${rateCheck.remainingSeconds || 300} seconds before trying again.`,
           },
           429
         );
@@ -1407,19 +1465,28 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
       if (!userRow) {
         await verifyPassword(password, DUMMY_PBKDF2_HASH);
-        await recordFailedAttempt(rateKey, 5, 900, env.DB);
+        await Promise.all([
+          recordFailedAttempt(rateKey, 5, 900, env.DB),
+          recordFailedAttempt(ipRateKey, 25, 900, env.DB),
+        ]);
         return jsonResponse({ success: false, error: 'Invalid email/username or password.' }, 401);
       }
 
       // Verify password strictly using PBKDF2 Web Crypto against D1 stored hash
       const isValid = await verifyPassword(password, userRow.password || '');
       if (!isValid) {
-        await recordFailedAttempt(rateKey, 5, 900, env.DB);
+        await Promise.all([
+          recordFailedAttempt(rateKey, 5, 900, env.DB),
+          recordFailedAttempt(ipRateKey, 25, 900, env.DB),
+        ]);
         return jsonResponse({ success: false, error: 'Invalid email/username or password.' }, 401);
       }
 
       // Clear failed rate limit on successful credentials
-      await clearFailedAttempts(rateKey, env.DB);
+      await Promise.all([
+        clearFailedAttempts(rateKey, env.DB),
+        clearFailedAttempts(ipRateKey, env.DB),
+      ]);
 
       // If user had plaintext password in D1, upgrade to PBKDF2 hash immediately and refresh userRow
       if (userRow.password && !userRow.password.startsWith('pbkdf2:')) {
