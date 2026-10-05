@@ -3846,7 +3846,16 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         );
       }
 
-      const body = (await request.json().catch(() => ({}))) as any;
+      let body: any;
+      try {
+        const rawBodyText = await request.text();
+        body = rawBodyText && rawBodyText.trim() ? JSON.parse(rawBodyText) : {};
+      } catch {
+        return jsonResponse(
+          { success: false, error: 'Malformed JSON payload. Please provide valid JSON.' },
+          400
+        );
+      }
       const orderData: Order = body.order || body;
 
       if (!orderData) {
@@ -4023,6 +4032,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         userId: verifiedTokenUser?.userId,
         extra: { clientIp },
       });
+      if (err instanceof SyntaxError || err?.name === 'SyntaxError') {
+        return jsonResponse({ success: false, error: 'Malformed JSON payload. Please provide valid JSON.' }, 400);
+      }
       const errMsg = err?.message || '';
       const isClientValidationError = [
         'required',

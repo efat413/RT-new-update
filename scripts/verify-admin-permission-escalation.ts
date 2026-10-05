@@ -34,12 +34,10 @@ async function runSecurityTests() {
     superToken = superData.token;
   }
   if (!superToken) {
-    superToken = `dev-jwt-${Buffer.from(JSON.stringify({
-      userId: 'dev-super-admin-1',
-      email: 'dev-superadmin@local.test',
-      role: 'super_admin',
-      exp: Date.now() + 86400000,
-    })).toString('base64')}`;
+    const errText = await superLoginRes.text().catch(() => '');
+    throw new Error(
+      `Failed to obtain Super Admin authentication token from /api/auth/login (HTTP ${superLoginRes.status}: ${errText}). Check test environment setup.`
+    );
   }
   assert(Boolean(superToken), 'Super Admin token obtained');
 
@@ -103,12 +101,10 @@ async function runSecurityTests() {
     normalAdminToken = adminData.token;
   }
   if (!normalAdminToken) {
-    normalAdminToken = `dev-jwt-${Buffer.from(JSON.stringify({
-      userId: normalAdminUser.id,
-      email: normalAdminUser.email,
-      role: 'admin',
-      exp: Date.now() + 86400000,
-    })).toString('base64')}`;
+    const errText = await adminLoginRes.text().catch(() => '');
+    throw new Error(
+      `Failed to obtain Normal Admin authentication token from /api/auth/login for ${normalAdminUser.email} (HTTP ${adminLoginRes.status}: ${errText}). Check test environment setup.`
+    );
   }
   assert(Boolean(normalAdminToken), 'Normal Admin token obtained');
 

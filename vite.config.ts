@@ -169,7 +169,7 @@ function localApiDevPlugin(): Plugin {
   // In-memory PBKDF2 password hashes for local development
   // Never contains plaintext credentials.
   const devUserPasswordHashes = new Map<string, string>();
-  const SEED_ADMIN_HASH = 'pbkdf2:100000:dd23d4a0a9a6e169ba4da04ed543b1f2:2274805ff7623c6540d0196d56ca2627e0f9482174f49244640aeff4dc7101a4';
+  const SEED_ADMIN_HASH = 'pbkdf2:100000:b603d5397bc2fdb6104fe115366eff03:7e97e177b74c884cacfbc9d753b734fc0be6fe90f66a91a7f22c9384d45af1e9';
 
   devSuperAdminEmails.forEach((email) => {
     devUserPasswordHashes.set(email, SEED_ADMIN_HASH);
@@ -973,9 +973,18 @@ function localApiDevPlugin(): Plugin {
           let raw = '';
           req.on('data', (chunk) => { raw += chunk; });
           req.on('end', () => {
-            try {
-              callback(JSON.parse(raw || '{}'));
-            } catch {
+            if (raw && raw.trim()) {
+              try {
+                callback(JSON.parse(raw));
+              } catch {
+                res.statusCode = 400;
+                res.setHeader('Content-Type', 'application/json');
+                return res.end(JSON.stringify({
+                  success: false,
+                  error: 'Malformed JSON payload. Please provide valid JSON.',
+                }));
+              }
+            } else {
               callback({});
             }
           });

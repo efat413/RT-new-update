@@ -95,11 +95,14 @@ async function runTests() {
     headers: { 'Content-Type': 'application/json' },
     body: '{"invalid": json syntax error',
   });
-  assert(malformedJsonRes.status === 400 || malformedJsonRes.status === 500, `Malformed JSON handled safely (got ${malformedJsonRes.status})`);
+  assert(malformedJsonRes.status === 400, `Malformed JSON must return HTTP 400 Bad Request (got ${malformedJsonRes.status})`);
   const malformedJsonData = await malformedJsonRes.json().catch(() => ({}));
-  assert(!JSON.stringify(malformedJsonData).includes('SyntaxError: Unexpected token') || malformedJsonRes.status === 400, 'Handled safely');
+  assert(malformedJsonData.success === false, 'success is false');
+  assert(typeof malformedJsonData.error === 'string', 'error message exists');
+  assert(!JSON.stringify(malformedJsonData).includes('SyntaxError: Unexpected token'), 'No raw syntax error leaked');
   assert(!JSON.stringify(malformedJsonData).includes('node_modules') && !JSON.stringify(malformedJsonData).includes('/src/'), 'No file path leaked');
-  console.log('  ✓ Malformed JSON handled without file paths or stack leaks');
+  assert(!/sqlite|d1|stack|table|column|secret|token|api_key/i.test(JSON.stringify(malformedJsonData)), 'No internal details leaked');
+  console.log(`  ✓ Malformed JSON correctly returned HTTP 400 with safe error: "${malformedJsonData.error}"`);
 
   console.log('\n====================================================');
   console.log('✅ ALL SAFE ERROR HANDLING TESTS PASSED SUCCESSFULLY!');
