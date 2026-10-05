@@ -105,7 +105,7 @@ export async function getTestStaffToken(
 export async function getTestCustomerToken(
   baseUrl: string = TEST_BASE_URL,
   email: string = 'customer@gmail.com',
-  password: string = 'admin'
+  password: string = 'Password123!'
 ): Promise<string> {
   try {
     return await loginAndGetToken(email, password, baseUrl);

@@ -3120,7 +3120,7 @@ function localApiDevPlugin(): Plugin {
               const hasDirectRole = Object.prototype.hasOwnProperty.call(body || {}, 'role');
               const hasDirectPerm = Object.prototype.hasOwnProperty.call(body || {}, 'permissions');
 
-              if (authResult.auth!.role !== 'super_admin' && (hasDirectRole || hasDirectPerm)) {
+              if (authResult.auth!.role !== 'super_admin' && (hasDirectRole || hasDirectPerm || detectPrivilegeEscalationAttempt(body))) {
                 return sendDevError(res, {
                   status: 403,
                   body: { success: false, error: 'Forbidden: Only Super Administrator can modify account roles or permissions.' },
@@ -3143,7 +3143,7 @@ function localApiDevPlugin(): Plugin {
                   updates.permissions_json !== undefined ||
                   body.permissions_json !== undefined;
 
-                if (hasRoleField || hasPermissionField) {
+                if (hasRoleField || hasPermissionField || detectPrivilegeEscalationAttempt(body) || detectPrivilegeEscalationAttempt(updates)) {
                   return sendDevError(res, {
                     status: 403,
                     body: { success: false, error: 'Forbidden: Only Super Administrator can modify account roles or permissions.' },
