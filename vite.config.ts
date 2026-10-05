@@ -50,7 +50,7 @@ process.env.ADMIN_SECRET = process.env.ADMIN_SECRET || 'dev-secret-test-shared-9
 process.env.COURIER_WEBHOOK_SECRET = process.env.COURIER_WEBHOOK_SECRET || 'dev-courier-webhook-secret-999';
 
 function localApiDevPlugin(): Plugin {
-  const SETTINGS_FILE = path.resolve(__dirname, '.dev-settings.json');
+  const SETTINGS_FILE = path.resolve(import.meta.dirname || '.', '.dev-settings.json');
 
   // In-memory dev collections initialized from seed data
   let devOrders: any[] = INITIAL_ORDERS.map((o) => {
@@ -5369,7 +5369,7 @@ export default defineConfig(() => {
     plugins: [react(), tailwindcss(), { ...localApiDevPlugin(), apply: 'serve' }],
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(import.meta.dirname || '.', '.'),
       },
     },
     server: {
