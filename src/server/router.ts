@@ -1556,6 +1556,14 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         return jsonResponse({ success: false, error: 'Invalid email/username or password.' }, 401);
       }
 
+      // Account status enforcement: Inactive or suspended accounts cannot authenticate
+      if ((userRow as any).status === 'inactive' || (userRow as any).status === 'suspended' || (userRow as any).is_active === 0) {
+        return jsonResponse(
+          { success: false, error: 'Forbidden: Account has been deactivated or suspended.' },
+          403
+        );
+      }
+
       // Clear failed rate limit on successful credentials
       await Promise.all([
         clearFailedAttempts(rateKey, env.DB),

@@ -377,13 +377,14 @@ function localApiDevPlugin(): Plugin {
       if (!header || header.alg !== 'HS256' || (header.typ && header.typ !== 'JWT')) return null;
       const payload = JSON.parse(Buffer.from(b64Payload, 'base64url').toString('utf-8'));
       const now = Math.floor(Date.now() / 1000);
-      if (payload.exp && payload.exp < now) return null;
+      if (!payload.exp || typeof payload.exp !== 'number' || isNaN(payload.exp) || payload.exp <= now) return null;
 
       // Defense-in-depth: Strictly enforce 30-minute idle and 12-hour absolute timeout for admin roles
       if (isDevAdminRole(payload.role)) {
-        const authTime = payload.authTime || payload.iat || now;
+        const authTime = typeof payload.authTime === 'number' ? payload.authTime : (typeof payload.iat === 'number' ? payload.iat : null);
+        const lastActivity = typeof payload.lastActivity === 'number' ? payload.lastActivity : (typeof payload.iat === 'number' ? payload.iat : null);
+        if (authTime === null || lastActivity === null) return null;
         if (now - authTime > ADMIN_SESSION_ABSOLUTE_TIMEOUT_SECONDS) return null;
-        const lastActivity = payload.lastActivity || payload.iat || now;
         if (now - lastActivity > ADMIN_SESSION_IDLE_TIMEOUT_SECONDS) return null;
       }
 
@@ -575,6 +576,20 @@ function localApiDevPlugin(): Plugin {
               error: { status: 401, body: { success: false, error: 'Unauthorized: Session invalidated or password was changed. Please log in again.' } },
             };
           }
+        }
+
+        // Session Invalidation: Check for critical role change
+        if (decoded.role && foundUser.role && decoded.role !== foundUser.role) {
+          return {
+            error: { status: 401, body: { success: false, error: 'Unauthorized: Session invalidated due to account role change. Please log in again.' } },
+          };
+        }
+
+        // Account status enforcement: Inactive or suspended accounts cannot authenticate
+        if (foundUser.status === 'inactive' || foundUser.status === 'suspended' || foundUser.is_active === 0) {
+          return {
+            error: { status: 403, body: { success: false, error: 'Forbidden: Account has been deactivated or suspended.' } },
+          };
         }
 
         // RBAC Security: Role is strictly derived from the verified user record, never from client claims
@@ -1521,6 +1536,12 @@ function localApiDevPlugin(): Plugin {
             if (!isPasswordValid || !foundUser) {
               res.statusCode = 401;
               return res.end(JSON.stringify({ success: false, error: 'Invalid email/username or password.' }));
+            }
+
+            // Account status enforcement: Inactive or suspended accounts cannot authenticate
+            if (foundUser.status === 'inactive' || foundUser.status === 'suspended' || foundUser.is_active === 0) {
+              res.statusCode = 403;
+              return res.end(JSON.stringify({ success: false, error: 'Forbidden: Account has been deactivated or suspended.' }));
             }
 
             const isPrivileged = isDevAdminRole(foundUser.role);

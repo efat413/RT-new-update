@@ -290,17 +290,21 @@ async function verifyTokenSignature(
 
     const payload: TokenPayload = JSON.parse(base64UrlDecode(encodedPayload));
     const now = Math.floor(Date.now() / 1000);
-    if (payload.exp && payload.exp < now) {
-      return null; // Expired
+    // JWT expiration validation: token must have a valid exp number and cannot be expired
+    if (!payload.exp || typeof payload.exp !== 'number' || isNaN(payload.exp) || payload.exp <= now) {
+      return null; // Expired or missing/invalid exp
     }
 
     // Defense-in-depth: Strictly enforce 30-minute idle and 12-hour absolute timeout for admin roles
     if (isAdminRole(payload.role)) {
-      const authTime = payload.authTime || payload.iat || now;
+      const authTime = typeof payload.authTime === 'number' ? payload.authTime : (typeof payload.iat === 'number' ? payload.iat : null);
+      const lastActivity = typeof payload.lastActivity === 'number' ? payload.lastActivity : (typeof payload.iat === 'number' ? payload.iat : null);
+      if (authTime === null || lastActivity === null) {
+        return null; // Admin tokens strictly require valid session timestamps
+      }
       if (now - authTime > ADMIN_SESSION_ABSOLUTE_TIMEOUT_SECONDS) {
         return null; // Absolute maximum session lifetime reached
       }
-      const lastActivity = payload.lastActivity || payload.iat || now;
       if (now - lastActivity > ADMIN_SESSION_IDLE_TIMEOUT_SECONDS) {
         return null; // 30-minute continuous inactivity timeout reached
       }
