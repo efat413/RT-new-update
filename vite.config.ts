@@ -1099,9 +1099,10 @@ function localApiDevPlugin(): Plugin {
           let raw = '';
           req.on('data', (chunk) => { raw += chunk; });
           req.on('end', () => {
+            let parsed: any;
             if (raw && raw.trim()) {
               try {
-                callback(JSON.parse(raw));
+                parsed = JSON.parse(raw);
               } catch {
                 res.statusCode = 400;
                 res.setHeader('Content-Type', 'application/json');
@@ -1111,8 +1112,9 @@ function localApiDevPlugin(): Plugin {
                 }));
               }
             } else {
-              callback({});
+              parsed = {};
             }
+            callback(parsed ?? {});
           });
         };
 
@@ -2437,8 +2439,14 @@ function localApiDevPlugin(): Plugin {
             if (permErr) return sendDevError(res, permErr);
 
             return readBody((body) => {
-              const c = body.coupon || body;
-              const idx = devCoupons.findIndex((item) => item.code.toUpperCase() === c.code.toUpperCase());
+              const c = body?.coupon || body || {};
+              const code = String(c.code || '').trim();
+              if (!code) {
+                res.statusCode = 400;
+                res.setHeader('Content-Type', 'application/json');
+                return res.end(JSON.stringify({ success: false, error: 'Coupon code is required.' }));
+              }
+              const idx = devCoupons.findIndex((item) => item.code.toUpperCase() === code.toUpperCase());
               if (idx >= 0) devCoupons[idx] = c;
               else devCoupons.push(c);
               res.statusCode = 201;
@@ -2654,13 +2662,6 @@ function localApiDevPlugin(): Plugin {
               delete updates.createdAt;
               delete updates.updatedAt;
 
-              if (isSelf && authResult.auth!.role !== 'super_admin') {
-                delete updates.role;
-                delete body.role;
-                delete updates.permissions;
-                delete body.permissions;
-              }
-
               // Strict Privilege Escalation Protection:
               // Non-super_admin accounts can NEVER modify roles or permissions for any account (including their own).
               if (authResult.auth!.role !== 'super_admin') {
@@ -2676,6 +2677,13 @@ function localApiDevPlugin(): Plugin {
                     status: 403,
                     body: { success: false, error: 'Forbidden: Only Super Administrator can modify account roles or permissions.' },
                   });
+                }
+
+                if (isSelf) {
+                  delete updates.role;
+                  delete body.role;
+                  delete updates.permissions;
+                  delete body.permissions;
                 }
               }
 
@@ -3482,8 +3490,18 @@ function localApiDevPlugin(): Plugin {
               let fileBuffer = fullBuffer;
 
               if (contentType.includes('application/json')) {
-                const parsed = JSON.parse(fullBuffer.toString('utf-8') || '{}');
-                const dataUrl = parsed.dataUrl || parsed.image || parsed.url;
+                let parsed: any;
+                try {
+                  parsed = JSON.parse(fullBuffer.toString('utf-8'));
+                } catch {
+                  res.statusCode = 400;
+                  res.setHeader('Content-Type', 'application/json');
+                  return res.end(JSON.stringify({
+                    success: false,
+                    error: 'Malformed JSON payload. Please provide valid JSON.',
+                  }));
+                }
+                const dataUrl = parsed?.dataUrl || parsed?.image || parsed?.url;
                 if (!dataUrl || typeof dataUrl !== 'string') {
                   res.statusCode = 400;
                   return res.end(JSON.stringify({ success: false, error: 'Expected dataUrl in JSON body' }));
@@ -4128,9 +4146,10 @@ function localApiDevPlugin(): Plugin {
             return readRawBody(async (rawBody, body, isMalformedJson) => {
               if (isMalformedJson) {
                 res.statusCode = 400;
+                res.setHeader('Content-Type', 'application/json');
                 return res.end(JSON.stringify({
                   success: false,
-                  error: 'Malformed JSON payload.',
+                  error: 'Malformed JSON payload. Please provide valid JSON.',
                 }));
               }
 

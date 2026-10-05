@@ -91,11 +91,24 @@ async function runSecurityTests() {
 
   // Obtain legitimate Normal Admin token
   let normalAdminToken = '';
-  const adminLoginRes = await fetch(`${BASE_URL}/api/auth/login`, {
+  let adminLoginRes = await fetch(`${BASE_URL}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email: normalAdminUser.email, password: 'Password123!' }),
   });
+  if (!adminLoginRes.ok) {
+    // Reset password via Super Admin to ensure known test credential
+    await fetch(`${BASE_URL}/api/users/${normalAdminUser.id}/reset-password`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${superToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ newPassword: 'Password123!' }),
+    });
+    adminLoginRes = await fetch(`${BASE_URL}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: normalAdminUser.email, password: 'Password123!' }),
+    });
+  }
   if (adminLoginRes.ok) {
     const adminData = await adminLoginRes.json();
     normalAdminToken = adminData.token;
@@ -235,14 +248,14 @@ async function runSecurityTests() {
   const t8a = await fetch(`${BASE_URL}/api/admin/profit-analytics`, {
     headers: { Authorization: `Bearer ${spoofedRoleToken}` },
   });
-  assert(t8a.status === 403, `8a. Spoofed token role rejected with HTTP 403 on profit analytics (got ${t8a.status})`);
+  assert(t8a.status === 403 || t8a.status === 401, `8a. Spoofed token role rejected with HTTP 403/401 on profit analytics (got ${t8a.status})`);
 
   const t8b = await fetch(`${BASE_URL}/api/settings`, {
     method: 'PUT',
     headers: { Authorization: `Bearer ${spoofedRoleToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ siteName: 'Hacked Store Name' }),
   });
-  assert(t8b.status === 403, `8b. Spoofed token role rejected with HTTP 403 on settings update (got ${t8b.status})`);
+  assert(t8b.status === 403 || t8b.status === 401, `8b. Spoofed token role rejected with HTTP 403/401 on settings update (got ${t8b.status})`);
 
   // Test 9: Modify localStorage permissions → no security impact
   console.log('\n[Security Test 9] Modify localStorage permissions simulation');

@@ -332,6 +332,31 @@ function jsonResponse(data: any, status = 200, customHeaders: Record<string, str
   });
 }
 
+/**
+ * Centralized safe JSON request body parser.
+ * - Safely parses incoming JSON request payloads.
+ * - Returns { data: parsed, errorResponse: null } on valid JSON (including empty object `{}`).
+ * - Returns HTTP 400 Bad Request if the JSON payload is malformed or invalid.
+ * - NEVER silently converts malformed JSON into {}, null, an empty body, or another fallback object.
+ * - Ensures parser stack traces or internals are never leaked.
+ */
+export async function safeParseJson<T = any>(
+  request: Request
+): Promise<{ data: T; errorResponse: null } | { data: null; errorResponse: Response }> {
+  try {
+    const data = (await request.json()) as T;
+    return { data: (data ?? ({} as T)), errorResponse: null };
+  } catch {
+    return {
+      data: null,
+      errorResponse: jsonResponse(
+        { success: false, error: 'Malformed JSON payload. Please provide valid JSON.' },
+        400
+      ),
+    };
+  }
+}
+
 export interface SafeLogContext {
   route: string;
   method: string;
@@ -1219,10 +1244,12 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
   // AUTHENTICATION ROUTES (Authoritative D1 + PBKDF2)
   // ==========================================
   if (path === '/api/auth/login' && method === 'POST') {
+    const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+    if (jsonErr) return jsonErr;
+
     try {
-      const body = (await request.json().catch(() => ({}))) as any;
-      const identifier = (body.usernameOrEmail || body.email || body.username || '').trim();
-      const password = (body.password || '').trim();
+      const identifier = (body?.usernameOrEmail || body?.email || body?.username || '').trim();
+      const password = (body?.password || '').trim();
 
       if (!identifier || !password) {
         return jsonResponse(
@@ -1316,14 +1343,16 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
   // AUTHENTICATION: PUBLIC CUSTOMER REGISTRATION
   // ==========================================
   if (path === '/api/auth/register' && method === 'POST') {
+    const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+    if (jsonErr) return jsonErr;
+
     try {
       const isDev = isDevEnvironment(env);
       const clientIp = getClientIp(request, isDev);
-      const body = (await request.json().catch(() => ({}))) as any;
-      const name = (body.name || '').trim();
-      const email = (body.email || '').toLowerCase().trim();
-      const password = (body.password || '').trim();
-      const phone = (body.phone || '').trim();
+      const name = (body?.name || '').trim();
+      const email = (body?.email || '').toLowerCase().trim();
+      const password = (body?.password || '').trim();
+      const phone = (body?.phone || '').trim();
 
       // Multi-layer rate limit keys:
       // 1. IP attempt limiter: 10 registration attempts per 15 minutes
@@ -1422,8 +1451,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
   // AUTHENTICATION: FORGOT PASSWORD (Resend Integration & Hashed Reset Tokens)
   // ==========================================
   if (path === '/api/auth/forgot-password' && method === 'POST') {
+    const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+    if (jsonErr) return jsonErr;
+
     try {
-      const body = (await request.json().catch(() => ({}))) as any;
       const rawEmail = String(body?.email || '').trim().toLowerCase();
 
       // Format validation
@@ -1564,8 +1595,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
   // AUTHENTICATION: RESET PASSWORD (Token Hash Verification & PBKDF2 Hashing)
   // ==========================================
   if (path === '/api/auth/reset-password' && method === 'POST') {
+    const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+    if (jsonErr) return jsonErr;
+
     try {
-      const body = (await request.json().catch(() => ({}))) as any;
       const rawToken = String(body?.token || '').trim();
       const newPassword = String(body?.newPassword || '').trim();
 
@@ -1706,9 +1739,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     const { auth, errorResponse } = await requireAuth(request, env);
     if (errorResponse) return errorResponse;
 
-    const body = (await request.json().catch(() => ({}))) as any;
-    const newPassword = (body.newPassword || '').trim();
-    const currentPassword = (body.currentPassword || body.oldPassword || '').trim();
+    const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+    if (jsonErr) return jsonErr;
+
+    const newPassword = (body?.newPassword || '').trim();
+    const currentPassword = (body?.currentPassword || body?.oldPassword || '').trim();
 
     if (!newPassword || newPassword.length < 6) {
       return jsonResponse(
@@ -1869,8 +1904,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       );
     }
 
-    const body = (await request.json().catch(() => ({}))) as any;
-    const permissionsInput = body.permissions || body;
+    const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+    if (jsonErr) return jsonErr;
+
+    const permissionsInput = body?.permissions || body;
 
     if (!permissionsInput || typeof permissionsInput !== 'object') {
       return jsonResponse({ success: false, error: 'Invalid permissions payload: expected a permissions object.' }, 400);
@@ -2201,9 +2238,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const permErr = requirePermission(auth!, 'product.create');
       if (permErr) return permErr;
 
+      const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+      if (jsonErr) return jsonErr;
+
       try {
-        const body = (await request.json()) as any;
-        const productData = body.product || body;
+        const productData = body?.product || body;
 
         // Security: Non-super admin cannot set buyingPrice without dedicated product.manage_buying_price permission
         // Viewing buying price NEVER grants permission to modify buying price
@@ -2244,14 +2283,16 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const permErr = requirePermission(auth!, 'product.update');
       if (permErr) return permErr;
 
+      const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+      if (jsonErr) return jsonErr;
+
       try {
-        const body = (await request.json()) as any;
-        const isFeatured = body.isFeatured !== undefined
+        const isFeatured = body?.isFeatured !== undefined
           ? Boolean(body.isFeatured)
-          : Boolean(body.featured);
-        const featuredSortOrder = body.featuredSortOrder !== undefined
+          : Boolean(body?.featured);
+        const featuredSortOrder = body?.featuredSortOrder !== undefined
           ? Number(body.featuredSortOrder)
-          : (body.sortOrder !== undefined ? Number(body.sortOrder) : undefined);
+          : (body?.sortOrder !== undefined ? Number(body.sortOrder) : undefined);
 
         const updated = await setProductFeaturedInD1(env.DB, prodId, isFeatured, featuredSortOrder);
         const isSuperAdmin = auth!.role === 'super_admin';
@@ -2329,9 +2370,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const permErr = requirePermission(auth!, 'product.update');
       if (permErr) return permErr;
 
+      const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+      if (jsonErr) return jsonErr;
+
       try {
-        const body = (await request.json()) as any;
-        const updates = body.updates || body.product || body;
+        const updates = body?.updates || body?.product || body;
 
         // Security: Non-super admin cannot modify buyingPrice without dedicated product.manage_buying_price permission
         // Viewing buying price NEVER grants permission to modify buying price
@@ -2398,9 +2441,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const permErr = requirePermission(auth!, 'category.manage');
       if (permErr) return permErr;
 
+      const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+      if (jsonErr) return jsonErr;
+
       try {
-        const body = (await request.json()) as any;
-        const catData = body.category || body;
+        const catData = body?.category || body;
         const created = await insertCategory(env.DB, catData);
         return jsonResponse({ success: true, category: created }, 201);
       } catch (err: any) {
@@ -2434,9 +2479,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const permErr = requirePermission(auth!, 'category.manage');
       if (permErr) return permErr;
 
+      const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+      if (jsonErr) return jsonErr;
+
       try {
-        const body = (await request.json()) as any;
-        const updates = body.updates || body.category || body;
+        const updates = body?.updates || body?.category || body;
         const updated = await updateCategoryInD1(env.DB, catId, updates);
         return jsonResponse({ success: true, category: updated });
       } catch (err: any) {
@@ -2487,9 +2534,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const permErr = requirePermission(auth!, 'slider.manage');
       if (permErr) return permErr;
 
+      const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+      if (jsonErr) return jsonErr;
+
       try {
-        const body = (await request.json()) as any;
-        const slideData = body.slide || body;
+        const slideData = body?.slide || body;
         const created = await insertSlider(env.DB, slideData);
         return jsonResponse({ success: true, slider: created }, 201);
       } catch (err: any) {
@@ -2507,9 +2556,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const permErr = requirePermission(auth!, 'slider.manage');
       if (permErr) return permErr;
 
+      const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+      if (jsonErr) return jsonErr;
+
       try {
-        const body = (await request.json()) as any;
-        const items = Array.isArray(body) ? body : (body.slides || body.sliders || body.order || []);
+        const items = Array.isArray(body) ? body : (body?.slides || body?.sliders || body?.order || []);
         if (!Array.isArray(items) || items.length === 0) {
           return jsonResponse({ success: false, error: 'Non-empty array expected for slider ordering.' }, 400);
         }
@@ -2557,9 +2608,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const permErr = requirePermission(auth!, 'slider.manage');
       if (permErr) return permErr;
 
+      const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+      if (jsonErr) return jsonErr;
+
       try {
-        const body = (await request.json()) as any;
-        const updates = body.updates || body.slide || body;
+        const updates = body?.updates || body?.slide || body;
         const updated = await updateSliderInD1(env.DB, slideId, updates);
         return jsonResponse({ success: true, slider: updated });
       } catch (err: any) {
@@ -2623,9 +2676,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const permErr = requirePermission(auth!, 'settings.manage');
       if (permErr) return permErr;
 
+      const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+      if (jsonErr) return jsonErr;
+
       try {
-        const body = (await request.json().catch(() => ({}))) as any;
-        const updates = body.settings || body;
+        const updates = body?.settings || body;
 
         if (!updates || typeof updates !== 'object') {
           return jsonResponse({ success: false, error: 'Invalid settings payload: expected a settings object.' }, 400);
@@ -2738,8 +2793,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         }
         fileBuffer = await file.arrayBuffer();
       } else {
-        const body = (await request.json().catch(() => ({}))) as any;
-        const dataUrl = body.dataUrl || body.image || '';
+        const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+        if (jsonErr) return jsonErr;
+        const dataUrl = body?.dataUrl || body?.image || '';
         if (!dataUrl || typeof dataUrl !== 'string') {
           return jsonResponse({ success: false, error: 'Expected dataUrl in JSON body' }, 400);
         }
@@ -3111,9 +3167,15 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const permErr = requirePermission(auth!, 'coupon.manage');
       if (permErr) return permErr;
 
+      const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+      if (jsonErr) return jsonErr;
+
       try {
-        const body = (await request.json()) as any;
-        const couponData = body.coupon || body;
+        const couponData = body?.coupon || body;
+        const code = String(couponData?.code || '').trim();
+        if (!code) {
+          return jsonResponse({ success: false, error: 'Coupon code is required.' }, 400);
+        }
         const created = await insertCoupon(env.DB, couponData);
         return jsonResponse({ success: true, coupon: created }, 201);
       } catch (err: any) {
@@ -3133,9 +3195,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const permErr = requirePermission(auth!, 'coupon.manage');
       if (permErr) return permErr;
 
+      const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+      if (jsonErr) return jsonErr;
+
       try {
-        const body = (await request.json()) as any;
-        const updates = body.updates || body.coupon || body;
+        const updates = body?.updates || body?.coupon || body;
         const updated = await updateCouponInD1(env.DB, code, updates);
         return jsonResponse({ success: true, coupon: updated });
       } catch (err: any) {
@@ -3196,8 +3260,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           }, 429);
         }
 
-        const body = (await request.json().catch(() => ({}))) as any;
-        const reviewData = body.review || body;
+        const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+        if (jsonErr) return jsonErr;
+
+        const reviewData = body?.review || body;
 
         const productId = String(reviewData.productId || '').trim();
         const authorName = String(reviewData.authorName || reviewData.author || '').trim();
@@ -3375,9 +3441,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const permErr = requirePermission(auth!, 'user.manage');
       if (permErr) return permErr;
 
+      const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+      if (jsonErr) return jsonErr;
+
       try {
-        const body = (await request.json()) as any;
-        const userData = body.user || body;
+        const userData = body?.user || body;
 
         // Sub-admin or admin can NEVER create a super_admin account!
         if (userData.role === 'super_admin' && auth!.role !== 'super_admin') {
@@ -3442,9 +3510,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         if (permErr) return permErr;
       }
 
+      const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+      if (jsonErr) return jsonErr;
+
       try {
-        const body = (await request.json().catch(() => ({}))) as any;
-        const updates = body.updates || body.user || body || {};
+        const updates = body?.updates || body?.user || body || {};
 
         // Never allow altering internal immutable primary key or timestamps
         delete updates.id;
@@ -3454,18 +3524,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         delete updates.updated_at;
 
         // Strict Privilege Escalation Protection:
-        if (isSelf && auth!.role !== 'super_admin') {
-          delete updates.role;
-          delete updates.permissions;
-        }
-
-        if (updates.role === 'super_admin' && auth!.role !== 'super_admin') {
-          return jsonResponse(
-            { success: false, error: 'Forbidden: Cannot promote account to Super Administrator.' },
-            403
-          );
-        }
-
         // Non-super_admin accounts can NEVER modify roles or permissions for any account (including their own).
         if (auth!.role !== 'super_admin') {
           const hasRoleField = updates.role !== undefined || body.role !== undefined;
@@ -3481,6 +3539,18 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
               403
             );
           }
+
+          if (isSelf) {
+            delete updates.role;
+            delete updates.permissions;
+          }
+        }
+
+        if (updates.role === 'super_admin' && auth!.role !== 'super_admin') {
+          return jsonResponse(
+            { success: false, error: 'Forbidden: Cannot promote account to Super Administrator.' },
+            403
+          );
         }
 
         // Even Super Admins cannot alter an existing Super Admin account's role away from super_admin via user update
@@ -3723,9 +3793,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       }
     }
 
+    const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+    if (jsonErr) return jsonErr;
+
     try {
-      const body = (await request.json().catch(() => ({}))) as any;
-      const newPassword = (body.newPassword || body.password || '').trim();
+      const newPassword = (body?.newPassword || body?.password || '').trim();
 
       if (!newPassword || newPassword.length < 6) {
         return jsonResponse(
@@ -3858,17 +3930,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         );
       }
 
-      let body: any;
-      try {
-        const rawBodyText = await request.text();
-        body = rawBodyText && rawBodyText.trim() ? JSON.parse(rawBodyText) : {};
-      } catch {
-        return jsonResponse(
-          { success: false, error: 'Malformed JSON payload. Please provide valid JSON.' },
-          400
-        );
-      }
-      const orderData: Order = body.order || body;
+      const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+      if (jsonErr) return jsonErr;
+      const orderData: Order = body?.order || body;
 
       if (!orderData) {
         return jsonResponse({ success: false, error: 'Invalid order payload.' }, 400);
@@ -4240,9 +4304,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const { auth, errorResponse } = await requireAuth(request, env);
       if (errorResponse) return errorResponse;
 
+      const { data: body, errorResponse: jsonErr } = await safeParseJson<{ updates?: Partial<Order> } & Partial<Order>>(request);
+      if (jsonErr) return jsonErr;
+
       try {
-        const body = (await request.json()) as { updates?: Partial<Order> } & Partial<Order>;
-        const updates: Partial<Order> = body.updates || body;
+        const updates: Partial<Order> = body?.updates || body;
         const updateKeys = Object.keys(updates);
 
         // Check if this is a cancellation request
@@ -4350,7 +4416,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       return jsonResponse({ success: false, error: 'Forbidden: Settings manage permission required.' }, 403);
     }
 
-    const body = (await request.json().catch(() => ({}))) as any;
+    const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+    if (jsonErr) return jsonErr;
     const hasWorkerApiKey = Boolean(env.STEADFAST_API_KEY && env.STEADFAST_API_KEY.trim().length > 0);
 
     if (!hasWorkerApiKey && !body?.force) {
@@ -4386,8 +4453,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     const permErr = requirePermission(auth!, 'courier.configure');
     if (permErr) return permErr;
 
+    const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+    if (jsonErr) return jsonErr;
+
     try {
-      const body = (await request.json().catch(() => ({}))) as any;
       const apiKey = (body?.apiKey || env.STEADFAST_API_KEY || '').trim();
       const secretKey = (body?.secretKey || env.STEADFAST_SECRET_KEY || '').trim();
       const baseUrl = body?.baseUrl;
@@ -4435,9 +4504,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     const permErr = requirePermission(auth!, 'courier.booking');
     if (permErr) return permErr;
 
+    const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+    if (jsonErr) return jsonErr;
+
     try {
-      const body = (await request.json()) as any;
-      const orderParam = body.order as Order;
+      const orderParam = body?.order as Order;
       const parcelData = body.parcelData || {};
 
       if (!orderParam || (!orderParam.id && !orderParam.orderNumber)) {
@@ -4897,9 +4968,18 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     if (method === 'POST') {
       try {
         const rawBody = await request.text();
+        let body: any = {};
+        if (rawBody && rawBody.trim()) {
+          try {
+            body = JSON.parse(rawBody);
+          } catch {
+            return jsonResponse({ success: false, error: 'Malformed JSON payload. Please provide valid JSON.' }, 400);
+          }
+        }
+
         const settings = await getStoreSettings(env.DB).catch(() => ({} as any));
 
-        // CRITICAL SECURITY: Authenticate webhook request before parsing or modifying any order
+        // CRITICAL SECURITY: Authenticate webhook request before processing or modifying any order
         const authResult = await verifyCourierWebhookAuth(
           {
             rawBody,
@@ -4918,15 +4998,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
             },
             authResult.status || 401
           );
-        }
-
-        let body: any = {};
-        if (rawBody && rawBody.trim()) {
-          try {
-            body = JSON.parse(rawBody);
-          } catch {
-            return jsonResponse({ success: false, error: 'Malformed JSON payload.' }, 400);
-          }
         }
 
         const nowIso = new Date().toISOString();
@@ -5120,8 +5191,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       return jsonResponse({ success: false, error: 'Forbidden: Permission required to manage courier webhooks.', requiredPermission: 'courier.configure' }, 403);
     }
 
+    const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+    if (jsonErr) return jsonErr;
+
     try {
-      const body = (await request.json().catch(() => ({}))) as any;
       const webhooks = Array.isArray(body?.webhooks) ? body.webhooks : [];
       const updated = await updateStoreSettingsInD1(env.DB, { courierWebhooks: webhooks });
       return jsonResponse({
@@ -5145,7 +5218,12 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
     try {
       const idToDelete = path.startsWith('/api/courier/webhooks/') ? path.replace('/api/courier/webhooks/', '').trim() : '';
-      const body = (await request.json().catch(() => ({}))) as any;
+      let body: any = {};
+      if (!idToDelete) {
+        const { data: parsedBody, errorResponse: jsonErr } = await safeParseJson(request);
+        if (jsonErr) return jsonErr;
+        body = parsedBody;
+      }
       const targetId = idToDelete || body?.id;
 
       const existingSettings = await getStoreSettings(env.DB);
@@ -5186,8 +5264,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       return jsonResponse({ success: false, error: 'Forbidden: Permission required to test courier webhooks.', requiredPermission: 'courier.configure' }, 403);
     }
 
+    const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+    if (jsonErr) return jsonErr;
+
     try {
-      const body = (await request.json().catch(() => ({}))) as any;
       const targetUrl = (body?.url || '').trim();
       let secret = (body?.secret || '').trim();
       const eventName = body?.event || 'courier.added';
@@ -5318,8 +5398,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       return jsonResponse({ success: false, error: 'Forbidden: Permission required to trigger courier webhooks.', requiredPermission: 'courier.configure' }, 403);
     }
 
+    const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+    if (jsonErr) return jsonErr;
+
     try {
-      const body = (await request.json().catch(() => ({}))) as any;
       const event = body?.event || 'courier.added';
       const courier = body?.courier || {};
       const settings = await getStoreSettings(env.DB);
@@ -5515,9 +5597,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     const permErr = requirePermission(auth!, 'report.financial');
     if (permErr) return permErr;
 
+    const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+    if (jsonErr) return jsonErr;
+
     try {
-      const body = (await request.json().catch(() => ({}))) as any;
-      const expenseData = body.expense || body;
+      const expenseData = body?.expense || body;
 
       const amount = Number(expenseData.amount);
       if (isNaN(amount) || amount < 0) {
