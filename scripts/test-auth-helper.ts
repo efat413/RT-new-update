@@ -90,8 +90,12 @@ export async function getTestStaffToken(
   baseUrl: string = TEST_BASE_URL,
   email: string = 'staff@rongdhonutrade.com'
 ): Promise<string> {
-  const password = process.env.DEV_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || 'admin';
-  return loginAndGetToken(email, password, baseUrl);
+  const password = process.env.STAFF_PASSWORD || 'Password123!';
+  try {
+    return await loginAndGetToken(email, password, baseUrl);
+  } catch {
+    return await loginAndGetToken(email, 'admin', baseUrl);
+  }
 }
 
 /**

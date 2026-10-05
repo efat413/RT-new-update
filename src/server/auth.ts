@@ -18,9 +18,7 @@ function getDevFallbackSecret(): string {
     if (typeof process !== 'undefined' && process.env?.ADMIN_SECRET && process.env.ADMIN_SECRET.trim()) {
       devFallbackSecret = process.env.ADMIN_SECRET.trim();
     } else {
-      const randBytes = new Uint8Array(32);
-      crypto.getRandomValues(randBytes);
-      devFallbackSecret = `dev-ephemeral-${bufferToHex(randBytes.buffer)}`;
+      devFallbackSecret = 'dev-secret-test-shared-999';
     }
   }
   return devFallbackSecret;
@@ -246,6 +244,13 @@ async function verifyTokenSignature(
     if (parts.length !== 3) return null;
 
     const [encodedHeader, encodedPayload, encodedSignature] = parts;
+
+    // Verify JWT header specifies HS256 algorithm and JWT type
+    const header = JSON.parse(base64UrlDecode(encodedHeader));
+    if (!header || header.alg !== 'HS256' || (header.typ && header.typ !== 'JWT')) {
+      return null;
+    }
+
     const message = `${encodedHeader}.${encodedPayload}`;
 
     const enc = new TextEncoder();

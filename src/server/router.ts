@@ -3828,7 +3828,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         );
       }
 
-      if (!isSelf && auth!.role !== 'super_admin') {
+      if (!isSelf) {
         const permErr = requirePermission(auth!, 'user.manage');
         if (permErr) return permErr;
       }
@@ -3842,6 +3842,21 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         delete updates.created_at;
         delete updates.updatedAt;
         delete updates.updated_at;
+
+        const hasDirectRole = Object.prototype.hasOwnProperty.call(body || {}, 'role');
+        const hasDirectPerm = Object.prototype.hasOwnProperty.call(body || {}, 'permissions');
+
+        if (auth!.role !== 'super_admin' && (hasDirectRole || hasDirectPerm)) {
+          return jsonResponse(
+            { success: false, error: 'Forbidden: Only Super Administrator can modify account roles or permissions.' },
+            403
+          );
+        }
+
+        if (isSelf && auth!.role !== 'super_admin') {
+          delete updates.role;
+          delete updates.permissions;
+        }
 
         // Strict Privilege Escalation Protection:
         // Non-super_admin accounts can NEVER modify roles or permissions for any account (including their own).
@@ -3858,11 +3873,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
               { success: false, error: 'Forbidden: Only Super Administrator can modify account roles or permissions.' },
               403
             );
-          }
-
-          if (isSelf) {
-            delete updates.role;
-            delete updates.permissions;
           }
         }
 

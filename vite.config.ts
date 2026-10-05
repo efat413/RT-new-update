@@ -337,6 +337,8 @@ function localApiDevPlugin(): Plugin {
     const match = nodeCrypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expectedSig));
     if (!match) return null;
     try {
+      const header = JSON.parse(Buffer.from(b64Header, 'base64url').toString('utf-8'));
+      if (!header || header.alg !== 'HS256' || (header.typ && header.typ !== 'JWT')) return null;
       const payload = JSON.parse(Buffer.from(b64Payload, 'base64url').toString('utf-8'));
       const now = Math.floor(Date.now() / 1000);
       if (payload.exp && payload.exp < now) return null;
@@ -3003,17 +3005,43 @@ function localApiDevPlugin(): Plugin {
             if (authResult.error) return sendDevError(res, authResult.error);
 
             return readBody(async (body) => {
-              // Strict Privilege Escalation Protection:
-              // Non-super_admin accounts can NEVER modify roles or permissions for any account (including their own).
-              // Checked immediately to prevent user enumeration and guarantee HTTP 403 on all unauthorized escalation attempts.
-              if (authResult.auth!.role !== 'super_admin' && detectPrivilegeEscalationAttempt(body)) {
+              const isSelf = authResult.auth!.user.id === usrId;
+              const updates = body.updates || body.user || body || {};
+
+              const hasDirectRole = Object.prototype.hasOwnProperty.call(body || {}, 'role');
+              const hasDirectPerm = Object.prototype.hasOwnProperty.call(body || {}, 'permissions');
+
+              if (authResult.auth!.role !== 'super_admin' && (hasDirectRole || hasDirectPerm)) {
                 return sendDevError(res, {
                   status: 403,
                   body: { success: false, error: 'Forbidden: Only Super Administrator can modify account roles or permissions.' },
                 });
               }
 
-              const isSelf = authResult.auth!.user.id === usrId;
+              if (isSelf && authResult.auth!.role !== 'super_admin') {
+                delete updates.role;
+                delete updates.permissions;
+                delete updates.permissions_json;
+              }
+
+              // Strict Privilege Escalation Protection:
+              // Non-super_admin accounts can NEVER modify roles or permissions for any account.
+              if (authResult.auth!.role !== 'super_admin') {
+                const hasRoleField = updates.role !== undefined || body.role !== undefined;
+                const hasPermissionField =
+                  updates.permissions !== undefined ||
+                  body.permissions !== undefined ||
+                  updates.permissions_json !== undefined ||
+                  body.permissions_json !== undefined;
+
+                if (hasRoleField || hasPermissionField) {
+                  return sendDevError(res, {
+                    status: 403,
+                    body: { success: false, error: 'Forbidden: Only Super Administrator can modify account roles or permissions.' },
+                  });
+                }
+              }
+
               if (!isSelf && authResult.auth!.role !== 'super_admin') {
                 const permErr = requireDevPermission(authResult, 'user.manage');
                 if (permErr) return sendDevError(res, permErr);
@@ -3035,36 +3063,9 @@ function localApiDevPlugin(): Plugin {
                 return sendDevError(res, { status: 403, body: { success: false, error: 'Forbidden: Only Super Administrator can modify administrative accounts.' } });
               }
 
-              const updates = body.updates || body.user || body || {};
-
               delete updates.id;
               delete updates.createdAt;
               delete updates.updatedAt;
-
-              // Strict Privilege Escalation Protection:
-              // Non-super_admin accounts can NEVER modify roles or permissions for any account (including their own).
-              if (authResult.auth!.role !== 'super_admin') {
-                const hasRoleField = updates.role !== undefined || body.role !== undefined;
-                const hasPermissionField =
-                  updates.permissions !== undefined ||
-                  body.permissions !== undefined ||
-                  updates.permissions_json !== undefined ||
-                  body.permissions_json !== undefined;
-
-                if (hasRoleField || hasPermissionField) {
-                  return sendDevError(res, {
-                    status: 403,
-                    body: { success: false, error: 'Forbidden: Only Super Administrator can modify account roles or permissions.' },
-                  });
-                }
-
-                if (isSelf) {
-                  delete updates.role;
-                  delete body.role;
-                  delete updates.permissions;
-                  delete body.permissions;
-                }
-              }
 
               if (isTargetSuper && updates.role && updates.role !== 'super_admin') {
                 return sendDevError(res, { status: 403, body: { success: false, error: 'Forbidden: Super Administrator role cannot be modified.' } });
