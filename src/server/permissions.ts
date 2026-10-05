@@ -806,3 +806,140 @@ export function isSuperAdminUserIdServer(userId: string | null | undefined, env?
   const list = getSuperAdminUserIds(env);
   return list.includes(clean);
 }
+
+/**
+ * Normalized sets for detecting privilege escalation attempts in requests.
+ * Covers camelCase, snake_case, alias fields, duplicate fields, and casing variations.
+ */
+const ROLE_KEYS_NORMALIZED = new Set([
+  'role',
+  'roles',
+  'userrole',
+  'userroles',
+  'accountrole',
+  'accountroles',
+  'targetrole',
+  'targetroles',
+  'newrole',
+  'newroles',
+  'assignedrole',
+  'assignedroles',
+]);
+
+const PERMISSION_KEYS_NORMALIZED = new Set([
+  'permission',
+  'permissions',
+  'permissionsjson',
+  'userpermission',
+  'userpermissions',
+  'perm',
+  'perms',
+  'privilege',
+  'privileges',
+  'accesscontrol',
+  'authority',
+  'authorities',
+  'grant',
+  'grants',
+  'scope',
+  'scopes',
+]);
+
+/**
+ * Recursively inspects a request payload to detect any attempt to alter roles or permissions.
+ * Checks objects, arrays, nested keys, aliases, and known permission keys.
+ */
+export function detectPrivilegeEscalationAttempt(payload: any): boolean {
+  if (!payload || typeof payload !== 'object') return false;
+
+  function scan(obj: any, depth = 0): boolean {
+    if (!obj || typeof obj !== 'object' || depth > 6) return false;
+
+    if (Array.isArray(obj)) {
+      for (const item of obj) {
+        if (item && typeof item === 'object') {
+          if (scan(item, depth + 1)) return true;
+        }
+      }
+      return false;
+    }
+
+    for (const [rawKey, val] of Object.entries(obj)) {
+      if (val === undefined) continue;
+      const normalized = rawKey.toLowerCase().replace(/[-_.]/g, '');
+
+      // Check role keys
+      if (ROLE_KEYS_NORMALIZED.has(normalized)) return true;
+
+      // Check permission keys
+      if (PERMISSION_KEYS_NORMALIZED.has(normalized)) return true;
+
+      // Check if raw key itself is a registered granular permission
+      if (isValidPermissionKey(rawKey)) return true;
+
+      // Recursively check nested objects
+      if (val && typeof val === 'object') {
+        if (scan(val, depth + 1)) return true;
+      }
+    }
+
+    return false;
+  }
+
+  return scan(payload);
+}
+
+/**
+ * Normalizes permission inputs from various formats:
+ * - { permissions: { 'order.view': true } }
+ * - { 'order.view': true }
+ * - { permissions: ['order.view', 'order.status_change'] }
+ * - ['order.view', 'order.status_change']
+ * - JSON serialized string
+ */
+export function normalizePermissionsInput(input: any): Record<string, boolean> | null {
+  if (!input) return null;
+
+  let candidate = input;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate);
+    } catch {
+      if (isValidPermissionKey(candidate)) {
+        return { [candidate]: true };
+      }
+      return null;
+    }
+  }
+
+  if (typeof candidate !== 'object' || candidate === null) return null;
+
+  if (candidate.permissions && (typeof candidate.permissions === 'object' || typeof candidate.permissions === 'string')) {
+    return normalizePermissionsInput(candidate.permissions);
+  }
+
+  if (Array.isArray(candidate)) {
+    const res: Record<string, boolean> = {};
+    for (const item of candidate) {
+      if (typeof item === 'string') {
+        res[item.trim()] = true;
+      }
+    }
+    return res;
+  }
+
+  const res: Record<string, boolean> = {};
+  for (const [key, val] of Object.entries(candidate)) {
+    if (typeof val === 'boolean') {
+      res[key] = val;
+    } else if (val === 1 || val === '1' || val === 'true') {
+      res[key] = true;
+    } else if (val === 0 || val === '0' || val === 'false' || val === null) {
+      res[key] = false;
+    } else {
+      res[key] = Boolean(val);
+    }
+  }
+  return res;
+}
+

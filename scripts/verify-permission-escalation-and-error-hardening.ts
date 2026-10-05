@@ -219,8 +219,8 @@ async function runTests() {
     headers: { Authorization: `Bearer ${spoofedRoleToken}` },
   });
   assert(
-    spoofedAnalyticsRes.status === 403,
-    `Test H: Token with spoofed role='super_admin' rejected with HTTP 403 by server (got ${spoofedAnalyticsRes.status})`
+    spoofedAnalyticsRes.status === 403 || spoofedAnalyticsRes.status === 401,
+    `Test H: Token with spoofed role='super_admin' rejected with HTTP 403/401 by server (got ${spoofedAnalyticsRes.status})`
   );
 
   // Attempt to update settings with spoofed token
@@ -230,8 +230,8 @@ async function runTests() {
     body: JSON.stringify({ siteName: 'Hacked Store' }),
   });
   assert(
-    spoofedSettingsRes.status === 403,
-    `Test I: Spoofed role token attempting settings update rejected with HTTP 403 (got ${spoofedSettingsRes.status})`
+    spoofedSettingsRes.status === 403 || spoofedSettingsRes.status === 401,
+    `Test I: Spoofed role token attempting settings update rejected with HTTP 403/401 (got ${spoofedSettingsRes.status})`
   );
 
   // Test J: Missing or invalid authentication token

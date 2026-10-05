@@ -649,6 +649,8 @@ import {
   getSuperAdminUserIds,
   isSuperAdminEmailServer,
   isSuperAdminUserIdServer,
+  detectPrivilegeEscalationAttempt,
+  normalizePermissionsInput,
 } from './permissions';
 
 /**
@@ -1870,12 +1872,12 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     });
   }
 
-  const permGetMatch = path.match(/^\/api\/(?:admin\/)?users\/([^/]+)\/permissions\/?$/);
+  const permGetMatch = path.match(/^\/api\/(?:admin\/)?(?:users\/([^/]+)\/permissions|permissions\/([^/]+))\/?$/);
   if (permGetMatch && method === 'GET') {
     const { auth, errorResponse } = await requireAuth(request, env);
     if (errorResponse) return errorResponse;
 
-    const targetUserId = decodeURIComponent(permGetMatch[1]);
+    const targetUserId = decodeURIComponent(permGetMatch[1] || permGetMatch[2]);
     const isSelf = auth!.dbUser.id === targetUserId;
     const canView = isSelf || auth!.role === 'super_admin' || hasPermission(auth!, 'permission.manage') || hasPermission(auth!, 'user.view');
 
@@ -1900,7 +1902,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     });
   }
 
-  const permUpdateMatch = path.match(/^\/api\/(?:admin\/)?users\/([^/]+)\/permissions\/?$/);
+  const permUpdateMatch = path.match(/^\/api\/(?:admin\/)?(?:users\/([^/]+)\/permissions|permissions\/([^/]+))\/?$/);
   if (permUpdateMatch && method !== 'GET') {
     const { auth, errorResponse } = await requireAuth(request, env);
     if (errorResponse) return errorResponse;
@@ -1917,7 +1919,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       return jsonResponse({ success: false, error: 'Method not allowed.' }, 405);
     }
 
-    const targetUserId = decodeURIComponent(permUpdateMatch[1]);
+    const targetUserId = decodeURIComponent(permUpdateMatch[1] || permUpdateMatch[2]);
     const targetUserRow = await env.DB.prepare('SELECT id, name, email, role, permissions_json FROM users WHERE id = ?')
       .bind(targetUserId)
       .first<UserRow>();
@@ -1945,10 +1947,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
     if (jsonErr) return jsonErr;
 
-    const permissionsInput = body?.permissions || body;
+    const rawPermissions = body?.permissions || body?.user_permissions || body?.permissions_json || body;
+    const permissionsInput = normalizePermissionsInput(rawPermissions);
 
     if (!permissionsInput || typeof permissionsInput !== 'object') {
-      return jsonResponse({ success: false, error: 'Invalid permissions payload: expected a permissions object.' }, 400);
+      return jsonResponse({ success: false, error: 'Invalid permissions payload: expected a permissions object or array.' }, 400);
     }
 
     // Validate every permission key against central registry
@@ -2009,6 +2012,102 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       message: `Permissions updated successfully for user "${targetUserRow.name}".`,
       permissions: resolveUserPermissions(targetUserRow.role, permissionsJson),
       user: freshUserRow ? rowToUser(freshUserRow) : null,
+    });
+  }
+
+  // ==========================================
+  // ROLE MANAGEMENT ROUTES (Super Admin Only)
+  // ==========================================
+  const roleRouteMatch = path.match(/^\/api\/(?:admin\/)?(?:users\/([^/]+)\/role|roles\/([^/]+))\/?$/);
+  if (roleRouteMatch) {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+
+    // Strict Privilege Escalation Protection: ONLY super_admin can modify roles
+    if (auth!.role !== 'super_admin') {
+      return jsonResponse(
+        { success: false, error: 'Forbidden: Only Super Administrator can modify user roles.' },
+        403
+      );
+    }
+
+    const targetUserId = decodeURIComponent(roleRouteMatch[1] || roleRouteMatch[2]);
+    const targetUserRow = await env.DB.prepare('SELECT id, name, email, role, permissions_json FROM users WHERE id = ?')
+      .bind(targetUserId)
+      .first<UserRow>();
+
+    if (!targetUserRow) {
+      return jsonResponse({ success: false, error: 'Target user not found.' }, 404);
+    }
+
+    if (method === 'GET') {
+      return jsonResponse({
+        success: true,
+        userId: targetUserId,
+        role: targetUserRow.role,
+      });
+    }
+
+    if (method !== 'PUT' && method !== 'PATCH' && method !== 'POST') {
+      return jsonResponse({ success: false, error: 'Method not allowed.' }, 405);
+    }
+
+    const isTargetSuperAdmin = isSuperAdminUserServer(targetUserRow, env) || targetUserRow.role === 'super_admin';
+
+    const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+    if (jsonErr) return jsonErr;
+
+    const requestedRole = (
+      body?.role ||
+      body?.userRole ||
+      body?.user_role ||
+      body?.targetRole ||
+      body?.target_role ||
+      body?.newRole ||
+      body?.new_role ||
+      ''
+    ).toString().toLowerCase().trim();
+
+    const allowedRoles = ['admin', 'sub_admin', 'customer', 'super_admin'];
+    if (!allowedRoles.includes(requestedRole)) {
+      return jsonResponse(
+        { success: false, error: `Invalid role "${requestedRole}". Allowed roles are: admin, sub_admin, customer.` },
+        400
+      );
+    }
+
+    // Target super_admin account cannot be downgraded away from super_admin!
+    if (isTargetSuperAdmin && requestedRole !== 'super_admin') {
+      return jsonResponse(
+        { success: false, error: 'Forbidden: Super Administrator role cannot be modified.' },
+        403
+      );
+    }
+
+    let newPermissionsJson = targetUserRow.permissions_json;
+    if (requestedRole === 'customer') {
+      newPermissionsJson = null;
+    }
+
+    await env.DB.prepare('UPDATE users SET role = ?, permissions_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .bind(requestedRole, newPermissionsJson, targetUserId)
+      .run();
+
+    await insertAuditLogInD1(env.DB, {
+      actorId: auth!.dbUser.id,
+      actorEmail: auth!.dbUser.email,
+      actorRole: auth!.role,
+      action: 'user.role_update',
+      targetId: targetUserId,
+      targetType: 'user',
+      details: { previousRole: targetUserRow.role, newRole: requestedRole },
+    });
+
+    const updatedUserRow = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(targetUserId).first<UserRow>();
+    return jsonResponse({
+      success: true,
+      message: `User role updated successfully for "${targetUserRow.name}".`,
+      user: rowToUser(updatedUserRow!),
     });
   }
 
@@ -3523,7 +3622,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         }
 
         // Sub-admin or admin can NEVER configure roles or permissions during account creation!
-        if (auth!.role !== 'super_admin' && (userData.role !== undefined || userData.permissions || userData.permissions_json)) {
+        if (auth!.role !== 'super_admin' && (detectPrivilegeEscalationAttempt(body) || userData.role !== undefined || userData.permissions || userData.permissions_json)) {
           return jsonResponse(
             { success: false, error: 'Forbidden: Only Super Administrator can configure account roles or permissions.' },
             403
@@ -3546,6 +3645,19 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     if (method === 'PUT' || method === 'PATCH') {
       const { auth, errorResponse } = await requireAuth(request, env);
       if (errorResponse) return errorResponse;
+
+      const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+      if (jsonErr) return jsonErr;
+
+      // Strict Privilege Escalation Protection:
+      // Non-super_admin accounts can NEVER modify roles or permissions for any account (including their own).
+      // Checked immediately to prevent user enumeration and guarantee HTTP 403 on all unauthorized escalation attempts.
+      if (auth!.role !== 'super_admin' && detectPrivilegeEscalationAttempt(body)) {
+        return jsonResponse(
+          { success: false, error: 'Forbidden: Only Super Administrator can modify account roles or permissions.' },
+          403
+        );
+      }
 
       // Check target user in D1
       const targetUser = await env.DB.prepare('SELECT id, email, role FROM users WHERE id = ?').bind(usrId).first<{ id: string; email: string; role: string }>();
@@ -3572,13 +3684,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         );
       }
 
-      if (!isSelf) {
+      if (!isSelf && auth!.role !== 'super_admin') {
         const permErr = requirePermission(auth!, 'user.manage');
         if (permErr) return permErr;
       }
-
-      const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
-      if (jsonErr) return jsonErr;
 
       try {
         const updates = body?.updates || body?.user || body || {};
