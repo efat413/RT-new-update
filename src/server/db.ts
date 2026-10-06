@@ -163,6 +163,109 @@ export async function ensureProductTableSchema(db: D1Database): Promise<Set<stri
   return columns;
 }
 
+let cachedOrderTableColumns: Set<string> | null = null;
+let orderSchemaHealingAttempted = false;
+
+export async function getOrderTableColumns(db: D1Database): Promise<Set<string>> {
+  if (cachedOrderTableColumns && cachedOrderTableColumns.size > 0) {
+    return cachedOrderTableColumns;
+  }
+  try {
+    const res = await db.prepare("SELECT name FROM pragma_table_info('orders')").all<{ name: string }>();
+    if (res.results && res.results.length > 0) {
+      cachedOrderTableColumns = new Set(res.results.map((r) => r.name.toLowerCase()));
+      return cachedOrderTableColumns;
+    }
+  } catch (err) {
+    console.warn('[D1] Could not query pragma_table_info for orders:', err);
+  }
+  return new Set([
+    'id', 'order_number', 'user_id', 'user_email', 'customer_name', 'customer_phone',
+    'customer_address', 'customer_district', 'customer_zone', 'customer_notes',
+    'items_json', 'subtotal', 'delivery_fee', 'total_amount', 'total_cost', 'total_profit',
+    'coupon_code', 'discount_amount', 'payment_method', 'payment_status', 'transaction_id',
+    'shipping_status', 'courier_name', 'courier_waybill', 'consignment_id', 'courier_status',
+    'courier_booking_json', 'dbbl_details_json', 'card_details_json', 'last_courier_sync',
+    'advance_payment', 'advance_payment_method', 'advance_payment_note',
+    'advance_payment_updated_at', 'advance_payment_updated_by', 'created_at', 'updated_at'
+  ]);
+}
+
+export async function ensureOrderTableSchema(db: D1Database): Promise<Set<string>> {
+  let columns = await getOrderTableColumns(db);
+
+  if (!orderSchemaHealingAttempted) {
+    orderSchemaHealingAttempted = true;
+
+    // Self-heal: advance_payment column
+    if (!columns.has('advance_payment')) {
+      try {
+        await db.prepare('ALTER TABLE orders ADD COLUMN advance_payment REAL NOT NULL DEFAULT 0').run();
+        cachedOrderTableColumns = null;
+        columns = await getOrderTableColumns(db);
+        console.log('[D1] Self-healed: added missing advance_payment column to orders table.');
+      } catch (err: any) {
+        console.warn('[D1] advance_payment column addition notice:', err?.message || err);
+      }
+    }
+
+    // Self-heal: advance_payment_method column
+    if (!columns.has('advance_payment_method')) {
+      try {
+        await db.prepare('ALTER TABLE orders ADD COLUMN advance_payment_method TEXT').run();
+        cachedOrderTableColumns = null;
+        columns = await getOrderTableColumns(db);
+        console.log('[D1] Self-healed: added missing advance_payment_method column to orders table.');
+      } catch (err: any) {
+        console.warn('[D1] advance_payment_method column addition notice:', err?.message || err);
+      }
+    }
+
+    // Self-heal: advance_payment_note column
+    if (!columns.has('advance_payment_note')) {
+      try {
+        await db.prepare('ALTER TABLE orders ADD COLUMN advance_payment_note TEXT').run();
+        cachedOrderTableColumns = null;
+        columns = await getOrderTableColumns(db);
+        console.log('[D1] Self-healed: added missing advance_payment_note column to orders table.');
+      } catch (err: any) {
+        console.warn('[D1] advance_payment_note column addition notice:', err?.message || err);
+      }
+    }
+
+    // Self-heal: advance_payment_updated_at column
+    if (!columns.has('advance_payment_updated_at')) {
+      try {
+        await db.prepare('ALTER TABLE orders ADD COLUMN advance_payment_updated_at TEXT').run();
+        cachedOrderTableColumns = null;
+        columns = await getOrderTableColumns(db);
+        console.log('[D1] Self-healed: added missing advance_payment_updated_at column to orders table.');
+      } catch (err: any) {
+        console.warn('[D1] advance_payment_updated_at column addition notice:', err?.message || err);
+      }
+    }
+
+    // Self-heal: advance_payment_updated_by column
+    if (!columns.has('advance_payment_updated_by')) {
+      try {
+        await db.prepare('ALTER TABLE orders ADD COLUMN advance_payment_updated_by TEXT').run();
+        cachedOrderTableColumns = null;
+        columns = await getOrderTableColumns(db);
+        console.log('[D1] Self-healed: added missing advance_payment_updated_by column to orders table.');
+      } catch (err: any) {
+        console.warn('[D1] advance_payment_updated_by column addition notice:', err?.message || err);
+      }
+    }
+
+    // Self-heal: index on advance_payment
+    try {
+      await db.prepare('CREATE INDEX IF NOT EXISTS idx_orders_advance_payment ON orders(advance_payment)').run();
+    } catch {}
+  }
+
+  return columns;
+}
+
 export function buildSelectProductColumns(availableColumns: Set<string>, includeBuyingPrice?: boolean): string {
   const desired = [
     'id',
@@ -194,6 +297,7 @@ export function buildSelectProductColumns(availableColumns: Set<string>, include
 
 export async function ensureSchemaColumns(db: D1Database): Promise<void> {
   await ensureProductTableSchema(db);
+  await ensureOrderTableSchema(db);
 }
 
 export interface SanitizationOptions {
@@ -487,6 +591,9 @@ export function sanitizeOrderForPublicTracking(order: Order): any {
     subtotal: Number(order.subtotal || 0),
     deliveryFee: Number(order.deliveryFee || 0),
     totalAmount: Number(order.totalAmount || 0),
+    advancePayment: order.advancePayment != null ? Number(order.advancePayment) : 0,
+    customerDue: order.customerDue != null ? Number(order.customerDue) : Math.max(0, Math.round(((Number(order.totalAmount) || 0) - (Number(order.advancePayment) || 0)) * 100) / 100),
+    dueAmount: order.dueAmount != null ? Number(order.dueAmount) : Math.max(0, Math.round(((Number(order.totalAmount) || 0) - (Number(order.advancePayment) || 0)) * 100) / 100),
   };
 }
 
@@ -2763,6 +2870,13 @@ export function rowToOrder(row: OrderRow): Order {
     lastCourierSync: row.last_courier_sync || undefined,
     totalCost: row.total_cost != null ? Number(row.total_cost) : (items.reduce((s: number, it: any) => s + (Number(it.productCost) || (Number(it.buyingPriceSnapshot || it.product?.buyingPrice || 0) * (Number(it.quantity) || 1))), 0)),
     totalGrossProfit: row.total_profit != null ? Number(row.total_profit) : Math.max(0, (Number(row.subtotal) || 0) - (row.total_cost != null ? Number(row.total_cost) : (items.reduce((s: number, it: any) => s + (Number(it.productCost) || (Number(it.buyingPriceSnapshot || it.product?.buyingPrice || 0) * (Number(it.quantity) || 1))), 0)))),
+    advancePayment: row.advance_payment != null && !isNaN(Number(row.advance_payment)) ? Math.max(0, Number(row.advance_payment)) : 0,
+    advancePaymentMethod: row.advance_payment_method || undefined,
+    advancePaymentNote: row.advance_payment_note || undefined,
+    advancePaymentUpdatedAt: row.advance_payment_updated_at || undefined,
+    advancePaymentUpdatedBy: row.advance_payment_updated_by || undefined,
+    customerDue: Math.max(0, Math.round(((Number(row.total_amount) || 0) - (row.advance_payment != null && !isNaN(Number(row.advance_payment)) ? Math.max(0, Number(row.advance_payment)) : 0)) * 100) / 100),
+    dueAmount: Math.max(0, Math.round(((Number(row.total_amount) || 0) - (row.advance_payment != null && !isNaN(Number(row.advance_payment)) ? Math.max(0, Number(row.advance_payment)) : 0)) * 100) / 100),
     createdAt: row.created_at,
   };
 }
@@ -2865,6 +2979,8 @@ function buildOrderWhereClause(filter?: OrderFilter): { whereClause: string; bin
     const paymentKey = rawPayment.toUpperCase();
     if (paymentKey === 'PAID') {
       where += ` AND UPPER(payment_status) = 'PAID'`;
+    } else if (paymentKey === 'PARTIAL' || paymentKey === 'PARTIALLY_PAID') {
+      where += ` AND (UPPER(payment_status) = 'PARTIAL' OR UPPER(payment_status) = 'PARTIALLY_PAID')`;
     } else if (paymentKey === 'DUE') {
       where += ` AND UPPER(payment_status) != 'PAID'`;
     } else if (rawPayment.toLowerCase() === 'dbbl') {
@@ -3003,6 +3119,7 @@ export async function getAllOrders(
 }
 
 export async function getOrderById(db: D1Database, idOrNumber: string): Promise<Order | null> {
+  await ensureOrderTableSchema(db);
   const query = 'SELECT * FROM orders WHERE id = ? OR order_number = ? LIMIT 1';
   const row = await db.prepare(query).bind(idOrNumber, idOrNumber).first<OrderRow>();
   return row ? rowToOrder(row) : null;
@@ -3272,6 +3389,17 @@ export async function insertOrder(db: D1Database, order: Order): Promise<Order> 
   }
 
   // 9. Construct atomic D1 batch transaction (order insertion + stock deductions)
+  await ensureOrderTableSchema(db);
+
+  const rawAdvance = order.advancePayment != null ? Number(order.advancePayment) : 0;
+  const initialAdvance = Number.isFinite(rawAdvance) && rawAdvance > 0
+    ? Math.min(authoritativeTotalAmount, Math.max(0, rawAdvance))
+    : 0;
+  const advanceMethod = order.advancePaymentMethod ? String(order.advancePaymentMethod).trim() : null;
+  const advanceNote = order.advancePaymentNote ? String(order.advancePaymentNote).trim() : null;
+  const advanceUpdatedAt = initialAdvance > 0 ? (order.advancePaymentUpdatedAt || new Date().toISOString()) : null;
+  const advanceUpdatedBy = initialAdvance > 0 ? (order.advancePaymentUpdatedBy || order.userId || 'system') : null;
+
   const insertSql = `
     INSERT INTO orders (
       id, order_number, user_id, user_email,
@@ -3281,6 +3409,7 @@ export async function insertOrder(db: D1Database, order: Order): Promise<Order> 
       shipping_status, courier_name, courier_waybill, consignment_id, courier_status,
       courier_booking_json, dbbl_details_json, card_details_json, last_courier_sync,
       total_cost, total_profit,
+      advance_payment, advance_payment_method, advance_payment_note, advance_payment_updated_at, advance_payment_updated_by,
       created_at, updated_at
     ) VALUES (
       ?, ?, ?, ?,
@@ -3290,6 +3419,7 @@ export async function insertOrder(db: D1Database, order: Order): Promise<Order> 
       ?, ?, ?, ?, ?,
       ?, ?, ?, ?,
       ?, ?,
+      ?, ?, ?, ?, ?,
       ?, CURRENT_TIMESTAMP
     );
   `;
@@ -3341,6 +3471,11 @@ export async function insertOrder(db: D1Database, order: Order): Promise<Order> 
         null,
         totalOrderCost,
         totalGrossProfit,
+        initialAdvance,
+        advanceMethod,
+        advanceNote,
+        advanceUpdatedAt,
+        advanceUpdatedBy,
         order.createdAt || new Date().toISOString()
       );
 
@@ -3484,9 +3619,30 @@ export async function updateOrderInD1(
       last_courier_sync = ?,
       total_cost = ?,
       total_profit = ?,
+      advance_payment = ?,
+      advance_payment_method = ?,
+      advance_payment_note = ?,
+      advance_payment_updated_at = ?,
+      advance_payment_updated_by = ?,
       updated_at = CURRENT_TIMESTAMP
     WHERE id = ?;
   `;
+
+  const advancePaymentToSave = merged.advancePayment != null && !isNaN(Number(merged.advancePayment))
+    ? Math.max(0, Number(merged.advancePayment))
+    : (existing.advancePayment ?? 0);
+  const advanceMethodToSave = merged.advancePaymentMethod !== undefined
+    ? (merged.advancePaymentMethod || null)
+    : (existing.advancePaymentMethod || null);
+  const advanceNoteToSave = merged.advancePaymentNote !== undefined
+    ? (merged.advancePaymentNote || null)
+    : (existing.advancePaymentNote || null);
+  const advanceUpdatedAtToSave = merged.advancePaymentUpdatedAt !== undefined
+    ? (merged.advancePaymentUpdatedAt || null)
+    : (existing.advancePaymentUpdatedAt || null);
+  const advanceUpdatedByToSave = merged.advancePaymentUpdatedBy !== undefined
+    ? (merged.advancePaymentUpdatedBy || null)
+    : (existing.advancePaymentUpdatedBy || null);
 
   await db
     .prepare(updateSql)
@@ -3517,6 +3673,11 @@ export async function updateOrderInD1(
       merged.lastCourierSync || null,
       calculatedCost != null ? calculatedCost : null,
       calculatedProfit != null ? calculatedProfit : null,
+      advancePaymentToSave,
+      advanceMethodToSave,
+      advanceNoteToSave,
+      advanceUpdatedAtToSave,
+      advanceUpdatedByToSave,
       id
     )
     .run();

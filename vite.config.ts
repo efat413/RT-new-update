@@ -68,11 +68,21 @@ function localApiDevPlugin(): Plugin {
     });
     const totalCost = o.totalCost ?? items.reduce((s: number, it: any) => s + (it.productCost || 0), 0);
     const totalGrossProfit = o.totalGrossProfit ?? Math.max(0, (Number(o.subtotal) || 0) - totalCost);
+    const advance = o.advancePayment != null ? Math.max(0, Number(o.advancePayment)) : 0;
+    const finalTotal = Number(o.totalAmount) || 0;
+    const customerDue = Math.max(0, Math.round((finalTotal - advance) * 100) / 100);
     return {
       ...o,
       items,
       totalCost,
       totalGrossProfit,
+      advancePayment: advance,
+      advancePaymentMethod: o.advancePaymentMethod || undefined,
+      advancePaymentNote: o.advancePaymentNote || undefined,
+      advancePaymentUpdatedAt: o.advancePaymentUpdatedAt || undefined,
+      advancePaymentUpdatedBy: o.advancePaymentUpdatedBy || undefined,
+      customerDue,
+      dueAmount: customerDue,
     };
   });
   let devProducts: any[] = INITIAL_PRODUCTS.map((p) => ({
@@ -1185,6 +1195,9 @@ function localApiDevPlugin(): Plugin {
       subtotal: Number(order.subtotal || 0),
       deliveryFee: Number(order.deliveryFee || 0),
       totalAmount: Number(order.totalAmount || 0),
+      advancePayment: order.advancePayment != null ? Number(order.advancePayment) : 0,
+      customerDue: order.customerDue != null ? Number(order.customerDue) : Math.max(0, Math.round(((Number(order.totalAmount) || 0) - (Number(order.advancePayment) || 0)) * 100) / 100),
+      dueAmount: order.dueAmount != null ? Number(order.dueAmount) : Math.max(0, Math.round(((Number(order.totalAmount) || 0) - (Number(order.advancePayment) || 0)) * 100) / 100),
     };
   };
 
@@ -3590,8 +3603,10 @@ function localApiDevPlugin(): Plugin {
 
             if (rawPayment && rawPayment.toLowerCase() !== 'all') {
               const isPaid = String(ord.paymentStatus || '').toUpperCase() === 'PAID';
+              const isPartial = ['PARTIAL', 'PARTIALLY_PAID'].includes(String(ord.paymentStatus || '').toUpperCase());
               const pMethod = String(ord.paymentMethod || '').toLowerCase();
               if (rawPayment.toUpperCase() === 'PAID' && !isPaid) return false;
+              if (['PARTIAL', 'PARTIALLY_PAID'].includes(rawPayment.toUpperCase()) && !isPartial) return false;
               if (rawPayment.toUpperCase() === 'DUE' && isPaid) return false;
               if (rawPayment.toLowerCase() === 'dbbl' && pMethod !== 'dbbl') return false;
               if (rawPayment.toLowerCase() === 'cod' && pMethod !== 'cod') return false;
@@ -3783,6 +3798,13 @@ function localApiDevPlugin(): Plugin {
                 shippingStatus,
                 totalCost,
                 totalGrossProfit,
+                advancePayment: 0,
+                advancePaymentMethod: undefined,
+                advancePaymentNote: undefined,
+                advancePaymentUpdatedAt: undefined,
+                advancePaymentUpdatedBy: undefined,
+                customerDue: Number(rawOrder.totalAmount) || 0,
+                dueAmount: Number(rawOrder.totalAmount) || 0,
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString(),
               };
@@ -3975,6 +3997,15 @@ function localApiDevPlugin(): Plugin {
               const updates = body.updates || body;
               const updateKeys = Object.keys(updates);
 
+              const idx = devOrders.findIndex((o) => o.id === id || o.orderNumber === id);
+              if (idx < 0) {
+                res.statusCode = 404;
+                return res.end(JSON.stringify({ success: false, error: 'Order not found' }));
+              }
+
+              const old = devOrders[idx];
+              const hasAdvanceUpdate = updates.advancePayment !== undefined || (updates as any).advance_payment !== undefined;
+
               const isCancellation = (updates.orderStatus === 'Cancelled' || updates.shippingStatus === 'Cancelled') &&
                 updateKeys.every((k) => ['orderStatus', 'shippingStatus', 'notes', 'cancellationReason', 'updatedAt'].includes(k));
 
@@ -3986,7 +4017,7 @@ function localApiDevPlugin(): Plugin {
                 if (!hasDevPermission(authResult.auth!, 'order.cancel') && !hasDevPermission(authResult.auth!, 'order.manage') && !isSuperRole) {
                   return sendDevError(res, { status: 403, body: { success: false, error: 'Forbidden: Order cancellation permission required.', requiredPermission: 'order.cancel' } });
                 }
-              } else if (isStatusOnly) {
+              } else if (isStatusOnly && !hasAdvanceUpdate) {
                 if (!hasDevPermission(authResult.auth!, 'order.status_change') && !hasDevPermission(authResult.auth!, 'order.manage') && !isSuperRole) {
                   return sendDevError(res, { status: 403, body: { success: false, error: 'Forbidden: Order status change permission required.', requiredPermission: 'order.status_change' } });
                 }
@@ -3995,10 +4026,87 @@ function localApiDevPlugin(): Plugin {
                 if (permErr) return sendDevError(res, permErr);
               }
 
-              const idx = devOrders.findIndex((o) => o.id === id || o.orderNumber === id);
-              if (idx >= 0) {
-                const old = devOrders[idx];
-                devOrders[idx] = { ...devOrders[idx], ...updates };
+              const previousAdvance = old.advancePayment != null ? Number(old.advancePayment) : 0;
+              let validatedAdvance = previousAdvance;
+              let customerDue = Math.max(0, Math.round(((Number(old.totalAmount) || 0) - previousAdvance) * 100) / 100);
+
+              if (hasAdvanceUpdate) {
+                const authoritativeTotal = Number(old.totalAmount) || 0;
+                const rawAdvance = updates.advancePayment !== undefined ? updates.advancePayment : (updates as any).advance_payment;
+                const parsedAdvance = typeof rawAdvance === 'string' ? Number(rawAdvance) : rawAdvance;
+
+                if (typeof parsedAdvance !== 'number' || !Number.isFinite(parsedAdvance) || Number.isNaN(parsedAdvance)) {
+                  res.statusCode = 400;
+                  return res.end(JSON.stringify({ success: false, error: 'Invalid advance payment: Must be a valid finite monetary number.' }));
+                }
+
+                if (parsedAdvance < 0) {
+                  res.statusCode = 400;
+                  return res.end(JSON.stringify({ success: false, error: 'Invalid advance payment: Advance payment amount cannot be negative. Value must be greater than or equal to 0.' }));
+                }
+
+                validatedAdvance = Math.round(parsedAdvance * 100) / 100;
+
+                if (validatedAdvance > authoritativeTotal) {
+                  res.statusCode = 400;
+                  return res.end(JSON.stringify({ success: false, error: `Invalid advance payment: Advance payment (৳${validatedAdvance}) cannot exceed authoritative order total (৳${authoritativeTotal}).` }));
+                }
+
+                customerDue = Math.max(0, Math.round((authoritativeTotal - validatedAdvance) * 100) / 100);
+                const nowIso = new Date().toISOString();
+                const actorIdentifier = authResult.auth?.user?.email || authResult.auth?.user?.id || 'admin';
+
+                const rawMethod = updates.advancePaymentMethod !== undefined ? updates.advancePaymentMethod : (updates as any).advance_payment_method;
+                const advanceMethod = rawMethod !== undefined ? (rawMethod ? String(rawMethod).trim() : null) : (old.advancePaymentMethod || null);
+
+                const rawNote = updates.advancePaymentNote !== undefined ? updates.advancePaymentNote : (updates as any).advance_payment_note;
+                const advanceNote = rawNote !== undefined ? (rawNote ? String(rawNote).trim() : null) : (old.advancePaymentNote || null);
+
+                updates.advancePayment = validatedAdvance;
+                updates.advancePaymentMethod = advanceMethod || undefined;
+                updates.advancePaymentNote = advanceNote || undefined;
+                updates.advancePaymentUpdatedAt = nowIso;
+                updates.advancePaymentUpdatedBy = actorIdentifier;
+                updates.customerDue = customerDue;
+                updates.dueAmount = customerDue;
+
+                if (!updates.paymentStatus) {
+                  if (validatedAdvance === 0) {
+                    if (old.paymentStatus === 'PARTIAL' || old.paymentStatus === 'Partial' || old.paymentStatus === 'Paid' || old.paymentStatus === 'PAID') {
+                      updates.paymentStatus = (old.paymentMethod === 'dbbl' ? 'UNVERIFIED' : 'DUE') as any;
+                    }
+                  } else if (customerDue === 0 && authoritativeTotal > 0) {
+                    updates.paymentStatus = 'Paid' as any;
+                  } else if (validatedAdvance > 0 && customerDue > 0) {
+                    updates.paymentStatus = 'PARTIAL' as any;
+                  }
+                }
+              }
+
+              devOrders[idx] = { ...devOrders[idx], ...updates };
+
+              if (hasAdvanceUpdate && (previousAdvance !== validatedAdvance || updates.advancePaymentMethod !== old.advancePaymentMethod || updates.advancePaymentNote !== old.advancePaymentNote)) {
+                devAuditLogs.unshift({
+                  id: `audit-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+                  timestamp: new Date().toISOString(),
+                  actorId: authResult.auth?.user?.id || 'admin',
+                  actorEmail: authResult.auth?.user?.email || 'admin@local.test',
+                  actorRole: authResult.auth?.role || 'admin',
+                  action: 'ORDER_ADVANCE_PAYMENT_UPDATE',
+                  targetId: old.id,
+                  targetType: 'order',
+                  details: {
+                    orderNumber: old.orderNumber,
+                    previousAdvance,
+                    newAdvance: validatedAdvance,
+                    orderTotal: old.totalAmount,
+                    customerDue,
+                    paymentMethod: updates.advancePaymentMethod || null,
+                    note: updates.advancePaymentNote || null,
+                  },
+                  ipAddress: getDevClientIp(req),
+                });
+              }
 
                 // Handle stock restoration on cancellation
                 if (updates.shippingStatus === 'Cancelled' && old.shippingStatus !== 'Cancelled') {
@@ -4032,9 +4140,6 @@ function localApiDevPlugin(): Plugin {
                   success: true,
                   order: sanitizeDevOrder(devOrders[idx], { isSuperAdmin: isSuperRole, canViewBuyingPrice: canViewBuying, canViewProfit: canViewProf }),
                 }));
-              }
-              res.statusCode = 404;
-              return res.end(JSON.stringify({ success: false, error: 'Order not found' }));
             });
           }
 

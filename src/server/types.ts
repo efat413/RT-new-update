@@ -112,6 +112,11 @@ export interface OrderRow {
   last_courier_sync: string | null;
   total_cost: number | null;
   total_profit: number | null;
+  advance_payment?: number | null;
+  advance_payment_method?: string | null;
+  advance_payment_note?: string | null;
+  advance_payment_updated_at?: string | null;
+  advance_payment_updated_by?: string | null;
   created_at: string;
   updated_at: string;
 }

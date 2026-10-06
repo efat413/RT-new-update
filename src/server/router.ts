@@ -4712,6 +4712,15 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         const updates: Partial<Order> = body?.updates || body;
         const updateKeys = Object.keys(updates);
 
+        const existing = await getOrderById(env.DB, orderId);
+        if (!existing) {
+          return jsonResponse({ success: false, error: 'Order not found' }, 404);
+        }
+
+        const hasAdvanceUpdate =
+          updates.advancePayment !== undefined ||
+          (updates as any).advance_payment !== undefined;
+
         // Check if this is a cancellation request
         const isCancellation =
           (updates.shippingStatus === 'Cancelled' || (updates as any).orderStatus === 'Cancelled' || (updates as any).status === 'Cancelled') &&
@@ -4726,7 +4735,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           if (!hasPermission(auth!, 'order.cancel') && !hasPermission(auth!, 'order.manage') && auth!.role !== 'super_admin') {
             return jsonResponse({ success: false, error: 'Forbidden: Order cancellation permission required.', requiredPermission: 'order.cancel' }, 403);
           }
-        } else if (isStatusOnly) {
+        } else if (isStatusOnly && !hasAdvanceUpdate) {
           if (!hasPermission(auth!, 'order.status_change') && !hasPermission(auth!, 'order.manage') && auth!.role !== 'super_admin') {
             return jsonResponse({ success: false, error: 'Forbidden: Order status change permission required.', requiredPermission: 'order.status_change' }, 403);
           }
@@ -4735,7 +4744,128 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           if (permErr) return permErr;
         }
 
+        const previousAdvance = existing.advancePayment != null ? Number(existing.advancePayment) : 0;
+        let validatedAdvance = previousAdvance;
+        let customerDue = Math.max(0, Math.round(((Number(existing.totalAmount) || 0) - previousAdvance) * 100) / 100);
+
+        if (hasAdvanceUpdate) {
+          // Authoritative order total from database — frontend-provided total is NEVER trusted
+          const authoritativeTotal = Number(existing.totalAmount) || 0;
+
+          const rawAdvance = updates.advancePayment !== undefined ? updates.advancePayment : (updates as any).advance_payment;
+          const parsedAdvance = typeof rawAdvance === 'string' ? Number(rawAdvance) : rawAdvance;
+
+          // 1. Value must be a valid finite monetary number
+          if (typeof parsedAdvance !== 'number' || !Number.isFinite(parsedAdvance) || Number.isNaN(parsedAdvance)) {
+            return jsonResponse({
+              success: false,
+              error: 'Invalid advance payment: Must be a valid finite monetary number.',
+            }, 400);
+          }
+
+          // 2. advance >= 0
+          if (parsedAdvance < 0) {
+            return jsonResponse({
+              success: false,
+              error: 'Invalid advance payment: Advance payment amount cannot be negative. Value must be greater than or equal to 0.',
+            }, 400);
+          }
+
+          validatedAdvance = Math.round(parsedAdvance * 100) / 100;
+
+          // 3. advance <= current final order total
+          if (validatedAdvance > authoritativeTotal) {
+            return jsonResponse({
+              success: false,
+              error: `Invalid advance payment: Advance payment (৳${validatedAdvance}) cannot exceed authoritative order total (৳${authoritativeTotal}).`,
+            }, 400);
+          }
+
+          // 4. Server-side customer due calculation: customer_due = final_order_total - advance_payment
+          customerDue = Math.max(0, Math.round((authoritativeTotal - validatedAdvance) * 100) / 100);
+
+          const nowIso = new Date().toISOString();
+          const actorIdentifier =
+            auth!.dbUser?.email ||
+            auth!.dbUser?.id ||
+            auth!.tokenUser?.email ||
+            auth!.tokenUser?.userId ||
+            'admin';
+
+          const rawMethod =
+            updates.advancePaymentMethod !== undefined
+              ? updates.advancePaymentMethod
+              : (updates as any).advance_payment_method;
+          const advanceMethod = rawMethod !== undefined
+            ? (rawMethod ? String(rawMethod).trim() : null)
+            : (existing.advancePaymentMethod || null);
+
+          const rawNote =
+            updates.advancePaymentNote !== undefined
+              ? updates.advancePaymentNote
+              : (updates as any).advance_payment_note;
+          const advanceNote = rawNote !== undefined
+            ? (rawNote ? String(rawNote).trim() : null)
+            : (existing.advancePaymentNote || null);
+
+          updates.advancePayment = validatedAdvance;
+          updates.advancePaymentMethod = advanceMethod || undefined;
+          updates.advancePaymentNote = advanceNote || undefined;
+          updates.advancePaymentUpdatedAt = nowIso;
+          updates.advancePaymentUpdatedBy = actorIdentifier;
+          updates.customerDue = customerDue;
+          updates.dueAmount = customerDue;
+
+          // 5. Payment status synchronization:
+          // - advance = 0 -> existing unpaid behavior
+          // - advance > 0 and due > 0 -> existing partial-payment behavior (PARTIAL)
+          // - due = 0 -> existing paid behavior (Paid)
+          if (!updates.paymentStatus) {
+            if (validatedAdvance === 0) {
+              if (existing.paymentStatus === 'PARTIAL' || existing.paymentStatus === 'Partial' || existing.paymentStatus === 'Paid' || existing.paymentStatus === 'PAID') {
+                updates.paymentStatus = (existing.paymentMethod === 'dbbl' ? 'UNVERIFIED' : 'DUE') as any;
+              }
+            } else if (customerDue === 0 && authoritativeTotal > 0) {
+              updates.paymentStatus = 'Paid' as any;
+            } else if (validatedAdvance > 0 && customerDue > 0) {
+              updates.paymentStatus = 'PARTIAL' as any;
+            }
+          }
+        }
+
         const updated = await updateOrderInD1(env.DB, orderId, updates);
+
+        // 6. Audit logging using existing audit mechanism
+        if (
+          hasAdvanceUpdate &&
+          (previousAdvance !== validatedAdvance ||
+            updates.advancePaymentMethod !== existing.advancePaymentMethod ||
+            updates.advancePaymentNote !== existing.advancePaymentNote)
+        ) {
+          try {
+            await insertAuditLogInD1(env.DB, {
+              actorId: auth!.dbUser?.id || auth!.tokenUser?.userId || 'admin',
+              actorEmail: auth!.dbUser?.email || auth!.tokenUser?.email || 'admin@local.test',
+              actorRole: auth!.role,
+              action: 'ORDER_ADVANCE_PAYMENT_UPDATE',
+              targetId: existing.id,
+              targetType: 'order',
+              details: {
+                orderNumber: existing.orderNumber,
+                previousAdvance,
+                newAdvance: validatedAdvance,
+                orderTotal: existing.totalAmount,
+                customerDue,
+                paymentMethod: updates.advancePaymentMethod || null,
+                note: updates.advancePaymentNote || null,
+              },
+              ipAddress: getClientIp(request, isDevEnvironment(env)),
+            });
+          } catch (auditErr) {
+            console.warn('Failed to record advance payment audit log in D1:', auditErr);
+          }
+        }
+
         const isSuperAdmin = auth!.role === 'super_admin';
         const canViewBuyingPrice = hasPermission(auth!, 'product.view_buying_price') || isSuperAdmin;
         const canViewProfit = hasPermission(auth!, 'report.profit') || hasPermission(auth!, 'product.view_profit') || isSuperAdmin;

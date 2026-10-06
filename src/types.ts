@@ -63,7 +63,7 @@ export interface CustomerInfo {
 
 export type PaymentMethod = 'dbbl' | 'cod' | 'card';
 
-export type PaymentStatus = 'UNVERIFIED' | 'PAID' | 'DUE' | 'REFUNDED' | 'Paid' | 'Pending COD';
+export type PaymentStatus = 'UNVERIFIED' | 'PAID' | 'DUE' | 'REFUNDED' | 'Paid' | 'Pending COD' | 'Pending' | 'PARTIAL' | 'Partial';
 
 export type ShippingStatus = 'Pending' | 'Processing' | 'Shipped' | 'Delivered' | 'Cancelled';
 
@@ -201,6 +201,14 @@ export interface Order {
   // Super Admin Cost & Profit snapshots
   totalCost?: number;
   totalGrossProfit?: number;
+  // Advance Payment & Customer Due tracking
+  advancePayment?: number;
+  advancePaymentMethod?: string;
+  advancePaymentNote?: string;
+  advancePaymentUpdatedAt?: string;
+  advancePaymentUpdatedBy?: string;
+  customerDue?: number;
+  dueAmount?: number;
   createdAt: string;
 }
 

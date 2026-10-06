@@ -173,6 +173,11 @@ CREATE TABLE IF NOT EXISTS orders (
   dbbl_details_json TEXT,
   card_details_json TEXT,
   last_courier_sync TEXT,
+  advance_payment REAL NOT NULL DEFAULT 0,
+  advance_payment_method TEXT,
+  advance_payment_note TEXT,
+  advance_payment_updated_at TEXT,
+  advance_payment_updated_by TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -184,6 +189,7 @@ CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at);
 CREATE INDEX IF NOT EXISTS idx_orders_shipping_status_created_at ON orders(shipping_status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_orders_payment_status_created_at ON orders(payment_status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_orders_payment_method_created_at ON orders(payment_method, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_orders_advance_payment ON orders(advance_payment);
 
 -- 8B. EXPENSES TABLE (Super Admin Profit Analytics & Expense Tracking)
 CREATE TABLE IF NOT EXISTS expenses (
