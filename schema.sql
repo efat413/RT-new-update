@@ -302,4 +302,19 @@ CREATE TABLE IF NOT EXISTS webhook_replays (
 
 CREATE INDEX IF NOT EXISTS idx_webhook_replays_expires ON webhook_replays(expires_at);
 
+-- ==============================================================
+-- 16. PRODUCT SLUG HISTORY TABLE (Historical SEO URL redirects)
+-- ==============================================================
+CREATE TABLE IF NOT EXISTS product_slug_history (
+  id TEXT PRIMARY KEY,
+  product_id TEXT NOT NULL,
+  slug TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_product_slug_history_slug ON product_slug_history(slug);
+CREATE INDEX IF NOT EXISTS idx_product_slug_history_product_id ON product_slug_history(product_id);
+
+
 

@@ -76,7 +76,7 @@ export async function getProductTableColumns(db: D1Database): Promise<Set<string
     console.warn('[D1] Could not query pragma_table_info for products:', err);
   }
   return new Set([
-    'id', 'title', 'price', 'original_price', 'category_id', 'description',
+    'id', 'slug', 'title', 'price', 'original_price', 'buying_price', 'featured_sort_order', 'video_url', 'category_id', 'description',
     'image_url', 'images_json', 'stock', 'featured', 'rating', 'reviews_count',
     'specs_json', 'sizes_json', 'colors_json', 'sku', 'status', 'created_at', 'updated_at'
   ]);
@@ -140,6 +140,23 @@ export async function ensureProductTableSchema(db: D1Database): Promise<Set<stri
       } catch (err: any) {
         console.warn('[D1] slug column addition notice:', err?.message || err);
       }
+    }
+
+    // Self-heal: product_slug_history table and indexes for SEO 301 redirects
+    try {
+      await db.prepare(`
+        CREATE TABLE IF NOT EXISTS product_slug_history (
+          id TEXT PRIMARY KEY,
+          product_id TEXT NOT NULL,
+          slug TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+        )
+      `).run();
+      await db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_product_slug_history_slug ON product_slug_history(slug)').run();
+      await db.prepare('CREATE INDEX IF NOT EXISTS idx_product_slug_history_product_id ON product_slug_history(product_id)').run();
+    } catch (err: any) {
+      console.warn('[D1] product_slug_history table self-heal notice:', err?.message || err);
     }
   }
 
@@ -825,11 +842,34 @@ export async function getProductById(
     availableColumns,
     !options?.publicOnly && options?.includeBuyingPrice !== false
   );
-  // Match either internal product ID or unique SEO URL slug
-  const row = await db
+  // Match either internal product ID or current SEO URL slug
+  let row = await db
     .prepare(`SELECT ${columns} FROM products WHERE id = ? OR slug = ? LIMIT 1`)
     .bind(id, id)
     .first<ProductRow>();
+
+  // If not found as current product or slug, resolve via historical slug in product_slug_history
+  if (!row) {
+    try {
+      const pCols = columns
+        .split(',')
+        .map((col) => `p.${col.trim()}`)
+        .join(', ');
+      row = await db
+        .prepare(`
+          SELECT ${pCols}
+          FROM product_slug_history psh
+          JOIN products p ON psh.product_id = p.id
+          WHERE psh.slug = ?
+          LIMIT 1
+        `)
+        .bind(id)
+        .first<ProductRow>();
+    } catch {
+      // Historical lookup gracefully proceeds if table empty or query fails
+    }
+  }
+
   return row ? rowToProduct(row) : null;
 }
 
@@ -843,8 +883,109 @@ export async function getProductBySlug(
     availableColumns,
     !options?.publicOnly && options?.includeBuyingPrice !== false
   );
-  const row = await db.prepare(`SELECT ${columns} FROM products WHERE slug = ? LIMIT 1`).bind(slug).first<ProductRow>();
+  let row = await db.prepare(`SELECT ${columns} FROM products WHERE slug = ? LIMIT 1`).bind(slug).first<ProductRow>();
+  if (!row) {
+    try {
+      const pCols = columns
+        .split(',')
+        .map((col) => `p.${col.trim()}`)
+        .join(', ');
+      row = await db
+        .prepare(`
+          SELECT ${pCols}
+          FROM product_slug_history psh
+          JOIN products p ON psh.product_id = p.id
+          WHERE psh.slug = ?
+          LIMIT 1
+        `)
+        .bind(slug)
+        .first<ProductRow>();
+    } catch {}
+  }
   return row ? rowToProduct(row) : null;
+}
+
+/**
+ * Persists an old slug into product_slug_history when an admin modifies a product slug.
+ * Uses parameterized queries and prevents duplicate history entries.
+ */
+export async function recordProductSlugHistory(
+  db: D1Database,
+  productId: string,
+  oldSlug: string
+): Promise<void> {
+  const cleanSlug = (oldSlug || '').trim();
+  const cleanProdId = (productId || '').trim();
+  if (!cleanSlug || !cleanProdId) return;
+
+  await ensureProductTableSchema(db);
+
+  const historyId = `psh-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+  try {
+    await db
+      .prepare(`
+        INSERT INTO product_slug_history (id, product_id, slug, created_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(slug) DO UPDATE SET product_id = excluded.product_id, created_at = CURRENT_TIMESTAMP
+      `)
+      .bind(historyId, cleanProdId, cleanSlug)
+      .run();
+  } catch {
+    try {
+      await db.prepare('DELETE FROM product_slug_history WHERE slug = ?').bind(cleanSlug).run();
+      await db
+        .prepare('INSERT INTO product_slug_history (id, product_id, slug, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)')
+        .bind(historyId, cleanProdId, cleanSlug)
+        .run();
+    } catch (fallbackErr) {
+      console.warn('[D1 recordProductSlugHistory Error]:', fallbackErr);
+    }
+  }
+}
+
+/**
+ * Finds a product and its current canonical slug by an old historical slug.
+ */
+export async function findProductBySlugHistory(
+  db: D1Database,
+  slug: string,
+  options?: { includeBuyingPrice?: boolean; publicOnly?: boolean }
+): Promise<{ productId: string; currentSlug: string; product: Product } | null> {
+  const cleanSlug = (slug || '').trim();
+  if (!cleanSlug) return null;
+
+  const availableColumns = await ensureProductTableSchema(db);
+  const columns = buildSelectProductColumns(
+    availableColumns,
+    !options?.publicOnly && options?.includeBuyingPrice !== false
+  );
+  const pCols = columns
+    .split(',')
+    .map((col) => `p.${col.trim()}`)
+    .join(', ');
+
+  try {
+    const row = await db
+      .prepare(`
+        SELECT ${pCols}
+        FROM product_slug_history psh
+        JOIN products p ON psh.product_id = p.id
+        WHERE psh.slug = ?
+        LIMIT 1
+      `)
+      .bind(cleanSlug)
+      .first<ProductRow>();
+
+    if (!row) return null;
+    const prod = rowToProduct(row);
+    return {
+      productId: prod.id,
+      currentSlug: prod.slug || prod.id,
+      product: prod,
+    };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -871,7 +1012,23 @@ export async function ensureUniqueSlugInD1(
           .bind(candidate)
           .first<{ id: string }>();
 
+    // Also check if candidate is claimed in product_slug_history by another product
+    let existingHistory: { product_id: string } | null = null;
     if (!existing) {
+      try {
+        existingHistory = excludeProductId
+          ? await db
+              .prepare('SELECT product_id FROM product_slug_history WHERE slug = ? AND product_id != ? LIMIT 1')
+              .bind(candidate, excludeProductId)
+              .first<{ product_id: string }>()
+          : await db
+              .prepare('SELECT product_id FROM product_slug_history WHERE slug = ? LIMIT 1')
+              .bind(candidate)
+              .first<{ product_id: string }>();
+      } catch {}
+    }
+
+    if (!existing && !existingHistory) {
       return candidate;
     }
 
@@ -1051,14 +1208,21 @@ export async function updateProductInD1(
 
   // Slug stability rule: Preserve existing slug unless explicitly edited or missing
   let resolvedSlug = existing.slug;
+  let slugChanged = false;
   if (updates.slug !== undefined && typeof updates.slug === 'string' && updates.slug.trim()) {
     const requestedSlug = generateProductSlug(updates.slug);
     if (requestedSlug && requestedSlug !== existing.slug) {
       resolvedSlug = await ensureUniqueSlugInD1(db, requestedSlug, id);
+      if (resolvedSlug !== existing.slug) {
+        slugChanged = true;
+      }
     }
   } else if (!resolvedSlug) {
     const autoSlug = generateProductSlug(title || existing.title);
     resolvedSlug = await ensureUniqueSlugInD1(db, autoSlug || id, id);
+    if (existing.slug && resolvedSlug !== existing.slug) {
+      slugChanged = true;
+    }
   }
 
   const candidateUpdates: { col: string; val: any }[] = [
@@ -1096,6 +1260,17 @@ export async function updateProductInD1(
   } catch (err: any) {
     console.error('[D1 updateProductInD1 Error]:', err);
     throw new Error(`D1 UPDATE products failed: ${err?.message || err}`);
+  }
+
+  // Preserve previous slug in slug history for seamless 301 redirects
+  if (slugChanged && existing.slug && existing.slug.trim() && resolvedSlug && resolvedSlug !== existing.slug) {
+    try {
+      await recordProductSlugHistory(db, existing.id, existing.slug.trim());
+      // Delete resolvedSlug from history if it previously existed to prevent loops
+      await db.prepare('DELETE FROM product_slug_history WHERE slug = ?').bind(resolvedSlug).run();
+    } catch (histErr) {
+      console.warn('[D1 updateProductInD1 Notice]: Could not record slug history:', histErr);
+    }
   }
 
   const updated = await getProductById(db, existing.id, { includeBuyingPrice: true });
@@ -1157,12 +1332,13 @@ export async function setProductFeaturedInD1(
 }
 
 export async function deleteProductFromD1(db: D1Database, id: string): Promise<boolean> {
-  // Use atomic D1 batch to delete product and associated reviews in a single round-trip
+  // Use atomic D1 batch to delete product, historical slugs, and associated reviews in a single round-trip
   const batchRes = await db.batch([
     db.prepare('DELETE FROM reviews WHERE product_id = ?').bind(id),
+    db.prepare('DELETE FROM product_slug_history WHERE product_id = ?').bind(id),
     db.prepare('DELETE FROM products WHERE id = ?').bind(id),
   ]);
-  const deleteRes = batchRes[1];
+  const deleteRes = batchRes[2];
   if (!deleteRes.success) {
     console.error('Failed to delete product from database:', deleteRes.error);
     throw new Error('Failed to delete product.');
@@ -1876,11 +2052,14 @@ export async function getHomepageMetadata(db: D1Database): Promise<{
  */
 export async function getSitemapData(db: D1Database): Promise<{
   categories: Array<{ id: string; slug: string }>;
-  products: Array<{ id: string; status?: string; featured: boolean; createdAt: string }>;
+  products: Array<{ id: string; slug?: string; status?: string; featured: boolean; createdAt: string }>;
 }> {
+  const availableColumns = await ensureProductTableSchema(db);
+  const selectSlug = availableColumns.has('slug') ? 'slug, ' : '';
+
   const stmtCategories = db.prepare('SELECT id, slug FROM categories ORDER BY name ASC');
   const stmtProducts = db.prepare(`
-    SELECT id, status, featured, created_at
+    SELECT id, ${selectSlug}status, featured, created_at
     FROM products
     WHERE (status = 'active' OR status = 'published' OR status IS NULL OR status = '')
     ORDER BY created_at DESC
@@ -1906,6 +2085,7 @@ export async function getSitemapData(db: D1Database): Promise<{
     categories: catRows.map((r) => ({ id: r.id, slug: r.slug || r.id })),
     products: prodRows.map((r) => ({
       id: r.id,
+      slug: (typeof r.slug === 'string' && r.slug.trim()) ? r.slug.trim() : undefined,
       status: r.status,
       featured: Boolean(r.featured),
       createdAt: r.created_at,

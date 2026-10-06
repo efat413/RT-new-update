@@ -877,7 +877,9 @@ export function generateSitemapXml(
       } catch {}
     }
 
-    const prodSlugOrId = prod.slug || generateProductSlug(prod.title) || prod.id;
+    // Sitemap strictly prefers persisted product.slug (Fix #1)
+    const persistedSlug = typeof prod.slug === 'string' && prod.slug.trim() ? prod.slug.trim() : '';
+    const prodSlugOrId = persistedSlug || (prod.title ? generateProductSlug(prod.title) : '') || prod.id;
     addUrl(
       `${SITE_DOMAIN}/product/${encodeURIComponent(prodSlugOrId)}`,
       prodDate,

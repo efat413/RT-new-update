@@ -79,6 +79,7 @@ function localApiDevPlugin(): Plugin {
     ...p,
     buyingPrice: p.buyingPrice ?? Math.round(Number(p.price) * 0.6),
   }));
+  let devProductSlugHistory: Array<{ id: string; productId: string; slug: string; createdAt: string }> = [];
   let devCategories: any[] = [...INITIAL_CATEGORIES];
   let devSliders: any[] = [...INITIAL_SLIDES];
   let devSettings: any = { ...INITIAL_SETTINGS };
@@ -1255,9 +1256,24 @@ function localApiDevPlugin(): Plugin {
           ).trim();
 
           if (prodParam) {
-            const foundProduct = devProducts.find(
-              (p) => p.slug === prodParam || p.id === prodParam || p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') === prodParam
+            let foundProduct = devProducts.find(
+              (p) => p.slug === prodParam || p.id === prodParam
             );
+
+            // Check slug history
+            if (!foundProduct) {
+              const hist = devProductSlugHistory.find((h) => h.slug === prodParam);
+              if (hist) {
+                foundProduct = devProducts.find((p) => p.id === hist.productId);
+              }
+            }
+
+            // Fallback normalized title
+            if (!foundProduct) {
+              foundProduct = devProducts.find(
+                (p) => p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') === prodParam
+              );
+            }
 
             if (!foundProduct || (foundProduct as any).status === 'inactive' || (foundProduct as any).isDeleted) {
               res.statusCode = 404;
@@ -2577,7 +2593,13 @@ function localApiDevPlugin(): Plugin {
           );
 
           if (method === 'GET') {
-            const found = devProducts.find((p) => p.id === id || p.slug === id);
+            let found = devProducts.find((p) => p.id === id || p.slug === id);
+            if (!found) {
+              const hist = devProductSlugHistory.find((h) => h.slug === id);
+              if (hist) {
+                found = devProducts.find((p) => p.id === hist.productId);
+              }
+            }
             const singleCacheControl = isPrivileged
               ? 'no-store, no-cache, must-revalidate, max-age=0'
               : 'public, max-age=15, s-maxage=45, stale-while-revalidate=30';
@@ -2614,9 +2636,11 @@ function localApiDevPlugin(): Plugin {
                   updates.videoUrl = updates.videoUrl ? String(updates.videoUrl).trim() : undefined;
                 }
                 // Handle slug updates or stabilization
+                const oldSlug = devProducts[idx].slug;
+                let slugChanged = false;
                 if (updates.slug !== undefined && typeof updates.slug === 'string' && updates.slug.trim()) {
                   const reqSlug = generateProductSlug(updates.slug);
-                  if (reqSlug && reqSlug !== devProducts[idx].slug) {
+                  if (reqSlug && reqSlug !== oldSlug) {
                     let uSlug = reqSlug;
                     let c = 1;
                     while (devProducts.some((p, i) => i !== idx && p.slug === uSlug)) {
@@ -2624,10 +2648,24 @@ function localApiDevPlugin(): Plugin {
                       uSlug = `${reqSlug}-${c}`;
                     }
                     updates.slug = uSlug;
+                    slugChanged = true;
                   }
                 } else if (!devProducts[idx].slug) {
                   updates.slug = generateProductSlug(updates.title || devProducts[idx].title || id);
+                  slugChanged = true;
                 }
+
+                // Preserve old slug in slug history
+                if (slugChanged && oldSlug && updates.slug && oldSlug !== updates.slug) {
+                  devProductSlugHistory = devProductSlugHistory.filter((h) => h.slug !== updates.slug);
+                  devProductSlugHistory.push({
+                    id: 'psh-' + Date.now(),
+                    productId: devProducts[idx].id,
+                    slug: oldSlug,
+                    createdAt: new Date().toISOString(),
+                  });
+                }
+
                 devProducts[idx] = { ...devProducts[idx], ...updates };
                 res.statusCode = 200;
                 return res.end(JSON.stringify({
