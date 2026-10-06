@@ -116,11 +116,12 @@ CREATE TABLE IF NOT EXISTS reviews (
   author_name TEXT NOT NULL,
   rating INTEGER NOT NULL DEFAULT 5,
   comment TEXT NOT NULL,
-  verified_purchase INTEGER DEFAULT 1,
+  verified_purchase INTEGER DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_reviews_product ON reviews(product_id);
+CREATE INDEX IF NOT EXISTS idx_reviews_product_verified ON reviews(product_id, verified_purchase);
 
 -- 7. USERS & ADMIN ACCOUNTS TABLE
 CREATE TABLE IF NOT EXISTS users (

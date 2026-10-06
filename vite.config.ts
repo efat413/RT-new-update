@@ -3110,13 +3110,71 @@ function localApiDevPlugin(): Plugin {
               recordDevRateAttempt(reviewIpKey, 600);
               recordDevRateAttempt(prodThrottleKey, 600);
 
+              // 4. Server-Authoritative verifiedPurchase Verification:
+              // Client cannot force verifiedPurchase: true under any circumstances.
+              // Client-provided email alone can NEVER make a review verifiedPurchase = true.
+              let isVerifiedPurchase = false;
+              const authResult = requireDevAuth(req);
+              const auth = authResult.auth;
+
+              const targetProduct = devProducts.find((p) => p.id === productId || p.slug === productId);
+              const targetProductId = targetProduct ? targetProduct.id : productId;
+
+              if (auth && auth.user && auth.user.id) {
+                const authUserId = String(auth.user.id).trim();
+                const authUserEmail = String(auth.user.email || '').trim().toLowerCase();
+
+                const matchingOrder = devOrders.find((o) => {
+                  if (o.shippingStatus === 'Cancelled') return false;
+                  const isOwner = (authUserId && o.userId === authUserId) || (authUserEmail && (o.userEmail || '').toLowerCase() === authUserEmail);
+                  if (!isOwner) return false;
+                  const items = o.items || [];
+                  return items.some((it: any) =>
+                    it?.product?.id === targetProductId ||
+                    it?.product?.slug === targetProductId ||
+                    it?.product?.id === productId ||
+                    it?.id === targetProductId ||
+                    it?.id === productId ||
+                    it?.productId === targetProductId ||
+                    it?.productId === productId
+                  );
+                });
+                if (matchingOrder) {
+                  isVerifiedPurchase = true;
+                }
+              } else if ((r.orderNumber || r.order_number) && (r.phone || r.customerPhone)) {
+                const cleanOrderNo = String(r.orderNumber || r.order_number).trim();
+                const cleanPhone = String(r.phone || r.customerPhone).replace(/\D/g, '');
+                if (cleanOrderNo && cleanPhone.length === 11) {
+                  const matchingOrder = devOrders.find((o) => {
+                    if (o.shippingStatus === 'Cancelled') return false;
+                    const orderNoMatch = String(o.orderNumber || o.id).trim() === cleanOrderNo;
+                    const phoneMatch = String(o.customerPhone || o.customer?.phone || '').replace(/\D/g, '').endsWith(cleanPhone);
+                    if (!orderNoMatch || !phoneMatch) return false;
+                    const items = o.items || [];
+                    return items.some((it: any) =>
+                      it?.product?.id === targetProductId ||
+                      it?.product?.slug === targetProductId ||
+                      it?.product?.id === productId ||
+                      it?.id === targetProductId ||
+                      it?.id === productId ||
+                      it?.productId === targetProductId ||
+                      it?.productId === productId
+                    );
+                  });
+                  if (matchingOrder) {
+                    isVerifiedPurchase = true;
+                  }
+                }
+              }
+
               const newR = {
                 id: r.id || `rev-${Date.now()}`,
-                productId,
+                productId: targetProductId,
                 authorName,
                 rating,
                 comment,
-                verifiedPurchase: r.verifiedPurchase !== false,
+                verifiedPurchase: isVerifiedPurchase,
                 createdAt: r.createdAt || new Date().toISOString(),
               };
               devReviews.unshift(newR);

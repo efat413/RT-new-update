@@ -41,6 +41,7 @@ import {
   getAllReviews,
   insertReview,
   deleteReviewFromD1,
+  verifyCustomerPurchaseInD1,
   // Users
   getAllUsers,
   getUserByEmail,
@@ -3714,50 +3715,48 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         await recordFailedAttempt(prodThrottleKey, 2, 600, env.DB);
 
         // 4. Server-Authoritative verifiedPurchase Verification:
-        // Client cannot force verifiedPurchase: true.
-        // The server verifies against authoritative D1 order records.
+        // Client cannot force verifiedPurchase: true under any circumstances.
+        // Client-provided email alone can NEVER make a review verifiedPurchase = true.
+        // Only server-authenticated users (or guests with strong multi-factor proof) can qualify.
         let isVerifiedPurchase = false;
+        let targetProductId = productId;
+
         if (env.DB) {
           try {
-            let authUser: TokenPayload | null = null;
-            const authHeader = request.headers.get('Authorization') || '';
-            if (authHeader.startsWith('Bearer ')) {
-              const token = authHeader.slice(7).trim();
+            // Server-side validation of target product
+            try {
+              const prod = await getProductById(env.DB, productId);
+              if (prod) {
+                targetProductId = prod.id;
+              }
+            } catch {}
+
+            let authenticatedUserId: string | null = null;
+            let authenticatedEmail: string | null = null;
+
+            // Extract authoritative identity from server session (HttpOnly cookie or Bearer token)
+            const token = extractTokenFromRequest(request);
+            if (token) {
               try {
-                const secret = await resolveAuthSecret(env);
-                authUser = await verifyAuthToken(token, secret, env);
+                const authRes = await requireAuth(request, env);
+                if (!authRes.errorResponse && authRes.auth?.dbUser) {
+                  authenticatedUserId = String(authRes.auth.dbUser.id || '').trim();
+                  authenticatedEmail = String(authRes.auth.dbUser.email || '').trim().toLowerCase();
+                }
               } catch {}
             }
 
-            const reviewerEmail = (authUser?.email || reviewData.email || reviewData.userEmail || '').trim().toLowerCase();
-            const reviewerUserId = authUser?.userId || reviewData.userId || '';
-            const reviewerPhone = (reviewData.phone || reviewData.customerPhone || '').replace(/\D/g, '');
-            const reviewOrderNo = String(reviewData.orderNumber || reviewData.order_number || '').trim();
+            // Client-provided email or user ID is NEVER trusted for purchase verification
+            const guestOrderNo = String(reviewData.orderNumber || reviewData.order_number || '').trim();
+            const guestPhone = String(reviewData.phone || reviewData.customerPhone || '').replace(/\D/g, '');
 
-            if (reviewerUserId || reviewerEmail || reviewerPhone || reviewOrderNo) {
-              const qualifyingOrder = await env.DB.prepare(`
-                SELECT id FROM orders
-                WHERE (
-                  (? != '' AND user_id = ?) OR
-                  (? != '' AND LOWER(user_email) = ?) OR
-                  (? != '' AND customer_phone LIKE ?) OR
-                  (? != '' AND order_number = ?)
-                )
-                AND items_json LIKE ?
-                AND shipping_status != 'Cancelled'
-                LIMIT 1
-              `).bind(
-                reviewerUserId, reviewerUserId,
-                reviewerEmail, reviewerEmail,
-                reviewerPhone ? `%${reviewerPhone.slice(-11)}%` : '', reviewerPhone ? `%${reviewerPhone.slice(-11)}%` : '',
-                reviewOrderNo, reviewOrderNo,
-                `%${productId}%`
-              ).first();
-
-              if (qualifyingOrder) {
-                isVerifiedPurchase = true;
-              }
-            }
+            isVerifiedPurchase = await verifyCustomerPurchaseInD1(env.DB, {
+              authenticatedUserId,
+              authenticatedEmail,
+              guestOrderNumber: guestOrderNo,
+              guestPhone,
+              productId: targetProductId,
+            });
           } catch (vpErr) {
             console.error('[Review Error] Error determining verified purchase status in D1:', vpErr);
             isVerifiedPurchase = false;
@@ -3765,7 +3764,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         }
 
         const created = await insertReview(env.DB, {
-          productId,
+          productId: targetProductId,
           authorName,
           comment,
           rating,

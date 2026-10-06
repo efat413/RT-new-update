@@ -2296,7 +2296,8 @@ export async function insertReview(db: D1Database, input: any): Promise<ProductR
   const authorName = (input.authorName || input.author || 'Customer').trim();
   const rating = Math.min(5, Math.max(1, Number(input.rating) || 5));
   const comment = input.comment || '';
-  const verifiedPurchase = input.verifiedPurchase !== false ? 1 : 0;
+  // Security Hardening: strictly default to 0 (unverified) unless server logic explicitly sets true
+  const verifiedPurchase = input.verifiedPurchase === true ? 1 : 0;
   const createdAt = input.createdAt || new Date().toISOString();
 
   await db
@@ -2310,6 +2311,89 @@ export async function insertReview(db: D1Database, input: any): Promise<ProductR
   const row = await db.prepare(`SELECT ${REVIEW_COLUMNS} FROM reviews WHERE id = ?`).bind(id).first<ReviewRow>();
   if (!row) throw new Error('Failed to retrieve inserted review');
   return rowToReview(row);
+}
+
+/**
+ * Server-authoritative purchase verification.
+ * Strictly verifies whether an identity legitimately owns a valid order containing the product.
+ * - Authenticated: verified strictly against server-authenticated userId and/or auth email.
+ * - Unauthenticated guest: email alone can NEVER grant verified status. Requires strong proof (orderNumber + phone).
+ */
+export async function verifyCustomerPurchaseInD1(
+  db: D1Database,
+  params: {
+    authenticatedUserId?: string | null;
+    authenticatedEmail?: string | null;
+    guestOrderNumber?: string | null;
+    guestPhone?: string | null;
+    productId: string;
+  }
+): Promise<boolean> {
+  const cleanProdId = (params.productId || '').trim();
+  if (!cleanProdId) return false;
+
+  const authUserId = (params.authenticatedUserId || '').trim();
+  const authEmail = (params.authenticatedEmail || '').trim().toLowerCase();
+  const guestOrderNo = (params.guestOrderNumber || '').trim();
+  const guestPhone = (params.guestPhone || '').replace(/\D/g, '');
+
+  let whereClauses: string[] = [];
+  let bindings: any[] = [];
+
+  if (authUserId || authEmail) {
+    // Authenticated customer: strictly verify by server-side authenticated identity
+    const identityClauses: string[] = [];
+    if (authUserId) {
+      identityClauses.push('user_id = ?');
+      bindings.push(authUserId);
+    }
+    if (authEmail) {
+      identityClauses.push('LOWER(user_email) = ?');
+      bindings.push(authEmail);
+    }
+    whereClauses.push(`(${identityClauses.join(' OR ')})`);
+  } else if (guestOrderNo && guestPhone.length === 11) {
+    // Guest customer: strictly requires BOTH order number AND exact 11-digit phone proof
+    whereClauses.push('(order_number = ? AND customer_phone LIKE ?)');
+    bindings.push(guestOrderNo, `%${guestPhone.slice(-11)}%`);
+  } else {
+    // Unauthenticated without strong proof: client email alone can NEVER verify a purchase
+    return false;
+  }
+
+  // Business rules: order must not be cancelled, and must contain the product
+  whereClauses.push("shipping_status != 'Cancelled'");
+  whereClauses.push('items_json LIKE ?');
+  bindings.push(`%${cleanProdId}%`);
+
+  const sql = `
+    SELECT id, items_json FROM orders
+    WHERE ${whereClauses.join(' AND ')}
+    LIMIT 10
+  `;
+
+  try {
+    const res = await db.prepare(sql).bind(...bindings).all<{ id: string; items_json: string }>();
+    const orders = res.results || [];
+    for (const ord of orders) {
+      try {
+        const items = JSON.parse(ord.items_json || '[]');
+        if (Array.isArray(items)) {
+          const hasItem = items.some((it: any) =>
+            it?.product?.id === cleanProdId ||
+            it?.product?.slug === cleanProdId ||
+            it?.id === cleanProdId ||
+            it?.productId === cleanProdId
+          );
+          if (hasItem) return true;
+        }
+      } catch {}
+    }
+    return false;
+  } catch (err) {
+    console.error('[D1 verifyCustomerPurchaseInD1 Error]:', err);
+    return false;
+  }
 }
 
 export async function deleteReviewFromD1(db: D1Database, id: string): Promise<boolean> {
