@@ -352,9 +352,13 @@ export async function syncSingleOrderCourierStatus(
     lastCourierSync: nowIso,
   };
 
-  // If newly delivered via COD, mark paymentStatus as Paid
-  if (normalized.isDelivered && order.paymentStatus !== 'PAID' && order.paymentStatus !== 'Paid') {
-    updates.paymentStatus = 'Paid';
+  // If newly delivered via COD, mark paymentStatus as Paid and clear customer due
+  if (normalized.isDelivered) {
+    if (order.paymentStatus !== 'PAID' && order.paymentStatus !== 'Paid') {
+      updates.paymentStatus = 'Paid';
+    }
+    updates.customerDue = 0;
+    updates.dueAmount = 0;
   }
 
   // Update existing courier booking timestamp while preserving provider and consignment IDs

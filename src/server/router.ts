@@ -290,10 +290,11 @@ function jsonResponse(data: any, status = 200, customHeaders: Record<string, str
     }
 
     // 2. Review 503 responses:
-    // If a 503 is not a standards-based health probe ({ status: 'error' }), convert to safe 500
+    // Allow health check probes or explicit temporarily unavailable service messages
     if (finalStatus === 503) {
       const isHealthCheckProbe = payload.status === 'error' && Object.keys(payload).length === 1;
-      if (!isHealthCheckProbe) {
+      const isServiceUnavailable = typeof payload.error === 'string' && payload.error.includes('temporarily unavailable');
+      if (!isHealthCheckProbe && !isServiceUnavailable) {
         console.error('[503 Converted to Safe 500 Internal Error]:', payload.error || payload);
         finalStatus = 500;
         payload = {
@@ -309,14 +310,19 @@ function jsonResponse(data: any, status = 200, customHeaders: Record<string, str
         typeof payload.error === 'string' &&
         payload.error === 'Unable to place the order right now. Please try again.';
 
-      if (payload.error && payload.error !== 'Internal server error.' && !isSafeOrderErrorMessage) {
+      const isServiceUnavailable =
+        finalStatus === 503 &&
+        typeof payload.error === 'string' &&
+        payload.error.includes('temporarily unavailable');
+
+      if (payload.error && payload.error !== 'Internal server error.' && !isSafeOrderErrorMessage && !isServiceUnavailable) {
         console.error('[Server Internal Error Logged Safely]:', payload.error);
       }
       if (payload.message && typeof payload.message === 'string' && !payload.success) {
         console.error('[Server Internal Message Logged Safely]:', payload.message);
       }
 
-      if (!isSafeOrderErrorMessage) {
+      if (!isSafeOrderErrorMessage && !isServiceUnavailable) {
         payload = {
           success: false,
           error: 'Internal server error.',
@@ -5170,13 +5176,61 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         totalLot = order.items.reduce((sum, it) => sum + (it.quantity || 1), 0);
       }
 
-      // Authoritative COD calculation from D1 order
-      let codAmount: number;
-      if (parcelData.cod_amount !== undefined && parcelData.cod_amount !== null) {
-        codAmount = Number(parcelData.cod_amount);
+      // Authoritative Server-Side Calculation of Final Order Total and Customer Due
+      // 1. Load authoritative order items
+      const items = Array.isArray(order.items) ? order.items : [];
+      let authoritativeSubtotal = 0;
+      if (items.length > 0) {
+        for (const it of items) {
+          const qty = Math.max(1, Math.round(Number(it.quantity) || 1));
+          const rawPrice =
+            it.sellingPriceSnapshot != null && !isNaN(Number(it.sellingPriceSnapshot))
+              ? Number(it.sellingPriceSnapshot)
+              : Number(it.product?.price || 0);
+          const unitSellingPrice = Math.max(0, Number.isFinite(rawPrice) ? rawPrice : 0);
+          authoritativeSubtotal += Math.round(unitSellingPrice * qty * 100) / 100;
+        }
+        authoritativeSubtotal = Math.round(authoritativeSubtotal * 100) / 100;
       } else {
-        const isPrepaid = order.paymentStatus === 'PAID' || order.paymentStatus === 'Paid';
-        codAmount = isPrepaid ? 0 : Number(order.totalAmount) || 0;
+        authoritativeSubtotal = Number(order.subtotal) || 0;
+      }
+
+      // 2. Recalculate current final order total (Subtotal + Delivery Fee - Discount)
+      const authoritativeDeliveryFee = Math.max(0, Number(order.deliveryFee ?? 0));
+      const authoritativeDiscount = Math.max(0, Number(order.discountAmount ?? 0));
+      const authoritativeFinalTotal = Math.max(
+        0,
+        Math.round((authoritativeSubtotal + authoritativeDeliveryFee - authoritativeDiscount) * 100) / 100
+      );
+
+      // 3. Load current advance payment
+      const authoritativeAdvance = Math.max(0, Number(order.advancePayment) || 0);
+
+      // 4. Calculate customer due: Customer Due = Final Order Total - Advance Payment
+      const authoritativeCustomerDue = Math.max(
+        0,
+        Math.round((authoritativeFinalTotal - authoritativeAdvance) * 100) / 100
+      );
+
+      // 5. Courier COD = Customer Due (or 0 if fully paid/prepaid)
+      // Never accept frontend-supplied cod_amount as authoritative
+      const isPrepaid = order.paymentStatus === 'PAID' || order.paymentStatus === 'Paid' || authoritativeCustomerDue === 0;
+      const codAmount = isPrepaid ? 0 : authoritativeCustomerDue;
+
+      // 6. Synchronize payment status
+      let synchronizedPaymentStatus = order.paymentStatus;
+      if (isPrepaid || authoritativeCustomerDue === 0) {
+        if (authoritativeFinalTotal > 0 && order.paymentStatus !== 'PAID' && order.paymentStatus !== 'Paid') {
+          synchronizedPaymentStatus = 'Paid';
+        }
+      } else if (authoritativeAdvance > 0 && authoritativeCustomerDue > 0) {
+        if (order.paymentStatus !== 'PARTIAL' && order.paymentStatus !== 'Partial') {
+          synchronizedPaymentStatus = 'PARTIAL';
+        }
+      } else if (authoritativeAdvance === 0 && authoritativeCustomerDue > 0) {
+        if (order.paymentStatus === 'PARTIAL' || order.paymentStatus === 'Partial' || order.paymentStatus === 'Paid' || order.paymentStatus === 'PAID') {
+          synchronizedPaymentStatus = order.paymentMethod === 'dbbl' ? 'UNVERIFIED' : 'DUE';
+        }
       }
 
       const recipientPhone = (parcelData.recipient_phone || order.customer.phone || '').replace(/[^0-9]/g, '');
@@ -5246,6 +5300,12 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
             courierStatus: 'In Transit',
             shippingStatus: 'Shipped',
             lastCourierSync: new Date().toISOString(),
+            totalAmount: authoritativeFinalTotal,
+            subtotal: authoritativeSubtotal,
+            customerDue: authoritativeCustomerDue,
+            dueAmount: authoritativeCustomerDue,
+            advancePayment: authoritativeAdvance,
+            paymentStatus: synchronizedPaymentStatus,
             courierBooking: {
               provider: courierName || 'Steadfast',
               waybillId: trackingCode,
@@ -5259,6 +5319,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
             success: true,
             tracking_code: trackingCode,
             consignment_id: consignmentId,
+            cod_amount: codAmount,
+            customerDue: authoritativeCustomerDue,
+            totalAmount: authoritativeFinalTotal,
+            advancePayment: authoritativeAdvance,
             message: `Order dispatched to ${courierName} successfully!`,
           });
         }
@@ -5352,6 +5416,12 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         courierStatus: 'In Transit',
         shippingStatus: 'Shipped',
         lastCourierSync: new Date().toISOString(),
+        totalAmount: authoritativeFinalTotal,
+        subtotal: authoritativeSubtotal,
+        customerDue: authoritativeCustomerDue,
+        dueAmount: authoritativeCustomerDue,
+        advancePayment: authoritativeAdvance,
+        paymentStatus: synchronizedPaymentStatus,
         courierBooking: {
           provider: courierName,
           waybillId: trackingCode,
@@ -5365,6 +5435,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         success: true,
         tracking_code: trackingCode,
         consignment_id: consignmentId,
+        cod_amount: codAmount,
+        customerDue: authoritativeCustomerDue,
+        totalAmount: authoritativeFinalTotal,
+        advancePayment: authoritativeAdvance,
         message: `Order dispatched to ${courierName} successfully!`,
       });
     } catch (err: any) {
@@ -5456,8 +5530,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     if (!apiKey || !secretKey) {
       return jsonResponse({
         success: false,
-        error: 'Internal server error.',
-      }, 500);
+        error: 'Steadfast Courier service is temporarily unavailable. Courier credentials are not configured.',
+      }, 503);
     }
 
     try {
@@ -5737,8 +5811,12 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           lastCourierSync: nowIso,
         };
 
-        if (normalized.isDelivered && matchedOrder.paymentStatus !== 'PAID' && matchedOrder.paymentStatus !== 'Paid') {
-          updates.paymentStatus = 'Paid';
+        if (normalized.isDelivered) {
+          if (matchedOrder.paymentStatus !== 'PAID' && matchedOrder.paymentStatus !== 'Paid') {
+            updates.paymentStatus = 'Paid';
+          }
+          updates.customerDue = 0;
+          updates.dueAmount = 0;
         }
 
         if (matchedOrder.courierBooking) {

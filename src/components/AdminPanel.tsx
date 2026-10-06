@@ -1654,9 +1654,12 @@ const AdminPanelContent: React.FC = () => {
     setCourierRecipientArea('');
     setCourierRecipientDistrict(order.customer.district || 'Dhaka');
 
-    // Parcel Information: Cash on Delivery amount
-    const isPaid = order.paymentStatus === 'Paid' || order.paymentStatus === 'PAID';
-    setCourierCodAmount(isPaid ? 0 : order.totalAmount || 0);
+    // Parcel Information: Cash on Delivery amount (Courier COD = Customer Due)
+    const effectiveDue = order.customerDue != null && !isNaN(Number(order.customerDue))
+      ? Math.max(0, Number(order.customerDue))
+      : Math.max(0, Math.round(((Number(order.totalAmount) || 0) - (Number(order.advancePayment) || 0)) * 100) / 100);
+    const isPaid = order.paymentStatus === 'Paid' || order.paymentStatus === 'PAID' || effectiveDue === 0;
+    setCourierCodAmount(isPaid ? 0 : effectiveDue);
     setCourierWeight('0.5');
 
     const totalQty = Array.isArray(order.items) && order.items.length > 0
@@ -7260,9 +7263,11 @@ const AdminPanelContent: React.FC = () => {
                         className="w-full pl-7 pr-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-emerald-500"
                       />
                     </div>
-                    <span className="text-[10px] text-slate-400 mt-1 block">
-                      {courierModalOrder.paymentStatus === 'Paid' || courierModalOrder.paymentStatus === 'PAID'
-                        ? 'Order is prepaid (Collection = ৳0)'
+                    <span className="text-[10px] text-slate-500 mt-1 block font-medium">
+                      {courierModalOrder.paymentStatus === 'Paid' || courierModalOrder.paymentStatus === 'PAID' || courierModalOrder.customerDue === 0
+                        ? 'Order is prepaid / fully paid (Collection = ৳0)'
+                        : (Number(courierModalOrder.advancePayment) || 0) > 0
+                        ? `Customer Due: ৳${courierModalOrder.customerDue ?? Math.max(0, (courierModalOrder.totalAmount || 0) - (courierModalOrder.advancePayment || 0))} (Total: ৳${courierModalOrder.totalAmount} − Advance: ৳${courierModalOrder.advancePayment})`
                         : `Order total is ৳${courierModalOrder.totalAmount}`}
                     </span>
                   </div>

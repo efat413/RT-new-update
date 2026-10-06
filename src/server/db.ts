@@ -2875,8 +2875,12 @@ export function rowToOrder(row: OrderRow): Order {
     advancePaymentNote: row.advance_payment_note || undefined,
     advancePaymentUpdatedAt: row.advance_payment_updated_at || undefined,
     advancePaymentUpdatedBy: row.advance_payment_updated_by || undefined,
-    customerDue: Math.max(0, Math.round(((Number(row.total_amount) || 0) - (row.advance_payment != null && !isNaN(Number(row.advance_payment)) ? Math.max(0, Number(row.advance_payment)) : 0)) * 100) / 100),
-    dueAmount: Math.max(0, Math.round(((Number(row.total_amount) || 0) - (row.advance_payment != null && !isNaN(Number(row.advance_payment)) ? Math.max(0, Number(row.advance_payment)) : 0)) * 100) / 100),
+    customerDue: (row.payment_status === 'Paid' || row.payment_status === 'PAID')
+      ? 0
+      : Math.max(0, Math.round(((Number(row.total_amount) || 0) - (row.advance_payment != null && !isNaN(Number(row.advance_payment)) ? Math.max(0, Number(row.advance_payment)) : 0)) * 100) / 100),
+    dueAmount: (row.payment_status === 'Paid' || row.payment_status === 'PAID')
+      ? 0
+      : Math.max(0, Math.round(((Number(row.total_amount) || 0) - (row.advance_payment != null && !isNaN(Number(row.advance_payment)) ? Math.max(0, Number(row.advance_payment)) : 0)) * 100) / 100),
     createdAt: row.created_at,
   };
 }

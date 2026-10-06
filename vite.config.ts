@@ -4639,12 +4639,54 @@ function localApiDevPlugin(): Plugin {
               totalLot = order.items.reduce((sum: number, it: any) => sum + (it.quantity || 1), 0);
             }
 
-            let codAmount: number;
-            if (parcelData.cod_amount !== undefined && parcelData.cod_amount !== null) {
-              codAmount = Number(parcelData.cod_amount);
+            // Authoritative Server-Side Calculation of Final Order Total and Customer Due
+            const targetOrder = devOrders.find((o) => o.id === order.id || o.orderNumber === order.orderNumber) || order;
+            const items = Array.isArray(targetOrder.items) ? targetOrder.items : [];
+            let authoritativeSubtotal = 0;
+            if (items.length > 0) {
+              for (const it of items) {
+                const qty = Math.max(1, Math.round(Number(it.quantity) || 1));
+                const rawPrice =
+                  it.sellingPriceSnapshot != null && !isNaN(Number(it.sellingPriceSnapshot))
+                    ? Number(it.sellingPriceSnapshot)
+                    : Number(it.product?.price || 0);
+                const unitSellingPrice = Math.max(0, Number.isFinite(rawPrice) ? rawPrice : 0);
+                authoritativeSubtotal += Math.round(unitSellingPrice * qty * 100) / 100;
+              }
+              authoritativeSubtotal = Math.round(authoritativeSubtotal * 100) / 100;
             } else {
-              const isPrepaid = order.paymentStatus === 'PAID' || order.paymentStatus === 'Paid';
-              codAmount = isPrepaid ? 0 : Number(order.totalAmount) || 0;
+              authoritativeSubtotal = Number(targetOrder.subtotal) || 0;
+            }
+
+            const authoritativeDeliveryFee = Math.max(0, Number(targetOrder.deliveryFee ?? 0));
+            const authoritativeDiscount = Math.max(0, Number(targetOrder.discountAmount ?? 0));
+            const authoritativeFinalTotal = Math.max(
+              0,
+              Math.round((authoritativeSubtotal + authoritativeDeliveryFee - authoritativeDiscount) * 100) / 100
+            );
+
+            const authoritativeAdvance = Math.max(0, Number(targetOrder.advancePayment) || 0);
+            const authoritativeCustomerDue = Math.max(
+              0,
+              Math.round((authoritativeFinalTotal - authoritativeAdvance) * 100) / 100
+            );
+
+            const isPrepaid = targetOrder.paymentStatus === 'PAID' || targetOrder.paymentStatus === 'Paid' || authoritativeCustomerDue === 0;
+            const codAmount = isPrepaid ? 0 : authoritativeCustomerDue;
+
+            let synchronizedPaymentStatus = targetOrder.paymentStatus;
+            if (isPrepaid || authoritativeCustomerDue === 0) {
+              if (authoritativeFinalTotal > 0 && targetOrder.paymentStatus !== 'PAID' && targetOrder.paymentStatus !== 'Paid') {
+                synchronizedPaymentStatus = 'Paid';
+              }
+            } else if (authoritativeAdvance > 0 && authoritativeCustomerDue > 0) {
+              if (targetOrder.paymentStatus !== 'PARTIAL' && targetOrder.paymentStatus !== 'Partial') {
+                synchronizedPaymentStatus = 'PARTIAL';
+              }
+            } else if (authoritativeAdvance === 0 && authoritativeCustomerDue > 0) {
+              if (targetOrder.paymentStatus === 'PARTIAL' || targetOrder.paymentStatus === 'Partial' || targetOrder.paymentStatus === 'Paid' || targetOrder.paymentStatus === 'PAID') {
+                synchronizedPaymentStatus = targetOrder.paymentMethod === 'dbbl' ? 'UNVERIFIED' : 'DUE';
+              }
             }
 
             const recipientPhone = (parcelData.recipient_phone || order.customer?.phone || '').replace(/[^0-9]/g, '');
@@ -4705,13 +4747,18 @@ function localApiDevPlugin(): Plugin {
                     }));
                   }
 
-                  const targetOrder = devOrders.find((o) => o.id === order.id || o.orderNumber === order.orderNumber);
                   if (targetOrder) {
                     targetOrder.shippingStatus = 'Shipped';
                     targetOrder.courierName = courierName || 'Steadfast';
                     targetOrder.courierWaybill = trackingCode;
                     targetOrder.consignmentId = consignmentId;
                     targetOrder.courierStatus = 'In Transit';
+                    targetOrder.totalAmount = authoritativeFinalTotal;
+                    targetOrder.subtotal = authoritativeSubtotal;
+                    targetOrder.customerDue = authoritativeCustomerDue;
+                    targetOrder.dueAmount = authoritativeCustomerDue;
+                    targetOrder.advancePayment = authoritativeAdvance;
+                    targetOrder.paymentStatus = synchronizedPaymentStatus;
                     targetOrder.courierBooking = {
                       provider: courierName || 'Steadfast',
                       waybillId: trackingCode,
@@ -4726,6 +4773,10 @@ function localApiDevPlugin(): Plugin {
                     success: true,
                     tracking_code: trackingCode,
                     consignment_id: consignmentId,
+                    cod_amount: codAmount,
+                    customerDue: authoritativeCustomerDue,
+                    totalAmount: authoritativeFinalTotal,
+                    advancePayment: authoritativeAdvance,
                     message: `Order dispatched to ${courierName} successfully!`,
                     data: sfData,
                   }));
@@ -4822,13 +4873,18 @@ function localApiDevPlugin(): Plugin {
               ? trackingPattern.replace('{trackingCode}', trackingCode)
               : `${trackingPattern}/${trackingCode}`;
 
-            const targetOrder = devOrders.find((o) => o.id === order.id || o.orderNumber === order.orderNumber);
             if (targetOrder) {
               targetOrder.shippingStatus = 'Shipped';
               targetOrder.courierName = courierName;
               targetOrder.courierWaybill = trackingCode;
               targetOrder.consignmentId = consignmentId;
               targetOrder.courierStatus = 'In Transit';
+              targetOrder.totalAmount = authoritativeFinalTotal;
+              targetOrder.subtotal = authoritativeSubtotal;
+              targetOrder.customerDue = authoritativeCustomerDue;
+              targetOrder.dueAmount = authoritativeCustomerDue;
+              targetOrder.advancePayment = authoritativeAdvance;
+              targetOrder.paymentStatus = synchronizedPaymentStatus;
               targetOrder.courierBooking = {
                 provider: courierName,
                 waybillId: trackingCode,
@@ -4843,6 +4899,10 @@ function localApiDevPlugin(): Plugin {
               success: true,
               tracking_code: trackingCode,
               consignment_id: consignmentId,
+              cod_amount: codAmount,
+              customerDue: authoritativeCustomerDue,
+              totalAmount: authoritativeFinalTotal,
+              advancePayment: authoritativeAdvance,
               message: `Order dispatched to ${courierName} successfully!`,
             }));
           });
@@ -5110,8 +5170,12 @@ function localApiDevPlugin(): Plugin {
                 matchedOrder.courierStatus = normalized.courierStatus;
                 matchedOrder.shippingStatus = normalized.shippingStatus;
                 matchedOrder.lastCourierSync = nowIso;
-                if (normalized.isDelivered && matchedOrder.paymentStatus !== 'PAID' && matchedOrder.paymentStatus !== 'Paid') {
-                  matchedOrder.paymentStatus = 'Paid';
+                if (normalized.isDelivered) {
+                  if (matchedOrder.paymentStatus !== 'PAID' && matchedOrder.paymentStatus !== 'Paid') {
+                    matchedOrder.paymentStatus = 'Paid';
+                  }
+                  matchedOrder.customerDue = 0;
+                  matchedOrder.dueAmount = 0;
                 }
               }
 
