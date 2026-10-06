@@ -348,6 +348,7 @@ async function runVerification() {
                   actor_role: args[4],
                   action: args[5],
                   target_id: args[6],
+                  targetId: args[6],
                   target_type: args[7],
                   details_json: args[8],
                   ip_address: args[9],

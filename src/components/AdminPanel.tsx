@@ -159,24 +159,37 @@ const ConfidentialProfitBadge: React.FC<ConfidentialProfitBadgeProps> = ({ profi
     setIsVisible((prev) => !prev);
   };
 
+  const isLoss = profitVal < 0;
+
   return (
-    <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1 font-mono select-none">
-      <TrendingUp className="w-3 h-3 text-emerald-600 shrink-0" />
+    <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold border flex items-center gap-1 font-mono select-none ${
+      isLoss ? 'bg-rose-100 text-rose-800 border-rose-200' : 'bg-emerald-100 text-emerald-800 border-emerald-200'
+    }`}>
+      {isLoss ? (
+        <TrendingDown className="w-3 h-3 text-rose-600 shrink-0" />
+      ) : (
+        <TrendingUp className="w-3 h-3 text-emerald-600 shrink-0" />
+      )}
       <button
         type="button"
         onClick={toggleVisibility}
-        className="p-0.5 text-emerald-700 hover:text-emerald-950 hover:bg-emerald-200/70 rounded focus:outline-hidden focus:ring-1 focus:ring-emerald-500 transition-colors inline-flex items-center justify-center shrink-0 cursor-pointer"
-        title={isVisible ? 'Hide profit' : 'Show profit'}
-        aria-label={isVisible ? 'Hide profit' : 'Show profit'}
+        className={`p-0.5 rounded focus:outline-hidden focus:ring-1 transition-colors inline-flex items-center justify-center shrink-0 cursor-pointer ${
+          isLoss
+            ? 'text-rose-700 hover:text-rose-950 hover:bg-rose-200/70 focus:ring-rose-500'
+            : 'text-emerald-700 hover:text-emerald-950 hover:bg-emerald-200/70 focus:ring-emerald-500'
+        }`}
+        title={isVisible ? (isLoss ? 'Hide loss' : 'Hide profit') : (isLoss ? 'Show loss' : 'Show profit')}
+        aria-label={isVisible ? (isLoss ? 'Hide loss' : 'Hide profit') : (isLoss ? 'Show loss' : 'Show profit')}
       >
         {isVisible ? (
-          <EyeOff className="w-3 h-3 text-emerald-700" />
+          <EyeOff className={`w-3 h-3 ${isLoss ? 'text-rose-700' : 'text-emerald-700'}`} />
         ) : (
-          <Eye className="w-3 h-3 text-emerald-600" />
+          <Eye className={`w-3 h-3 ${isLoss ? 'text-rose-600' : 'text-emerald-600'}`} />
         )}
       </button>
       <span>
-        Profit: {isVisible ? `৳${profitVal.toLocaleString()}` : '••••'}
+        {isLoss ? 'Loss: ' : 'Profit: '}
+        {isVisible ? (isLoss ? `-৳${Math.abs(profitVal).toLocaleString()}` : `৳${profitVal.toLocaleString()}`) : '••••'}
       </span>
     </span>
   );
@@ -1793,10 +1806,13 @@ const AdminPanelContent: React.FC = () => {
 
   // --- ORDER EDIT & DELETE HANDLERS ---
   const getEditOrderSubtotal = (items: any[]) => {
-    return items.reduce(
-      (sum, item) => sum + Number(item.product?.price || 0) * Number(item.quantity || 1),
-      0
-    );
+    return items.reduce((sum, item) => {
+      const p =
+        item.sellingPriceSnapshot != null && !isNaN(Number(item.sellingPriceSnapshot))
+          ? Number(item.sellingPriceSnapshot)
+          : Number(item.product?.price || 0);
+      return sum + p * Number(item.quantity || 1);
+    }, 0);
   };
 
   const handleUpdateOrderItemPrice = (index: number, newPrice: number | string) => {
@@ -1985,14 +2001,28 @@ const AdminPanelContent: React.FC = () => {
     const subtotal = getEditOrderSubtotal(editOrderItems);
     const discount = editingOrder.discountAmount || 0;
     const totalAmount = Math.max(0, subtotal + editDeliveryFee - discount);
+    const currentAdvance = editingOrder.advancePayment != null ? Number(editingOrder.advancePayment) : 0;
+
+    // Requirement 7: Advance Conflict Check
+    if (currentAdvance > 0 && totalAmount < currentAdvance) {
+      showNotification(
+        'error',
+        'Cannot Reduce Below Advance Payment',
+        `New order total (৳${totalAmount.toLocaleString()}) cannot be less than the already recorded advance payment (৳${currentAdvance.toLocaleString()}).`
+      );
+      return;
+    }
 
     let totalCost = 0;
     const enrichedItems = editOrderItems.map((it) => {
-      const unitPrice = Number(it.product?.price || 0);
+      const unitPrice =
+        it.sellingPriceSnapshot != null && !isNaN(Number(it.sellingPriceSnapshot))
+          ? Number(it.sellingPriceSnapshot)
+          : Number(it.product?.price || 0);
       const buyingPrice =
-        it.buyingPriceSnapshot != null
+        it.buyingPriceSnapshot != null && !isNaN(Number(it.buyingPriceSnapshot))
           ? Number(it.buyingPriceSnapshot)
-          : it.product?.buyingPrice != null
+          : it.product?.buyingPrice != null && !isNaN(Number(it.product.buyingPrice))
           ? Number(it.product.buyingPrice)
           : 0;
       const qty = Number(it.quantity) || 1;
@@ -2001,6 +2031,7 @@ const AdminPanelContent: React.FC = () => {
       totalCost += itemCost;
       return {
         ...it,
+        quantity: qty,
         product: {
           ...it.product,
           price: unitPrice,
@@ -2011,7 +2042,18 @@ const AdminPanelContent: React.FC = () => {
         productGrossProfit: itemProfit,
       };
     });
-    const totalGrossProfit = Math.max(0, subtotal - totalCost);
+    // Requirement 6: Do NOT clamp loss with Math.max(0, ...)
+    const totalGrossProfit = subtotal - totalCost;
+    const customerDue = Math.max(0, Math.round((totalAmount - currentAdvance) * 100) / 100);
+
+    let nextPaymentStatus = editPaymentStatus;
+    if (currentAdvance > 0) {
+      if (customerDue === 0 && totalAmount > 0) {
+        nextPaymentStatus = 'PAID' as any;
+      } else if (customerDue > 0) {
+        nextPaymentStatus = 'PARTIAL' as any;
+      }
+    }
 
     updateOrder(editingOrder.id, {
       items: enrichedItems,
@@ -2020,6 +2062,9 @@ const AdminPanelContent: React.FC = () => {
       totalAmount,
       totalCost,
       totalGrossProfit,
+      advancePayment: currentAdvance,
+      customerDue,
+      dueAmount: customerDue,
       customer: {
         ...editingOrder.customer,
         fullName: editCustomerName.trim(),
@@ -2030,7 +2075,7 @@ const AdminPanelContent: React.FC = () => {
         deliveryZone: editCustomerZone,
       },
       shippingStatus: editShippingStatus,
-      paymentStatus: editPaymentStatus,
+      paymentStatus: nextPaymentStatus,
       transactionId: editBankTrxId.trim() || undefined,
       dbblDetails:
         editingOrder.paymentMethod === 'dbbl'
@@ -3556,13 +3601,19 @@ const AdminPanelContent: React.FC = () => {
                                       <span className="truncate font-medium">• {it.product.title}</span>
                                       <span className="font-bold text-slate-900 shrink-0">x{it.quantity}</span>
                                     </div>
-                                    {isSuperAdmin && it.buyingPriceSnapshot !== undefined && (
-                                      <div className="flex items-center gap-1.5 mt-0.5 text-[9px] text-emerald-700 font-mono">
-                                        <span>Cost: ৳{it.buyingPriceSnapshot}</span>
-                                        <span>•</span>
-                                        <span>Profit: ৳{it.productGrossProfit != null ? it.productGrossProfit : Math.max(0, ((it.sellingPriceSnapshot || it.product.price) - it.buyingPriceSnapshot) * it.quantity)}</span>
-                                      </div>
-                                    )}
+                                    {isSuperAdmin && it.buyingPriceSnapshot !== undefined && (() => {
+                                      const profitVal = it.productGrossProfit != null
+                                        ? it.productGrossProfit
+                                        : (((it.sellingPriceSnapshot ?? it.product.price) - it.buyingPriceSnapshot) * it.quantity);
+                                      const isLoss = profitVal < 0;
+                                      return (
+                                        <div className={`flex items-center gap-1.5 mt-0.5 text-[9px] font-mono ${isLoss ? 'text-rose-600' : 'text-emerald-700'}`}>
+                                          <span>Cost: ৳{it.buyingPriceSnapshot}</span>
+                                          <span>•</span>
+                                          <span>{isLoss ? `Loss: -৳${Math.abs(profitVal)}` : `Profit: ৳${profitVal}`}</span>
+                                        </div>
+                                      );
+                                    })()}
                                     {(it.selectedSize || it.selectedColor) && (
                                       <div className="flex items-center gap-1 mt-0.5 ml-2 flex-wrap">
                                         {it.selectedSize && (
@@ -3620,9 +3671,17 @@ const AdminPanelContent: React.FC = () => {
                                 </div>
 
                                 {isSuperAdmin && ord.totalGrossProfit !== undefined && (
-                                  <div className="p-1.5 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center justify-between text-[10px] text-emerald-900 font-mono">
+                                  <div className={`p-1.5 border rounded-lg flex items-center justify-between text-[10px] font-mono ${
+                                    ord.totalGrossProfit < 0
+                                      ? 'bg-rose-50 border-rose-200 text-rose-900'
+                                      : 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                                  }`}>
                                     <span>Cost: ৳{(ord.totalCost || 0).toLocaleString()}</span>
-                                    <span className="font-bold">Profit: ৳{ord.totalGrossProfit.toLocaleString()}</span>
+                                    <span className="font-bold">
+                                      {ord.totalGrossProfit < 0
+                                        ? `Loss: -৳${Math.abs(ord.totalGrossProfit).toLocaleString()}`
+                                        : `Profit: ৳${ord.totalGrossProfit.toLocaleString()}`}
+                                    </span>
                                   </div>
                                 )}
 
@@ -4442,7 +4501,7 @@ const AdminPanelContent: React.FC = () => {
                             const costVal = product.buyingPrice !== undefined ? Number(product.buyingPrice) : Number((product as any).buying_price);
                             const profitVal = product.unitProfit !== undefined
                               ? Number(product.unitProfit)
-                              : ((product as any).unit_profit !== undefined ? Number((product as any).unit_profit) : Math.max(0, product.price - costVal));
+                              : ((product as any).unit_profit !== undefined ? Number((product as any).unit_profit) : (product.price - costVal));
                             return (
                               <div className="pt-2 mt-1 border-t border-slate-100 flex items-center justify-between text-xs">
                                 <span className="text-[11px] text-slate-500 font-medium">
@@ -10002,6 +10061,61 @@ const AdminPanelContent: React.FC = () => {
                       ৳{editTotalAmount.toLocaleString()} BDT
                     </span>
                   </div>
+
+                  {/* Advance Payment & Customer Due display */}
+                  {editingOrder.advancePayment != null && Number(editingOrder.advancePayment) > 0 && (
+                    <div className="pt-2 border-t border-slate-200 space-y-1.5">
+                      <div className="flex items-center justify-between text-blue-700">
+                        <span className="text-[11px] font-medium">
+                          Recorded Advance Payment ({editingOrder.advancePaymentMethod || 'Advance'}):
+                        </span>
+                        <span className="font-bold font-mono">
+                          -৳{Number(editingOrder.advancePayment).toLocaleString()} BDT
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-slate-800 font-bold">
+                        <span className="text-[11px]">Customer Due Amount:</span>
+                        <span className="font-mono text-xs">
+                          ৳{Math.max(0, editTotalAmount - Number(editingOrder.advancePayment)).toLocaleString()} BDT
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Super Admin Profit / Loss Estimation */}
+                  {isSuperAdmin && (() => {
+                    let costSum = 0;
+                    for (const it of editOrderItems) {
+                      const bp = it.buyingPriceSnapshot != null
+                        ? Number(it.buyingPriceSnapshot)
+                        : (it.product?.buyingPrice != null ? Number(it.product.buyingPrice) : 0);
+                      costSum += bp * Number(it.quantity || 1);
+                    }
+                    const sub = getEditOrderSubtotal(editOrderItems);
+                    const prof = sub - costSum;
+                    return (
+                      <div className="pt-2 border-t border-slate-200 flex items-center justify-between text-[11px] font-mono">
+                        <span className="text-slate-500">Estimated Cost &amp; Profit:</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-slate-600">Cost: ৳{costSum.toLocaleString()}</span>
+                          <span className="text-slate-300">•</span>
+                          <span className={prof < 0 ? 'text-rose-600 font-bold' : 'text-emerald-700 font-bold'}>
+                            {prof < 0 ? `Loss: -৳${Math.abs(prof).toLocaleString()}` : `Profit: ৳${prof.toLocaleString()}`}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Requirement 7: Advance Conflict Warning */}
+                  {editingOrder.advancePayment != null && Number(editingOrder.advancePayment) > 0 && editTotalAmount < Number(editingOrder.advancePayment) && (
+                    <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-[11px] font-medium flex items-center gap-2">
+                      <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                      <span>
+                        <strong>Advance Conflict:</strong> Grand total (৳{editTotalAmount.toLocaleString()}) cannot be reduced below the recorded advance payment (৳{Number(editingOrder.advancePayment).toLocaleString()}).
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -10148,7 +10262,8 @@ const AdminPanelContent: React.FC = () => {
                 <button
                   id="save-order-edit-btn"
                   type="submit"
-                  className="flex-1 py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-black text-white font-bold text-xs shadow-md hover:shadow-lg active:scale-95 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                  disabled={Boolean(editingOrder.advancePayment && Number(editingOrder.advancePayment) > 0 && editTotalAmount < Number(editingOrder.advancePayment))}
+                  className="flex-1 py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-black text-white font-bold text-xs shadow-md hover:shadow-lg active:scale-95 transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <Check className="w-4 h-4" />
                   Save Order Changes

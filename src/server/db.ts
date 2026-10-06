@@ -429,7 +429,7 @@ export function sanitizeProductForRole(
     ? product.buyingPrice
     : ((product as any).buying_price != null ? (product as any).buying_price : undefined);
   const buyingPrice = canViewBuyingPrice && rawBuyingPrice != null ? Number(rawBuyingPrice) : undefined;
-  const unitProfit = canViewProfit && rawBuyingPrice != null ? Math.max(0, price - Number(rawBuyingPrice)) : undefined;
+  const unitProfit = canViewProfit && rawBuyingPrice != null ? (price - Number(rawBuyingPrice)) : undefined;
 
   const safeProduct: any = {
     ...product,
@@ -626,7 +626,7 @@ export function rowToProduct(row: ProductRow): Product {
 
   const price = Number(row.price) || 0;
   const buyingPrice = row.buying_price != null ? Number(row.buying_price) : undefined;
-  const unitProfit = buyingPrice != null ? Math.max(0, price - buyingPrice) : undefined;
+  const unitProfit = buyingPrice != null ? (price - buyingPrice) : undefined;
 
   return {
     id: row.id,
@@ -2869,7 +2869,7 @@ export function rowToOrder(row: OrderRow): Order {
     cardDetails,
     lastCourierSync: row.last_courier_sync || undefined,
     totalCost: row.total_cost != null ? Number(row.total_cost) : (items.reduce((s: number, it: any) => s + (Number(it.productCost) || (Number(it.buyingPriceSnapshot || it.product?.buyingPrice || 0) * (Number(it.quantity) || 1))), 0)),
-    totalGrossProfit: row.total_profit != null ? Number(row.total_profit) : Math.max(0, (Number(row.subtotal) || 0) - (row.total_cost != null ? Number(row.total_cost) : (items.reduce((s: number, it: any) => s + (Number(it.productCost) || (Number(it.buyingPriceSnapshot || it.product?.buyingPrice || 0) * (Number(it.quantity) || 1))), 0)))),
+    totalGrossProfit: row.total_profit != null ? Number(row.total_profit) : ((Number(row.subtotal) || 0) - (row.total_cost != null ? Number(row.total_cost) : (items.reduce((s: number, it: any) => s + (Number(it.productCost) || (Number(it.buyingPriceSnapshot || it.product?.buyingPrice || 0) * (Number(it.quantity) || 1))), 0)))),
     advancePayment: row.advance_payment != null && !isNaN(Number(row.advance_payment)) ? Math.max(0, Number(row.advance_payment)) : 0,
     advancePaymentMethod: row.advance_payment_method || undefined,
     advancePaymentNote: row.advance_payment_note || undefined,
@@ -3343,7 +3343,7 @@ export async function insertOrder(db: D1Database, order: Order): Promise<Order> 
     });
   }
 
-  const totalGrossProfit = Math.max(0, authoritativeSubtotal - totalOrderCost);
+  const totalGrossProfit = authoritativeSubtotal - totalOrderCost;
 
   // 5. Authoritative delivery fee from D1 store settings
   const deliveryZone = order.customer.deliveryZone === 'outside_dhaka' ? 'outside_dhaka' : 'inside_dhaka';
@@ -3588,7 +3588,7 @@ export async function updateOrderInD1(
       costSum += buyingPrice * qty;
     }
     calculatedCost = costSum;
-    calculatedProfit = Math.max(0, Number(merged.subtotal) - costSum);
+    calculatedProfit = Number(merged.subtotal) - costSum;
   }
 
   const updateSql = `

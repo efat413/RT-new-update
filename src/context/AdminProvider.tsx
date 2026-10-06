@@ -1132,8 +1132,10 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const res = await orderApi.updateOrder(orderId, updates);
     if (res.success && res.order) {
       setOrders((prev) => prev.map((ord) => (ord.id === orderId ? res.order! : ord)));
+    } else if (!res.success) {
+      showNotification('error', 'Update Failed', res.error || 'Failed to update order');
     }
-  }, []);
+  }, [showNotification]);
 
   const verifyAndMarkPaid = useCallback((orderId: string) => {
     updateOrder(orderId, { paymentStatus: 'Paid' });

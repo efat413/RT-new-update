@@ -63,11 +63,11 @@ function localApiDevPlugin(): Plugin {
         ...it,
         buyingPriceSnapshot: bp,
         productCost: itemCost,
-        productGrossProfit: Math.max(0, itemRev - itemCost),
+        productGrossProfit: itemRev - itemCost,
       };
     });
     const totalCost = o.totalCost ?? items.reduce((s: number, it: any) => s + (it.productCost || 0), 0);
-    const totalGrossProfit = o.totalGrossProfit ?? Math.max(0, (Number(o.subtotal) || 0) - totalCost);
+    const totalGrossProfit = o.totalGrossProfit ?? ((Number(o.subtotal) || 0) - totalCost);
     const advance = o.advancePayment != null ? Math.max(0, Number(o.advancePayment)) : 0;
     const finalTotal = Number(o.totalAmount) || 0;
     const customerDue = Math.max(0, Math.round((finalTotal - advance) * 100) / 100);
@@ -1065,7 +1065,7 @@ function localApiDevPlugin(): Plugin {
     const price = Number(p.price) || 0;
     const rawBp = p.buyingPrice != null ? p.buyingPrice : (p.buying_price != null ? p.buying_price : null);
     const buyingPrice = rawBp != null && !isNaN(Number(rawBp)) ? Number(rawBp) : undefined;
-    const unitProfit = buyingPrice !== undefined ? Math.max(0, price - buyingPrice) : undefined;
+    const unitProfit = buyingPrice !== undefined ? (price - buyingPrice) : undefined;
 
     const result = { ...p };
     if (canBuying && buyingPrice !== undefined) {
@@ -3722,7 +3722,7 @@ function localApiDevPlugin(): Plugin {
                 };
               });
 
-              const totalGrossProfit = Math.max(0, (Number(rawOrder.subtotal) || 0) - totalCost);
+              const totalGrossProfit = (Number(rawOrder.subtotal) || 0) - totalCost;
 
               // Anti-Spam check
               if (devSettings.blockedPhoneNumbers && Array.isArray(devSettings.blockedPhoneNumbers)) {
@@ -4028,10 +4028,8 @@ function localApiDevPlugin(): Plugin {
 
               const previousAdvance = old.advancePayment != null ? Number(old.advancePayment) : 0;
               let validatedAdvance = previousAdvance;
-              let customerDue = Math.max(0, Math.round(((Number(old.totalAmount) || 0) - previousAdvance) * 100) / 100);
 
               if (hasAdvanceUpdate) {
-                const authoritativeTotal = Number(old.totalAmount) || 0;
                 const rawAdvance = updates.advancePayment !== undefined ? updates.advancePayment : (updates as any).advance_payment;
                 const parsedAdvance = typeof rawAdvance === 'string' ? Number(rawAdvance) : rawAdvance;
 
@@ -4046,13 +4044,110 @@ function localApiDevPlugin(): Plugin {
                 }
 
                 validatedAdvance = Math.round(parsedAdvance * 100) / 100;
+              }
 
-                if (validatedAdvance > authoritativeTotal) {
+              // Authoritative Server-Side Recalculation (Items, Prices, Subtotal, Delivery, Discount, Total, Profit, Due)
+              let authoritativeSubtotal = Number(old.subtotal) || 0;
+              let authoritativeTotalCost = Number(old.totalCost) || 0;
+              let authoritativeTotalProfit = Number(old.totalGrossProfit) || 0;
+              let enrichedItems: any[] | null = null;
+
+              if (updates.items !== undefined) {
+                if (!Array.isArray(updates.items) || updates.items.length === 0) {
                   res.statusCode = 400;
-                  return res.end(JSON.stringify({ success: false, error: `Invalid advance payment: Advance payment (৳${validatedAdvance}) cannot exceed authoritative order total (৳${authoritativeTotal}).` }));
+                  return res.end(JSON.stringify({ success: false, error: 'Invalid order items: An order must contain at least one product item.' }));
                 }
 
-                customerDue = Math.max(0, Math.round((authoritativeTotal - validatedAdvance) * 100) / 100);
+                let subtotalAcc = 0;
+                let costAcc = 0;
+                let profitAcc = 0;
+                enrichedItems = [];
+
+                for (const it of updates.items) {
+                  const qty = Math.max(1, Math.round(Number(it.quantity) || 1));
+                  const rawSellingPrice =
+                    it.sellingPriceSnapshot != null && !isNaN(Number(it.sellingPriceSnapshot))
+                      ? Number(it.sellingPriceSnapshot)
+                      : Number(it.product?.price || 0);
+
+                  if (typeof rawSellingPrice !== 'number' || isNaN(rawSellingPrice) || rawSellingPrice < 0) {
+                    res.statusCode = 400;
+                    return res.end(JSON.stringify({ success: false, error: 'Invalid item price: Unit price must be a valid non-negative number.' }));
+                  }
+
+                  const unitSellingPrice = Math.round(rawSellingPrice * 100) / 100;
+                  const buyingPrice =
+                    it.buyingPriceSnapshot != null && !isNaN(Number(it.buyingPriceSnapshot))
+                      ? Number(it.buyingPriceSnapshot)
+                      : it.product?.buyingPrice != null && !isNaN(Number(it.product.buyingPrice))
+                      ? Number(it.product.buyingPrice)
+                      : 0;
+
+                  const itemLineTotal = Math.round(unitSellingPrice * qty * 100) / 100;
+                  const itemCost = Math.round(buyingPrice * qty * 100) / 100;
+                  const itemProfit = Math.round((unitSellingPrice - buyingPrice) * qty * 100) / 100;
+
+                  subtotalAcc += itemLineTotal;
+                  costAcc += itemCost;
+                  profitAcc += itemProfit;
+
+                  enrichedItems.push({
+                    ...it,
+                    quantity: qty,
+                    product: {
+                      ...(it.product || {}),
+                      price: unitSellingPrice,
+                    },
+                    sellingPriceSnapshot: unitSellingPrice,
+                    buyingPriceSnapshot: buyingPrice,
+                    productCost: itemCost,
+                    productGrossProfit: itemProfit,
+                  });
+                }
+
+                authoritativeSubtotal = Math.round(subtotalAcc * 100) / 100;
+                authoritativeTotalCost = Math.round(costAcc * 100) / 100;
+                authoritativeTotalProfit = Math.round(profitAcc * 100) / 100;
+                updates.items = enrichedItems;
+                updates.subtotal = authoritativeSubtotal;
+                updates.totalCost = authoritativeTotalCost;
+                updates.totalGrossProfit = authoritativeTotalProfit;
+              }
+
+              const authoritativeDeliveryFee = updates.deliveryFee !== undefined
+                ? Math.max(0, Number(updates.deliveryFee) || 0)
+                : (old.deliveryFee ?? 0);
+              const authoritativeDiscount = updates.discountAmount !== undefined
+                ? Math.max(0, Number(updates.discountAmount) || 0)
+                : (old.discountAmount ?? 0);
+
+              // Final Order Total = Subtotal + Delivery Fee - Discount
+              const authoritativeFinalTotal = Math.max(
+                0,
+                Math.round((authoritativeSubtotal + authoritativeDeliveryFee - authoritativeDiscount) * 100) / 100
+              );
+              updates.deliveryFee = authoritativeDeliveryFee;
+              updates.discountAmount = authoritativeDiscount;
+              updates.totalAmount = authoritativeFinalTotal;
+
+              // Requirement 7: Advance Conflict Check
+              // If the Admin reduces the order total below the already-recorded advance:
+              // Do NOT silently create negative customer due. Reject the update with a clear server-side validation error.
+              if (validatedAdvance > authoritativeFinalTotal) {
+                res.statusCode = 400;
+                return res.end(JSON.stringify({
+                  success: false,
+                  error: `Invalid order update: Advance payment (৳${validatedAdvance}) cannot exceed authoritative order total (৳${authoritativeFinalTotal}). Please adjust the advance payment first before reducing the order total.`,
+                }));
+              }
+
+              // Authoritative Customer Due = Final Order Total - Advance Payment
+              const customerDue = Math.max(0, Math.round((authoritativeFinalTotal - validatedAdvance) * 100) / 100);
+              updates.customerDue = customerDue;
+              updates.dueAmount = customerDue;
+              updates.advancePayment = validatedAdvance;
+
+              if (hasAdvanceUpdate) {
                 const nowIso = new Date().toISOString();
                 const actorIdentifier = authResult.auth?.user?.email || authResult.auth?.user?.id || 'admin';
 
@@ -4062,24 +4157,21 @@ function localApiDevPlugin(): Plugin {
                 const rawNote = updates.advancePaymentNote !== undefined ? updates.advancePaymentNote : (updates as any).advance_payment_note;
                 const advanceNote = rawNote !== undefined ? (rawNote ? String(rawNote).trim() : null) : (old.advancePaymentNote || null);
 
-                updates.advancePayment = validatedAdvance;
                 updates.advancePaymentMethod = advanceMethod || undefined;
                 updates.advancePaymentNote = advanceNote || undefined;
                 updates.advancePaymentUpdatedAt = nowIso;
                 updates.advancePaymentUpdatedBy = actorIdentifier;
-                updates.customerDue = customerDue;
-                updates.dueAmount = customerDue;
+              }
 
-                if (!updates.paymentStatus) {
-                  if (validatedAdvance === 0) {
-                    if (old.paymentStatus === 'PARTIAL' || old.paymentStatus === 'Partial' || old.paymentStatus === 'Paid' || old.paymentStatus === 'PAID') {
-                      updates.paymentStatus = (old.paymentMethod === 'dbbl' ? 'UNVERIFIED' : 'DUE') as any;
-                    }
-                  } else if (customerDue === 0 && authoritativeTotal > 0) {
-                    updates.paymentStatus = 'Paid' as any;
-                  } else if (validatedAdvance > 0 && customerDue > 0) {
-                    updates.paymentStatus = 'PARTIAL' as any;
+              if (!updates.paymentStatus) {
+                if (validatedAdvance === 0) {
+                  if (old.paymentStatus === 'PARTIAL' || old.paymentStatus === 'Partial' || old.paymentStatus === 'Paid' || old.paymentStatus === 'PAID') {
+                    updates.paymentStatus = (old.paymentMethod === 'dbbl' ? 'UNVERIFIED' : 'DUE') as any;
                   }
+                } else if (customerDue === 0 && authoritativeFinalTotal > 0) {
+                  updates.paymentStatus = 'Paid' as any;
+                } else if (validatedAdvance > 0 && customerDue > 0) {
+                  updates.paymentStatus = 'PARTIAL' as any;
                 }
               }
 
