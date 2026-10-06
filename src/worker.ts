@@ -205,9 +205,19 @@ export default {
           );
         }
 
-        // Graceful migration from old ?product= query URLs to canonical /product/:id route (301 Permanent Redirect)
+        // Backward Compatibility (Requirement 4):
+        // 1. If accessed via legacy query parameter (?product=... or ?p=...) -> 301 Permanent Redirect to SEO slug
+        // 2. If accessed via legacy product ID path (/product/prod-...) while slug exists -> 301 Permanent Redirect to SEO slug
+        const canonicalSlug = product.slug || product.id;
+        const requestedPathSlug = decodeURIComponent(url.pathname.replace(/^\/product\//, '').replace(/\/$/, '')).trim();
+
         if (url.searchParams.has('product') || url.searchParams.has('p')) {
-          const canonicalUrl = new URL(`/product/${encodeURIComponent(product.id)}`, request.url);
+          const canonicalUrl = new URL(`/product/${encodeURIComponent(canonicalSlug)}`, request.url);
+          return Response.redirect(canonicalUrl.toString(), 301);
+        }
+
+        if (product.slug && requestedPathSlug !== product.slug) {
+          const canonicalUrl = new URL(`/product/${encodeURIComponent(product.slug)}`, request.url);
           return Response.redirect(canonicalUrl.toString(), 301);
         }
 

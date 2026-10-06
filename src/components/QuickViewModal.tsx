@@ -552,15 +552,15 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
               </a>
             )}
             <a
-              href={getProductUrl(product.id)}
+              href={getProductUrl(product)}
               onClick={(e) => {
                 if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
                 e.preventDefault();
                 onClose();
-                setSelectedProductId(product.id);
+                setSelectedProductId(product.slug || product.id);
                 setCurrentView('product');
-                loadProductById(product.id);
-                window.history.pushState({}, '', getProductUrl(product.id));
+                loadProductById(product.slug || product.id);
+                window.history.pushState({}, '', getProductUrl(product));
                 window.scrollTo({ top: 0, behavior: 'smooth' });
               }}
               className="block group-hover:text-rose-600 transition-colors"
@@ -861,7 +861,7 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
                       {relatedProducts.map((rel) => (
                         <a
                           key={rel.id}
-                          href={getProductUrl(rel.id)}
+                          href={getProductUrl(rel)}
                           onClick={(e) => {
                             if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
                             e.preventDefault();

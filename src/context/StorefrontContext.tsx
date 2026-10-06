@@ -170,9 +170,9 @@ export interface StorefrontContextType {
   ) => Promise<{ success: boolean; message?: string; updatedOrder?: Order }>;
   cancelCustomerOrder: (orderId: string) => Promise<{ success: boolean; message?: string }>;
 
-  getProductUrl: (productId: string, options?: { absolute?: boolean }) => string;
+  getProductUrl: (productIdOrProduct: string | Product, options?: { absolute?: boolean }) => string;
   getCategoryUrl: (categoryIdOrSlug: string, options?: { absolute?: boolean }) => string;
-  copyProductLink: (productId: string) => Promise<boolean>;
+  copyProductLink: (productIdOrProduct: string | Product) => Promise<boolean>;
   copyCategoryLink: (categoryIdOrSlug: string) => Promise<boolean>;
 
   pixelLogs: PixelEventLog[];
@@ -753,7 +753,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     if (!id) return null;
     const cleanId = id.trim();
     const existing = productsRef.current.find(
-      (p) => p.id === cleanId || p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') === cleanId
+      (p) => p.id === cleanId || p.slug === cleanId || p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') === cleanId
     );
     if (existing) {
       setSingleProduct(existing);
@@ -1224,10 +1224,17 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   }, [showNotification]);
 
   // URLs & Links
-  const getProductUrl = useCallback((productId: string, options?: { absolute?: boolean }): string => {
-    const path = `/product/${encodeURIComponent(productId)}`;
+  const getProductUrl = useCallback((productIdOrProduct: string | Product, options?: { absolute?: boolean }): string => {
+    let identifier: string;
+    if (typeof productIdOrProduct === 'object' && productIdOrProduct !== null) {
+      identifier = productIdOrProduct.slug || productIdOrProduct.id;
+    } else {
+      const found = products.find((p) => p.id === productIdOrProduct || p.slug === productIdOrProduct);
+      identifier = found ? (found.slug || found.id) : productIdOrProduct;
+    }
+    const path = `/product/${encodeURIComponent(identifier)}`;
     return options?.absolute ? `${SITE_DOMAIN}${path}` : path;
-  }, []);
+  }, [products]);
 
   const getCategoryUrl = useCallback((categoryIdOrSlug: string, options?: { absolute?: boolean }): string => {
     const cat = categories.find((c) => c.id === categoryIdOrSlug || c.slug === categoryIdOrSlug);
@@ -1236,8 +1243,8 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     return options?.absolute ? `${SITE_DOMAIN}${path}` : path;
   }, [categories]);
 
-  const copyProductLink = useCallback(async (productId: string): Promise<boolean> => {
-    const url = getProductUrl(productId, { absolute: true });
+  const copyProductLink = useCallback(async (productIdOrProduct: string | Product): Promise<boolean> => {
+    const url = getProductUrl(productIdOrProduct, { absolute: true });
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
         await navigator.clipboard.writeText(url);
@@ -1397,7 +1404,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               : []),
             {
               name: activeProd.title,
-              url: `${SITE_DOMAIN}/product/${encodeURIComponent(activeProd.id)}`,
+              url: `${SITE_DOMAIN}/product/${encodeURIComponent(activeProd.slug || activeProd.id)}`,
             },
           ],
         },

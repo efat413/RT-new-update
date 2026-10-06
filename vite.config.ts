@@ -15,6 +15,7 @@ import {
   INITIAL_ORDERS,
 } from './src/data/seedData';
 import {
+  generateProductSlug,
   generateSitemapXml,
   ROBOTS_TXT_CONTENT,
   generate404Html,
@@ -1255,7 +1256,7 @@ function localApiDevPlugin(): Plugin {
 
           if (prodParam) {
             const foundProduct = devProducts.find(
-              (p) => p.id === prodParam || p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') === prodParam
+              (p) => p.slug === prodParam || p.id === prodParam || p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') === prodParam
             );
 
             if (!foundProduct || (foundProduct as any).status === 'inactive' || (foundProduct as any).isDeleted) {
@@ -1268,10 +1269,20 @@ function localApiDevPlugin(): Plugin {
               );
             }
 
-            // Graceful migration from old ?product= URL to canonical /product/:id (301 Permanent Redirect)
+            const canonicalSlug = foundProduct.slug || foundProduct.id;
+            const requestedPathSlug = decodeURIComponent(url.pathname.replace(/^\/product\//, '').replace(/\/$/, '')).trim();
+
+            // Graceful migration from old ?product= URL to canonical /product/:slug (301 Permanent Redirect)
             if (url.searchParams.has('product') || url.searchParams.has('p')) {
               res.statusCode = 301;
-              res.setHeader('Location', `/product/${encodeURIComponent(foundProduct.id)}`);
+              res.setHeader('Location', `/product/${encodeURIComponent(canonicalSlug)}`);
+              return res.end();
+            }
+
+            // Backward Compatibility: If accessed via legacy product ID path while slug exists -> 301 Permanent Redirect
+            if (foundProduct.slug && requestedPathSlug !== foundProduct.slug) {
+              res.statusCode = 301;
+              res.setHeader('Location', `/product/${encodeURIComponent(foundProduct.slug)}`);
               return res.end();
             }
           }
@@ -2466,9 +2477,21 @@ function localApiDevPlugin(): Plugin {
                 ? (rawInputBp !== null && rawInputBp !== '' && !isNaN(Number(rawInputBp)) ? Math.max(0, Number(rawInputBp)) : 0)
                 : 0;
 
+              const title = product.title || product.name || 'Product';
+              const initialSlug = (typeof product.slug === 'string' && product.slug.trim())
+                ? generateProductSlug(product.slug)
+                : generateProductSlug(title);
+              let finalSlug = initialSlug || `prod-${Date.now()}`;
+              let slugCounter = 1;
+              while (devProducts.some((p) => p.slug === finalSlug)) {
+                slugCounter++;
+                finalSlug = `${initialSlug}-${slugCounter}`;
+              }
+
               const newProd = {
                 id: product.id || `prod-${Date.now()}`,
-                title: product.title || product.name || 'Product',
+                slug: finalSlug,
+                title,
                 price,
                 originalPrice: product.originalPrice ?? product.oldPrice,
                 buyingPrice,
@@ -2554,7 +2577,7 @@ function localApiDevPlugin(): Plugin {
           );
 
           if (method === 'GET') {
-            const found = devProducts.find((p) => p.id === id);
+            const found = devProducts.find((p) => p.id === id || p.slug === id);
             const singleCacheControl = isPrivileged
               ? 'no-store, no-cache, must-revalidate, max-age=0'
               : 'public, max-age=15, s-maxage=45, stale-while-revalidate=30';
@@ -2576,7 +2599,7 @@ function localApiDevPlugin(): Plugin {
               const canViewBuying = isSuperRole || hasDevPermission(authResult.auth!, 'product.view_buying_price');
               const canViewProf = isSuperRole || hasDevPermission(authResult.auth!, 'product.view_profit');
               const updates = body.updates || body.product || body;
-              const idx = devProducts.findIndex((p) => p.id === id);
+              const idx = devProducts.findIndex((p) => p.id === id || p.slug === id);
               if (idx >= 0) {
                 if (!canManageBuying) {
                   delete updates.buyingPrice;
@@ -2589,6 +2612,21 @@ function localApiDevPlugin(): Plugin {
                 }
                 if ('videoUrl' in updates) {
                   updates.videoUrl = updates.videoUrl ? String(updates.videoUrl).trim() : undefined;
+                }
+                // Handle slug updates or stabilization
+                if (updates.slug !== undefined && typeof updates.slug === 'string' && updates.slug.trim()) {
+                  const reqSlug = generateProductSlug(updates.slug);
+                  if (reqSlug && reqSlug !== devProducts[idx].slug) {
+                    let uSlug = reqSlug;
+                    let c = 1;
+                    while (devProducts.some((p, i) => i !== idx && p.slug === uSlug)) {
+                      c++;
+                      uSlug = `${reqSlug}-${c}`;
+                    }
+                    updates.slug = uSlug;
+                  }
+                } else if (!devProducts[idx].slug) {
+                  updates.slug = generateProductSlug(updates.title || devProducts[idx].title || id);
                 }
                 devProducts[idx] = { ...devProducts[idx], ...updates };
                 res.statusCode = 200;

@@ -80,6 +80,7 @@ import {
   Play,
 } from 'lucide-react';
 import { extractYouTubeVideoId } from '../utils/youtube';
+import { generateProductSlug } from '../utils/seo';
 import {
   parseColorOption,
   formatColorOption,
@@ -311,6 +312,8 @@ const AdminPanelContent: React.FC = () => {
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [prodTitle, setProdTitle] = useState('');
+  const [prodSlug, setProdSlug] = useState('');
+  const [isSlugManuallyEdited, setIsSlugManuallyEdited] = useState(false);
   const [prodPrice, setProdPrice] = useState<number | string>(0);
   const [prodOriginalPrice, setProdOriginalPrice] = useState<number>(0);
   const [prodBuyingPrice, setProdBuyingPrice] = useState<number | string>('');
@@ -1203,6 +1206,8 @@ const AdminPanelContent: React.FC = () => {
     setEditingProduct(null);
     setProductFormError(null);
     setProdTitle('');
+    setProdSlug('');
+    setIsSlugManuallyEdited(false);
     setProdPrice(1000);
     setProdOriginalPrice(1300);
     setProdBuyingPrice('');
@@ -1246,6 +1251,8 @@ const AdminPanelContent: React.FC = () => {
     setEditingProduct(product);
     setProductFormError(null);
     setProdTitle(product.title);
+    setProdSlug(product.slug || generateProductSlug(product.title));
+    setIsSlugManuallyEdited(true);
     setProdPrice(product.price);
     setProdOriginalPrice(product.originalPrice || 0);
 
@@ -1492,6 +1499,7 @@ const AdminPanelContent: React.FC = () => {
       if (editingProduct) {
         const res = await updateProduct(editingProduct.id, {
           title: prodTitle.trim(),
+          slug: prodSlug.trim() || undefined,
           price: Number(prodPrice),
           originalPrice: prodOriginalPrice ? Number(prodOriginalPrice) : undefined,
           ...(buyingPriceVal !== undefined ? { buyingPrice: buyingPriceVal } : {}),
@@ -1514,6 +1522,7 @@ const AdminPanelContent: React.FC = () => {
       } else {
         const res = await addProduct({
           title: prodTitle.trim(),
+          slug: prodSlug.trim() || undefined,
           price: Number(prodPrice),
           originalPrice: prodOriginalPrice ? Number(prodOriginalPrice) : undefined,
           ...(buyingPriceVal !== undefined ? { buyingPrice: buyingPriceVal } : {}),
@@ -4372,6 +4381,9 @@ const AdminPanelContent: React.FC = () => {
                           <h4 className="font-bold text-sm text-slate-800 line-clamp-1">
                             {product.title}
                           </h4>
+                          <span className="inline-block font-mono text-[10px] text-slate-400">
+                            slug: /product/{product.slug || product.id}
+                          </span>
                           <p className="text-xs text-slate-500 line-clamp-2 leading-relaxed">
                             {product.description}
                           </p>
@@ -7336,11 +7348,41 @@ const AdminPanelContent: React.FC = () => {
                     id="product-modal-title"
                     type="text"
                     value={prodTitle}
-                    onChange={(e) => setProdTitle(e.target.value)}
+                    onChange={(e) => {
+                      setProdTitle(e.target.value);
+                      if (!editingProduct && !isSlugManuallyEdited) {
+                        setProdSlug(generateProductSlug(e.target.value));
+                      }
+                    }}
                     placeholder="e.g. Luxury Quartz Watch"
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium text-slate-800 focus:ring-2 focus:ring-rose-500"
                     required
                   />
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-bold text-slate-700">
+                      SEO URL Slug
+                    </label>
+                    <span className="text-[10px] text-slate-400">
+                      Preview: /product/{prodSlug || '...'}
+                    </span>
+                  </div>
+                  <input
+                    id="product-modal-slug"
+                    type="text"
+                    value={prodSlug}
+                    onChange={(e) => {
+                      setIsSlugManuallyEdited(true);
+                      setProdSlug(generateProductSlug(e.target.value));
+                    }}
+                    placeholder="e.g. excel-ep-06-20000mah-22-5w-power-bank"
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono text-slate-800 focus:ring-2 focus:ring-rose-500"
+                  />
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    SEO-friendly URL path slug. Converts spaces to hyphens and preserves model numbers.
+                  </p>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">

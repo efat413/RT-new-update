@@ -41,6 +41,7 @@ export const INITIAL_PRODUCTS: Product[] = [
   // 1. Men's Accessories
   {
     id: 'prod-wallet-01',
+    slug: 'leather-wallet',
     title: 'Premium Leather Wallet',
     price: 1450,
     originalPrice: 1850,
@@ -62,6 +63,7 @@ export const INITIAL_PRODUCTS: Product[] = [
   },
   {
     id: 'prod-bracelet-02',
+    slug: 'stainless-steel-bracelet',
     title: 'Stainless Steel Bracelet',
     price: 850,
     originalPrice: 1100,
@@ -77,6 +79,7 @@ export const INITIAL_PRODUCTS: Product[] = [
   },
   {
     id: 'prod-watch-03',
+    slug: 'luxury-quartz-watch',
     title: 'Luxury Quartz Watch',
     price: 3200,
     originalPrice: 4200,
@@ -99,6 +102,7 @@ export const INITIAL_PRODUCTS: Product[] = [
   },
   {
     id: 'prod-belt-04',
+    slug: 'genuine-leather-belt',
     title: 'Genuine Leather Belt',
     price: 1250,
     originalPrice: 1550,
@@ -116,6 +120,7 @@ export const INITIAL_PRODUCTS: Product[] = [
   },
   {
     id: 'prod-cap-04b',
+    slug: 'mens-casual-cap',
     title: "Men's Casual Cap",
     price: 650,
     originalPrice: 850,
@@ -135,6 +140,7 @@ export const INITIAL_PRODUCTS: Product[] = [
   },
   {
     id: 'prod-sunglasses-04c',
+    slug: 'polarized-sunglasses-for-men',
     title: 'Polarized Sunglasses for Men',
     price: 1350,
     originalPrice: 1750,
@@ -156,6 +162,7 @@ export const INITIAL_PRODUCTS: Product[] = [
   // 2. Gadgets & Electronics
   {
     id: 'prod-tws-05',
+    slug: 'anc-tws-earbuds',
     title: 'ANC TWS Earbuds',
     price: 2100,
     originalPrice: 2800,
@@ -171,6 +178,7 @@ export const INITIAL_PRODUCTS: Product[] = [
   },
   {
     id: 'prod-powerbank-06',
+    slug: 'heavy-duty-power-bank-20000mah',
     title: 'Heavy Duty Power Bank 20000mAh',
     price: 2850,
     originalPrice: 3400,
@@ -186,6 +194,7 @@ export const INITIAL_PRODUCTS: Product[] = [
   },
   {
     id: 'prod-speaker-07',
+    slug: 'portable-bluetooth-speaker',
     title: 'Portable Bluetooth Speaker',
     price: 1950,
     originalPrice: 2450,
@@ -201,6 +210,7 @@ export const INITIAL_PRODUCTS: Product[] = [
   },
   {
     id: 'prod-charger-08',
+    slug: '65w-fast-phone-charger',
     title: '65W Fast Phone Charger',
     price: 1200,
     originalPrice: 1600,
@@ -216,6 +226,7 @@ export const INITIAL_PRODUCTS: Product[] = [
   },
   {
     id: 'prod-headphones-09',
+    slug: 'over-ear-headphones',
     title: 'Over-Ear Headphones',
     price: 3500,
     originalPrice: 4500,
@@ -231,6 +242,7 @@ export const INITIAL_PRODUCTS: Product[] = [
   },
   {
     id: 'prod-mouse-09b',
+    slug: 'ergonomic-wireless-mouse',
     title: 'Ergonomic Wireless Mouse',
     price: 950,
     originalPrice: 1350,
@@ -252,6 +264,7 @@ export const INITIAL_PRODUCTS: Product[] = [
   // 3. Gift Items
   {
     id: 'prod-giftbox-10',
+    slug: 'customized-wooden-gift-box',
     title: 'Customized Wooden Gift Box',
     price: 1800,
     originalPrice: 2200,
@@ -267,6 +280,7 @@ export const INITIAL_PRODUCTS: Product[] = [
   },
   {
     id: 'prod-couplewatch-11',
+    slug: 'couple-watch-set',
     title: 'Couple Watch Set',
     price: 4500,
     originalPrice: 5800,
@@ -282,6 +296,7 @@ export const INITIAL_PRODUCTS: Product[] = [
   },
   {
     id: 'prod-penjournal-12',
+    slug: 'luxury-pen-journal-combo',
     title: 'Luxury Pen & Journal Combo',
     price: 1150,
     originalPrice: 1450,
@@ -297,6 +312,7 @@ export const INITIAL_PRODUCTS: Product[] = [
   },
   {
     id: 'prod-moodlamp-13',
+    slug: 'led-ambient-mood-lamp',
     title: 'LED Ambient Mood Lamp',
     price: 1650,
     originalPrice: 2100,
@@ -312,6 +328,7 @@ export const INITIAL_PRODUCTS: Product[] = [
   },
   {
     id: 'prod-mug-13b',
+    slug: 'personalized-ceramic-mug',
     title: 'Personalized Ceramic Mug',
     price: 650,
     originalPrice: 850,

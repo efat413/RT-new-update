@@ -598,6 +598,55 @@ export function getCategorySEOData(category: Category, siteName: string = DEFAUL
 }
 
 /**
+ * Automatically generates a clean, SEO-friendly URL slug from a product title.
+ * Adheres strictly to the following rules:
+ * - Converts English characters to lowercase.
+ * - Converts spaces to hyphens.
+ * - Preserves numeric formatting correctly (e.g. "20,000mAh" -> "20000mah").
+ * - Converts decimal dots to hyphens (e.g. "22.5W" -> "22-5w").
+ * - Removes unnecessary punctuation and special characters while preserving Unicode Bengali characters.
+ * - Collapses consecutive hyphens and trims leading/trailing hyphens.
+ * - Retains important product model numbers, capacity, wattage, and keywords.
+ * - Prevents excessively long URLs (capped at ~90 characters at word boundary).
+ */
+export function generateProductSlug(title: string): string {
+  if (!title || typeof title !== 'string') return '';
+
+  let slug = title.trim();
+
+  // 1. Remove commas inside numbers: e.g. "20,000" -> "20000"
+  slug = slug.replace(/(\d+),(\d+)/g, '$1$2');
+
+  // 2. Replace dots between digits with hyphens: e.g. "22.5W" -> "22-5w"
+  slug = slug.replace(/(\d+)\.(\d+)/g, '$1-$2');
+
+  // 3. Replace ampersand with "and"
+  slug = slug.replace(/&/g, 'and');
+
+  // 4. Convert English characters to lowercase
+  slug = slug.toLowerCase();
+
+  // 5. Replace any character that is NOT lowercase a-z, 0-9, Bengali Unicode (\u0980-\u09FF), or hyphen with a hyphen
+  slug = slug.replace(/[^a-z0-9\u0980-\u09FF-]+/g, '-');
+
+  // 6. Collapse duplicate consecutive hyphens
+  slug = slug.replace(/-+/g, '-');
+
+  // 7. Trim leading and trailing hyphens
+  slug = slug.replace(/^-+|-+$/g, '');
+
+  // 8. Prevent excessively long URLs (capped at max 90 characters at word/hyphen boundary)
+  if (slug.length > 90) {
+    const truncated = slug.slice(0, 90);
+    const lastHyphen = truncated.lastIndexOf('-');
+    slug = lastHyphen > 40 ? truncated.slice(0, lastHyphen) : truncated;
+    slug = slug.replace(/-+$/, '');
+  }
+
+  return slug;
+}
+
+/**
  * Resolves SEO title, description, and canonical for a single product
  */
 export function getProductSEOMetadata(
@@ -615,7 +664,8 @@ export function getProductSEOMetadata(
 
   const description = `${cleanTitle} কিনুন বাংলাদেশে। দাম ৳${product.price.toLocaleString()}। ${cleanDescSnippet} বিস্তারিত তথ্য ও ফিচার দেখে ${siteName} থেকে অনলাইনে অর্ডার করুন।`;
 
-  const canonicalUrl = `${SITE_DOMAIN}/product/${encodeURIComponent(product.id)}`;
+  const slugOrId = product.slug || generateProductSlug(product.title) || product.id;
+  const canonicalUrl = `${SITE_DOMAIN}/product/${encodeURIComponent(slugOrId)}`;
   const ogImage = product.imageUrl || (product.images && product.images[0]) || DEFAULT_FALLBACK_IMAGE;
 
   return {
@@ -723,7 +773,8 @@ export function generateProductSchema(
   categoryName?: string,
   siteName: string = DEFAULT_SITE_NAME
 ) {
-  const canonicalUrl = `${SITE_DOMAIN}/product/${encodeURIComponent(product.id)}`;
+  const slugOrId = product.slug || generateProductSlug(product.title) || product.id;
+  const canonicalUrl = `${SITE_DOMAIN}/product/${encodeURIComponent(slugOrId)}`;
   const images = (product.images && product.images.length > 0)
     ? product.images
     : [product.imageUrl || DEFAULT_FALLBACK_IMAGE];
@@ -826,8 +877,9 @@ export function generateSitemapXml(
       } catch {}
     }
 
+    const prodSlugOrId = prod.slug || generateProductSlug(prod.title) || prod.id;
     addUrl(
-      `${SITE_DOMAIN}/product/${encodeURIComponent(prod.id)}`,
+      `${SITE_DOMAIN}/product/${encodeURIComponent(prodSlugOrId)}`,
       prodDate,
       'weekly',
       prod.featured ? '0.9' : '0.7'

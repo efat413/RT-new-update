@@ -39,10 +39,10 @@ const ProductCardComponent: React.FC<ProductCardProps> = ({ product, priority = 
   const handleProductClick = (e: React.MouseEvent) => {
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
     e.preventDefault();
-    setSelectedProductId(product.id);
+    setSelectedProductId(product.slug || product.id);
     setCurrentView('product');
-    loadProductById(product.id);
-    window.history.pushState({}, '', getProductUrl(product.id));
+    loadProductById(product.slug || product.id);
+    window.history.pushState({}, '', getProductUrl(product));
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -108,7 +108,7 @@ const ProductCardComponent: React.FC<ProductCardProps> = ({ product, priority = 
       {/* Image Container */}
       <div className="relative aspect-square w-full bg-slate-100 overflow-hidden">
         <a
-          href={getProductUrl(product.id)}
+          href={getProductUrl(product)}
           onClick={handleProductClick}
           className="block w-full h-full cursor-pointer"
           title={product.title}
@@ -253,7 +253,7 @@ const ProductCardComponent: React.FC<ProductCardProps> = ({ product, priority = 
 
           {/* Title */}
           <a
-            href={getProductUrl(product.id)}
+            href={getProductUrl(product)}
             onClick={handleProductClick}
             className="block group-hover:text-rose-600 transition-colors"
           >

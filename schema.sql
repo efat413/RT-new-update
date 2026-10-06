@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS products (
   colors_json TEXT DEFAULT '[]',
   sku TEXT,
   video_url TEXT,
+  slug TEXT UNIQUE,
   status TEXT DEFAULT 'active',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -38,6 +39,7 @@ CREATE INDEX IF NOT EXISTS idx_products_created_at ON products(created_at);
 CREATE INDEX IF NOT EXISTS idx_products_category_created_at ON products(category_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_products_featured_created_at ON products(featured, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_products_featured_sort_order ON products(featured, featured_sort_order ASC, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_products_slug ON products(slug);
 
 -- Engine-level guard preventing race conditions from overselling below 0
 CREATE TRIGGER IF NOT EXISTS trg_prevent_negative_stock

@@ -29,6 +29,7 @@ import {
 import {
   INITIAL_SETTINGS,
 } from '../data/seedData';
+import { generateProductSlug } from '../utils/seo';
 import { hashPassword } from './auth';
 import {
   resolveUserPermissions,
@@ -127,6 +128,19 @@ export async function ensureProductTableSchema(db: D1Database): Promise<Set<stri
         console.warn('[D1] featured_sort_order column addition notice:', err?.message || err);
       }
     }
+
+    // Self-heal: slug column and unique index
+    if (!columns.has('slug')) {
+      try {
+        await db.prepare('ALTER TABLE products ADD COLUMN slug TEXT').run();
+        await db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_products_slug ON products(slug)').run();
+        cachedProductTableColumns = null;
+        columns = await getProductTableColumns(db);
+        console.log('[D1] Self-healed: added missing slug column to products table.');
+      } catch (err: any) {
+        console.warn('[D1] slug column addition notice:', err?.message || err);
+      }
+    }
   }
 
   return columns;
@@ -135,6 +149,7 @@ export async function ensureProductTableSchema(db: D1Database): Promise<Set<stri
 export function buildSelectProductColumns(availableColumns: Set<string>, includeBuyingPrice?: boolean): string {
   const desired = [
     'id',
+    'slug',
     'title',
     'price',
     'original_price',
@@ -491,6 +506,7 @@ export function rowToProduct(row: ProductRow): Product {
 
   return {
     id: row.id,
+    slug: row.slug || undefined,
     title: row.title,
     price,
     originalPrice: row.original_price != null ? Number(row.original_price) : undefined,
@@ -517,10 +533,10 @@ export function rowToProduct(row: ProductRow): Product {
 }
 
 export const PUBLIC_PRODUCT_COLUMNS =
-  'id, title, price, original_price, category_id, description, image_url, images_json, stock, featured, featured_sort_order, rating, reviews_count, specs_json, sizes_json, colors_json, sku, video_url, status, created_at, updated_at';
+  'id, slug, title, price, original_price, category_id, description, image_url, images_json, stock, featured, featured_sort_order, rating, reviews_count, specs_json, sizes_json, colors_json, sku, video_url, status, created_at, updated_at';
 
 export const ADMIN_PRODUCT_COLUMNS =
-  'id, title, price, original_price, buying_price, category_id, description, image_url, images_json, stock, featured, featured_sort_order, rating, reviews_count, specs_json, sizes_json, colors_json, sku, video_url, status, created_at, updated_at';
+  'id, slug, title, price, original_price, buying_price, category_id, description, image_url, images_json, stock, featured, featured_sort_order, rating, reviews_count, specs_json, sizes_json, colors_json, sku, video_url, status, created_at, updated_at';
 
 export const CATEGORY_COLUMNS = 'id, name, slug, icon_name, description';
 
@@ -809,8 +825,61 @@ export async function getProductById(
     availableColumns,
     !options?.publicOnly && options?.includeBuyingPrice !== false
   );
-  const row = await db.prepare(`SELECT ${columns} FROM products WHERE id = ? LIMIT 1`).bind(id).first<ProductRow>();
+  // Match either internal product ID or unique SEO URL slug
+  const row = await db
+    .prepare(`SELECT ${columns} FROM products WHERE id = ? OR slug = ? LIMIT 1`)
+    .bind(id, id)
+    .first<ProductRow>();
   return row ? rowToProduct(row) : null;
+}
+
+export async function getProductBySlug(
+  db: D1Database,
+  slug: string,
+  options?: { includeBuyingPrice?: boolean; publicOnly?: boolean }
+): Promise<Product | null> {
+  const availableColumns = await ensureProductTableSchema(db);
+  const columns = buildSelectProductColumns(
+    availableColumns,
+    !options?.publicOnly && options?.includeBuyingPrice !== false
+  );
+  const row = await db.prepare(`SELECT ${columns} FROM products WHERE slug = ? LIMIT 1`).bind(slug).first<ProductRow>();
+  return row ? rowToProduct(row) : null;
+}
+
+/**
+ * Ensures unique SEO slug generation in Cloudflare D1.
+ * Appends deterministic numerical suffixes (-2, -3) only when a slug collision occurs.
+ */
+export async function ensureUniqueSlugInD1(
+  db: D1Database,
+  baseSlug: string,
+  excludeProductId?: string
+): Promise<string> {
+  const cleanBase = (baseSlug || 'product').toLowerCase().trim();
+  let candidate = cleanBase;
+  let counter = 1;
+
+  while (counter <= 100) {
+    const existing = excludeProductId
+      ? await db
+          .prepare('SELECT id FROM products WHERE slug = ? AND id != ? LIMIT 1')
+          .bind(candidate, excludeProductId)
+          .first<{ id: string }>()
+      : await db
+          .prepare('SELECT id FROM products WHERE slug = ? LIMIT 1')
+          .bind(candidate)
+          .first<{ id: string }>();
+
+    if (!existing) {
+      return candidate;
+    }
+
+    counter++;
+    candidate = `${cleanBase}-${counter}`;
+  }
+
+  return `${cleanBase}-${Date.now().toString().slice(-4)}`;
 }
 
 /**
@@ -888,9 +957,16 @@ export async function insertProduct(db: D1Database, input: any): Promise<Product
   const status = typeof input.status === 'string' && input.status.trim() ? input.status.trim() : 'active';
   const createdAt = (typeof input.createdAt === 'string' && input.createdAt.trim()) || new Date().toISOString();
 
+  // Automatic SEO slug generation with uniqueness guarantee
+  const initialSlug = (typeof input.slug === 'string' && input.slug.trim())
+    ? generateProductSlug(input.slug)
+    : generateProductSlug(title);
+  const finalSlug = await ensureUniqueSlugInD1(db, initialSlug || id);
+
   // Dynamically assemble only the columns that actually exist in the products table!
   const candidateFields: { col: string; val: any }[] = [
     { col: 'id', val: id },
+    { col: 'slug', val: finalSlug },
     { col: 'title', val: title },
     { col: 'price', val: price },
     { col: 'original_price', val: originalPrice },
@@ -973,7 +1049,20 @@ export async function updateProductInD1(
     ? Math.max(0, Math.floor(Number(updates.featuredSortOrder)))
     : (existing.featuredSortOrder ?? 0);
 
+  // Slug stability rule: Preserve existing slug unless explicitly edited or missing
+  let resolvedSlug = existing.slug;
+  if (updates.slug !== undefined && typeof updates.slug === 'string' && updates.slug.trim()) {
+    const requestedSlug = generateProductSlug(updates.slug);
+    if (requestedSlug && requestedSlug !== existing.slug) {
+      resolvedSlug = await ensureUniqueSlugInD1(db, requestedSlug, id);
+    }
+  } else if (!resolvedSlug) {
+    const autoSlug = generateProductSlug(title || existing.title);
+    resolvedSlug = await ensureUniqueSlugInD1(db, autoSlug || id, id);
+  }
+
   const candidateUpdates: { col: string; val: any }[] = [
+    { col: 'slug', val: resolvedSlug },
     { col: 'title', val: title },
     { col: 'price', val: price },
     { col: 'original_price', val: originalPrice },
@@ -997,7 +1086,7 @@ export async function updateProductInD1(
 
   const activeUpdates = candidateUpdates.filter((u) => availableColumns.has(u.col));
   const setClauses = [...activeUpdates.map((u) => `${u.col} = ?`), 'updated_at = CURRENT_TIMESTAMP'].join(', ');
-  const bindings = [...activeUpdates.map((u) => u.val), id];
+  const bindings = [...activeUpdates.map((u) => u.val), existing.id];
 
   try {
     await db
@@ -1009,7 +1098,7 @@ export async function updateProductInD1(
     throw new Error(`D1 UPDATE products failed: ${err?.message || err}`);
   }
 
-  const updated = await getProductById(db, id, { includeBuyingPrice: true });
+  const updated = await getProductById(db, existing.id, { includeBuyingPrice: true });
   if (!updated) throw new Error('Failed to retrieve updated product');
   return updated;
 }

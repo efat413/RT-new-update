@@ -118,6 +118,7 @@ export interface OrderRow {
 
 export interface ProductRow {
   id: string;
+  slug?: string | null;
   title: string;
   price: number;
   original_price: number | null;
