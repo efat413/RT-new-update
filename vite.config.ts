@@ -730,9 +730,11 @@ function localApiDevPlugin(): Plugin {
       return Boolean(auth.granularPermissions?.['report.profit'] || auth.granularPermissions?.['product.view_profit']);
     }
 
-    if (auth.granularPermissions && auth.granularPermissions[permStr] === true) {
-      return true;
+    // Granular PermissionKey check
+    if (isValidPermissionKey(permStr)) {
+      return Boolean(auth.granularPermissions && auth.granularPermissions[permStr as PermissionKey]);
     }
+
     // Backward compatibility with legacy flags
     if (auth.permissions) {
       if (permStr.startsWith('order.') && auth.permissions.canManageOrders) return true;

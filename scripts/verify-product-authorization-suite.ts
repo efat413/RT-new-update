@@ -317,6 +317,42 @@ async function run() {
   }
 
   // -------------------------------------------------------------
+  // Test M: Sensitive Financial Permissions Separation from product.view
+  // -------------------------------------------------------------
+  console.log('\n--- Test M: Sensitive Financial Isolation from product.view ---');
+  {
+    // User with product.view MUST NOT receive financial analytics or expenses without dedicated permission
+    const profitRes = await fetch(`${BASE_URL}/api/analytics/profit`, { headers: adminWithProductViewHeaders });
+    assert(profitRes.status === 403, 'Admin with product.view cannot access /api/analytics/profit (HTTP 403)', `Status: ${profitRes.status}`);
+
+    const adminProfitRes = await fetch(`${BASE_URL}/api/admin/profit-analytics`, { headers: adminWithProductViewHeaders });
+    assert(adminProfitRes.status === 403, 'Admin with product.view cannot access /api/admin/profit-analytics (HTTP 403)', `Status: ${adminProfitRes.status}`);
+
+    const expenseRes = await fetch(`${BASE_URL}/api/expenses`, { headers: adminWithProductViewHeaders });
+    assert(expenseRes.status === 403, 'Admin with product.view cannot access /api/expenses (HTTP 403)', `Status: ${expenseRes.status}`);
+
+    // Super Admin retains access to financial analytics and expenses
+    const superProfitRes = await fetch(`${BASE_URL}/api/analytics/profit`, { headers: superAdminHeaders });
+    assert(superProfitRes.status === 200, 'Super Admin can legitimately access /api/analytics/profit (HTTP 200)', `Status: ${superProfitRes.status}`);
+
+    const superAdminProfitRes = await fetch(`${BASE_URL}/api/admin/profit-analytics`, { headers: superAdminHeaders });
+    assert(superAdminProfitRes.status === 200, 'Super Admin can legitimately access /api/admin/profit-analytics (HTTP 200)', `Status: ${superAdminProfitRes.status}`);
+
+    const superExpenseRes = await fetch(`${BASE_URL}/api/expenses`, { headers: superAdminHeaders });
+    assert(superExpenseRes.status === 200, 'Super Admin can legitimately access /api/expenses (HTTP 200)', `Status: ${superExpenseRes.status}`);
+  }
+
+  // -------------------------------------------------------------
+  // Test N: Permission Alias Immunity
+  // -------------------------------------------------------------
+  console.log('\n--- Test N: Permission Alias Immunity ---');
+  {
+    // User with order permissions cannot bypass product.view rule
+    const aliasRes = await fetch(`${BASE_URL}/api/admin/products`, { headers: subAdminNoProductViewHeaders });
+    assert(aliasRes.status === 403, 'Order dispatcher cannot bypass product.view via order permissions (HTTP 403)', `Status: ${aliasRes.status}`);
+  }
+
+  // -------------------------------------------------------------
   // SUMMARY
   // -------------------------------------------------------------
   console.log('\n================================================================');
