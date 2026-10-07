@@ -15,6 +15,7 @@ import {
   Bug,
   AlertTriangle,
   CheckCircle2,
+  Lock,
 } from 'lucide-react';
 
 export interface AdminTopOptionsBarProps {
@@ -105,7 +106,7 @@ export const AdminTopOptionsBar: React.FC<AdminTopOptionsBarProps> = ({
       icon: Settings,
       badge: null,
       badgeColor: '',
-      permission: 'canManageSettings',
+      permission: 'settings.manage',
     },
     {
       id: 'users',
@@ -238,6 +239,12 @@ export const AdminTopOptionsBar: React.FC<AdminTopOptionsBarProps> = ({
                   }`}
                 />
                 <span>{opt.label}</span>
+
+                {!isPermitted && (
+                  <span title="Restricted Permission">
+                    <Lock className="w-3 h-3 text-amber-400 shrink-0" />
+                  </span>
+                )}
 
                 {opt.badge && (
                   <span

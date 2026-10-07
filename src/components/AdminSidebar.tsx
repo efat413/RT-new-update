@@ -144,7 +144,7 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
       icon: Settings,
       badge: null,
       color: 'purple',
-      permission: 'canManageSettings',
+      permission: 'settings.manage',
     },
     {
       id: 'users',

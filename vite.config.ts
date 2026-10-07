@@ -1580,6 +1580,13 @@ function localApiDevPlugin(): Plugin {
         if (url.pathname === '/api/admin/health' || url.pathname === '/api/admin/diagnostics') {
           const authResult = requireDevAuth(req);
           if (authResult.error) return sendDevError(res, authResult.error);
+          const canView = authResult.auth!.role === 'super_admin' || hasDevPermission(authResult.auth!, 'settings.manage');
+          if (!canView) {
+            return sendDevError(res, {
+              status: 403,
+              body: { success: false, error: 'Forbidden: Admin diagnostics require settings.manage permission.', requiredPermission: 'settings.manage' },
+            });
+          }
           res.statusCode = 200;
           return res.end(JSON.stringify({
             status: 'ok',

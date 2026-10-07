@@ -104,6 +104,7 @@ export const SUPER_ADMIN_ONLY_PERMISSIONS: ReadonlySet<PermissionKey> = new Set<
   'product.view_profit',
   'report.profit',
   'report.financial',
+  'settings.manage',
 ]);
 
 /**
@@ -440,9 +441,9 @@ export const PERMISSIONS_METADATA: Record<PermissionKey, PermissionMetadata> = {
     group: 'Store',
     displayName: 'Manage Store Settings',
     description: 'Update core store settings, payment accounts, brand, and anti-spam.',
-    superAdminOnly: false,
+    superAdminOnly: true,
     sensitive: true,
-    dangerous: false,
+    dangerous: true,
   },
 
   // Audit Log

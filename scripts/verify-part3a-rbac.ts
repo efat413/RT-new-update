@@ -78,6 +78,7 @@ async function runTests() {
     'permission.manage',
     'user.manage',
     'user.delete',
+    'settings.manage',
   ];
 
   for (const key of strictlySuperOnly) {

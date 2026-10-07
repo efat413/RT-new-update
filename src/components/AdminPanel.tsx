@@ -2293,6 +2293,10 @@ const AdminPanelContent: React.FC = () => {
   // --- SETTINGS SAVE (AWAITED PERSISTENCE TO CLOUDFLARE D1) ---
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!hasPermission('settings.manage')) {
+      setSettingsError('Access Denied: Protected store-level settings can be managed only by Super Administrator.');
+      return;
+    }
     setIsSavingSettings(true);
     setSettingsError(null);
     try {
@@ -5043,8 +5047,8 @@ const AdminPanelContent: React.FC = () => {
         {/* TAB 5: STORE SETTINGS                                        */}
         {/* ============================================================ */}
         {activeTab === 'settings' && (
-          !hasPermission('canManageSettings') ? (
-            renderPermissionRestrictedNotice('canManageSettings', 'Store Settings & Configuration')
+          !hasPermission('settings.manage') ? (
+            renderPermissionRestrictedNotice('settings.manage', 'Store Settings & Configuration (Super Admin Only)')
           ) : (
           <div className="space-y-6 animate-in fade-in duration-200 max-w-3xl">
             <div>
