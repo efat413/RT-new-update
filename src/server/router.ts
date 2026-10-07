@@ -1711,8 +1711,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       }
 
       // Strictly register as a customer role with no admin permissions
+      // Security Hardening: Use CSPRNG randomUUID for collision-resistant user ID
+      const userRand = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
       const newCustomer = await insertUser(env.DB, {
-        id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id: `user-${Date.now()}-${userRand}`,
         name,
         email,
         password,

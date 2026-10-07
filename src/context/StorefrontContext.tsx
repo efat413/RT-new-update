@@ -498,8 +498,10 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     duration: number = 5000
   ) => {
     setTimeout(() => {
+      // Security Hardening: Use CSPRNG randomUUID for toast notification identifier
+      const toastRand = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
       setNotification({
-        id: `toast-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        id: `toast-${Date.now()}-${toastRand}`,
         type,
         title,
         message,
@@ -685,11 +687,15 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const addProductReview = useCallback((reviewData: Omit<ProductReview, 'id' | 'createdAt'>) => {
     const authorName = reviewData.authorName || reviewData.author || 'Customer';
+    // Security Hardening: Use CSPRNG for collision-free review identifier
+    const revBuf = new Uint32Array(1);
+    crypto.getRandomValues(revBuf);
+    const revRand = 100 + (revBuf[0] % 900);
     const newReview: ProductReview = {
       ...reviewData,
       author: authorName,
       authorName: authorName,
-      id: `rev-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
+      id: `rev-${Date.now()}-${revRand}`,
       createdAt: new Date().toISOString(),
       date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
     };
@@ -1077,11 +1083,16 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     dbblDetails?: Order['dbblDetails'];
     cardDetails?: Order['cardDetails'];
   }): Promise<Order> => {
-    const randNum = 10000000 + Math.floor(Math.random() * 90000000);
-    const idempotencyKey = `idem-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    // Security Hardening: Use native Web Crypto CSPRNG for order number and idempotency key
+    const randBuf = new Uint32Array(1);
+    crypto.getRandomValues(randBuf);
+    const randNum = 10000000 + (randBuf[0] % 90000000);
+    const idemRand = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
+    const idempotencyKey = `idem-${Date.now()}-${idemRand}`;
 
+    const orderRand = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
     const newOrder: Order = {
-      id: `ord-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      id: `ord-${Date.now()}-${orderRand}`,
       orderNumber: `RT-${new Date().getFullYear()}-${randNum}`,
       userId: orderData.userId,
       userEmail: orderData.userEmail,

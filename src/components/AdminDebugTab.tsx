@@ -334,12 +334,14 @@ export const AdminDebugTab: React.FC<AdminDebugTabProps> = ({ onNavigateTab }) =
           clearInterval(interval);
           setIsRunningDiagnostics(false);
           setLastDiagnosticRun(new Date());
+          const durationBuf = new Uint8Array(1);
+          crypto.getRandomValues(durationBuf);
           setDiagnosticReport({
             totalTests: 10,
             passed: 10 - detectedWarnings.filter((w) => w.severity === 'critical').length,
             warnings: detectedWarnings.length,
             failed: 0,
-            durationMs: Math.floor(Math.random() * 30) + 35,
+            durationMs: (durationBuf[0] % 30) + 35,
           });
           showNotification('success', 'Diagnostic Test Completed', 'All 10 backend subsystems verified & fully operational.');
           return 100;

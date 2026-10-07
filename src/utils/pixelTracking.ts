@@ -920,8 +920,10 @@ export function trackSocialEvent(
     if (isDebug) {
       console.log(`[Rongdhonu Pixels] Skipped ${eventName} (Tracking disabled)`);
     }
+    // Security Hardening: Use CSPRNG randomUUID for event log identifier
+    const skippedRand = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
     const skippedLog: PixelEventLog = {
-      id: `evt-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      id: `evt-${Date.now()}-${skippedRand}`,
       timestamp: new Date().toLocaleTimeString(),
       eventName,
       platforms: [],
@@ -959,8 +961,10 @@ export function trackSocialEvent(
         if (isDebug) {
           console.warn(`[Rongdhonu Pixels] 🛡️ Duplicate Purchase event suppressed for Order ID: ${orderKey}`);
         }
+        // Security Hardening: Use CSPRNG randomUUID for event log identifier
+        const duplicateRand = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
         const duplicateLog: PixelEventLog = {
-          id: `evt-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+          id: `evt-${Date.now()}-${duplicateRand}`,
           timestamp: new Date().toLocaleTimeString(),
           eventName: 'Purchase',
           platforms: [],
@@ -1140,8 +1144,10 @@ export function trackSocialEvent(
   }
 
   // 8. Record in Event Activity Log (Privacy compliant, hashed identifiers only)
+  // Security Hardening: Use CSPRNG randomUUID for event log identifier
+  const evtRand = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
   const eventLog: PixelEventLog = {
-    id: `evt-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    id: `evt-${Date.now()}-${evtRand}`,
     timestamp: new Date().toLocaleTimeString(),
     eventName,
     platforms: platformsReached,

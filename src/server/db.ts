@@ -1027,7 +1027,9 @@ export async function recordProductSlugHistory(
 
   await ensureProductTableSchema(db);
 
-  const historyId = `psh-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+  // Security Hardening: Use CSPRNG randomUUID for collision-resistant slug history identifier
+  const historyRand = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
+  const historyId = `psh-${Date.now()}-${historyRand}`;
   try {
     await db
       .prepare(`
@@ -2709,7 +2711,9 @@ export async function createPasswordResetToken(
   tokenHash: string,
   expiresAt: number
 ): Promise<void> {
-  const id = `prt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  // Security Hardening: Use cryptographically secure randomUUID for token record identifier
+  const tokenRecordRand = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
+  const id = `prt-${Date.now()}-${tokenRecordRand}`;
   const now = Date.now();
   // Invalidate any previous unused reset tokens for this user so only the newest token is active
   try {
@@ -3179,11 +3183,8 @@ export async function findOrderByCourierIdentifier(
  */
 export function generateSecureOrderNumber(year: number = new Date().getFullYear()): string {
   const randomBytes = new Uint32Array(2);
-  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
-    crypto.getRandomValues(randomBytes);
-  } else {
-    randomBytes[0] = Math.floor(Math.random() * 0xffffffff);
-  }
+  // Cryptographically secure pseudorandom number generation (CSPRNG)
+  crypto.getRandomValues(randomBytes);
   // Generate 8 collision-resistant digits (10,000,000 to 99,999,999) mixing CSPRNG with millisecond clock
   const timeEntropy = (Date.now() & 0x3fffffff) >>> 0;
   const combined = ((randomBytes[0] ^ timeEntropy) >>> 0);
@@ -3204,9 +3205,8 @@ export async function insertOrder(db: D1Database, order: Order): Promise<Order> 
       throw new Error(`Order with ID "${orderId}" already exists. Cannot overwrite existing order.`);
     }
   } else {
-    const randPart = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID().slice(0, 8)
-      : Math.random().toString(36).slice(2, 9);
+    // Security Hardening: Use CSPRNG randomUUID for collision-resistant order ID
+    const randPart = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
     orderId = `ord-${Date.now()}-${randPart}`;
   }
 
@@ -3228,7 +3228,10 @@ export async function insertOrder(db: D1Database, order: Order): Promise<Order> 
   }
 
   if (!uniqueFound) {
-    orderNumber = `RT-${new Date().getFullYear()}-${Date.now().toString().slice(-6)}${Math.floor(100 + Math.random() * 900)}`;
+    const fallbackBuf = new Uint32Array(1);
+    crypto.getRandomValues(fallbackBuf);
+    const fallbackRand = 100 + (fallbackBuf[0] % 900);
+    orderNumber = `RT-${new Date().getFullYear()}-${Date.now().toString().slice(-6)}${fallbackRand}`;
   }
 
   // 2. Validate customer information
@@ -3873,7 +3876,9 @@ export async function insertExpense(
   expense: { id?: string; expenseType: string; amount: number; date: string; note?: string },
   createdBy?: string
 ): Promise<Expense> {
-  const id = expense.id || `exp-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+  // Security Hardening: Use CSPRNG randomUUID for expense identifier
+  const expenseRand = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
+  const id = expense.id || `exp-${Date.now()}-${expenseRand}`;
   const expenseType = expense.expenseType || 'other';
   const amount = Math.max(0, Number(expense.amount) || 0);
   const date = expense.date || new Date().toISOString().slice(0, 10);
@@ -4102,7 +4107,9 @@ export async function insertAuditLogInD1(
   db: D1Database,
   entry: Omit<AuditLogEntry, 'id' | 'timestamp'>
 ): Promise<AuditLogEntry> {
-  const id = `audit-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+  // Security Hardening: Use CSPRNG randomUUID for audit log entry identifier
+  const auditRand = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
+  const id = `audit-${Date.now()}-${auditRand}`;
   const timestamp = new Date().toISOString();
   const detailsJson = entry.details ? JSON.stringify(entry.details) : null;
 

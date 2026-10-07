@@ -1765,7 +1765,7 @@ function localApiDevPlugin(): Plugin {
             }
 
             const newCustomer = {
-              id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              id: `user-${Date.now()}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`,
               name,
               email,
               role: 'customer',
@@ -1926,7 +1926,7 @@ function localApiDevPlugin(): Plugin {
               const hashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(rawToken));
               const tokenHash = bufferToHex(hashBuf);
               const expiresAt = Date.now() + 60 * 60 * 1000;
-              const id = `prt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+              const id = `prt-${Date.now()}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`;
 
               devPasswordResetTokens.set(tokenHash, {
                 id,
@@ -2224,7 +2224,7 @@ function localApiDevPlugin(): Plugin {
             };
 
             devAuditLogs.unshift({
-              id: `audit-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+              id: `audit-${Date.now()}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`,
               timestamp: new Date().toISOString(),
               actorId: authResult.auth!.user.id,
               actorEmail: authResult.auth!.user.email,
@@ -2318,7 +2318,7 @@ function localApiDevPlugin(): Plugin {
             };
 
             devAuditLogs.unshift({
-              id: `audit-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+              id: `audit-${Date.now()}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`,
               timestamp: new Date().toISOString(),
               actorId: authResult.auth!.user.id,
               actorEmail: authResult.auth!.user.email,
@@ -3950,8 +3950,10 @@ function localApiDevPlugin(): Plugin {
                 }
               }
 
-              const freshOrderId = `ord-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-              const freshOrderNum = `RT-${new Date().getFullYear()}-${10000000 + Math.floor(Math.random() * 90000000)}`;
+              const freshOrderId = `ord-${Date.now()}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`;
+              const freshOrderBytes = new Uint32Array(1);
+              crypto.getRandomValues(freshOrderBytes);
+              const freshOrderNum = `RT-${new Date().getFullYear()}-${10000000 + (freshOrderBytes[0] % 90000000)}`;
 
               // Authoritative Identity Determination (dev server):
               // Support BOTH HttpOnly cookie ('auth_token') and 'Authorization: Bearer <token>' via requireDevAuth
@@ -4335,7 +4337,7 @@ function localApiDevPlugin(): Plugin {
               // Do NOT silently create negative customer due. Reject the update with a clear server-side validation error.
               if (validatedAdvance > authoritativeFinalTotal) {
                 devAuditLogs.unshift({
-                  id: `audit-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+                  id: `audit-${Date.now()}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`,
                   timestamp: new Date().toISOString(),
                   actorId: authResult.auth?.user?.id || 'admin',
                   actorEmail: authResult.auth?.user?.email || 'admin@local.test',
@@ -4370,7 +4372,7 @@ function localApiDevPlugin(): Plugin {
               const isPriceChanged = updates.items !== undefined && (authoritativeSubtotal !== previousSubtotal || authoritativeFinalTotal !== previousTotal);
               if (isPriceChanged) {
                 devAuditLogs.unshift({
-                  id: `audit-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+                  id: `audit-${Date.now()}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`,
                   timestamp: new Date().toISOString(),
                   actorId: authResult.auth?.user?.id || 'admin',
                   actorEmail: authResult.auth?.user?.email || 'admin@local.test',
@@ -4422,7 +4424,7 @@ function localApiDevPlugin(): Plugin {
 
               if (hasAdvanceUpdate && (previousAdvance !== validatedAdvance || updates.advancePaymentMethod !== old.advancePaymentMethod || updates.advancePaymentNote !== old.advancePaymentNote)) {
                 devAuditLogs.unshift({
-                  id: `audit-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+                  id: `audit-${Date.now()}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`,
                   timestamp: new Date().toISOString(),
                   actorId: authResult.auth?.user?.id || 'admin',
                   actorEmail: authResult.auth?.user?.email || 'admin@local.test',
@@ -5778,7 +5780,7 @@ function localApiDevPlugin(): Plugin {
                     const respText = await resp.text().catch(() => '');
 
                     const logEntry = {
-                      id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                      id: `log-${Date.now()}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`,
                       webhookId: t.webhookId,
                       webhookUrl: t.url,
                       event,
@@ -5825,7 +5827,7 @@ function localApiDevPlugin(): Plugin {
                 });
 
                 const logEntry = {
-                  id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                  id: `log-${Date.now()}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`,
                   webhookId: t.webhookId,
                   webhookUrl: t.url,
                   event,
@@ -6048,7 +6050,7 @@ function localApiDevPlugin(): Plugin {
               }
 
               const newExp = {
-                id: exp.id || `exp-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+                id: exp.id || `exp-${Date.now()}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`,
                 expenseType: exp.expenseType || 'other',
                 amount,
                 date: exp.date || new Date().toISOString().slice(0, 10),

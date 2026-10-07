@@ -237,7 +237,8 @@ export function isValidMediaKey(key: string): boolean {
 export function generateSafeMediaKey(extension: string): string {
   const safeExt = extension.toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
   const timestamp = Date.now();
-  const rand = Math.random().toString(36).substring(2, 8);
+  // Security Hardening: Use CSPRNG randomUUID for collision-resistant media key
+  const rand = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
   return `asset-${timestamp}-${rand}.${safeExt}`;
 }
 

@@ -886,9 +886,11 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   // Courier Webhooks
   const addCourierWebhook = useCallback(async (webhookData: Omit<CourierWebhookConfig, 'id' | 'createdAt'>): Promise<CourierWebhookConfig> => {
+    // Security Hardening: Use CSPRNG randomUUID for webhook config identifier
+    const whRand = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
     const newWebhook: CourierWebhookConfig = {
       ...webhookData,
-      id: `wh-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `wh-${Date.now()}-${whRand}`,
       createdAt: new Date().toISOString(),
     };
     const updated = [...courierWebhooks, newWebhook];

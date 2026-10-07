@@ -2223,9 +2223,12 @@ const AdminPanelContent: React.FC = () => {
   // --- PASSWORD RESET HANDLERS ---
   const handleGenerateRandomPassword = () => {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%';
+    // Security Hardening: Use CSPRNG crypto.getRandomValues for password generation
+    const randomBytes = new Uint32Array(12);
+    crypto.getRandomValues(randomBytes);
     let result = '';
     for (let i = 0; i < 12; i++) {
-      result += chars.charAt(Math.floor(Math.random() * chars.length));
+      result += chars.charAt(randomBytes[i] % chars.length);
     }
     setNewPasswordValue(result);
   };
