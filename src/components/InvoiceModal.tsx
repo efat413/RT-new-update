@@ -347,17 +347,26 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
                 </span>
               </div>
 
+              {order.advancePayment != null && Number(order.advancePayment) > 0 && (
+                <div className="flex justify-between text-blue-700 py-1 font-medium">
+                  <span>Advance Paid ({order.advancePaymentMethod || 'Advance'}):</span>
+                  <span className="font-semibold font-mono">
+                    -{currency} {Number(order.advancePayment).toLocaleString()} BDT
+                  </span>
+                </div>
+              )}
+
               {/* Explicit Balance Status Indicator */}
               <div
                 className={`p-2.5 rounded-xl border flex items-center justify-between text-xs font-bold ${
-                  isPaid
+                  isPaid || (order.customerDue === 0)
                     ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
                     : 'bg-amber-50 text-amber-900 border-amber-200'
                 }`}
               >
-                <span>{isPaid ? 'Amount Paid:' : 'Balance to Pay (COD):'}</span>
+                <span>{isPaid || (order.customerDue === 0) ? 'Amount Paid:' : 'Customer Due (COD):'}</span>
                 <span className="font-mono text-sm">
-                  {currency} {order.totalAmount.toLocaleString()} BDT
+                  {currency} {(isPaid ? order.totalAmount : (order.customerDue ?? Math.max(0, order.totalAmount - (Number(order.advancePayment) || 0)))).toLocaleString()} BDT
                 </span>
               </div>
             </div>

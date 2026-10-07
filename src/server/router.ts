@@ -4868,6 +4868,25 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         // If the Admin reduces the order total below the already-recorded advance:
         // Do NOT silently create negative customer due. Reject the update with a clear server-side validation error.
         if (validatedAdvance > authoritativeFinalTotal) {
+          try {
+            await insertAuditLogInD1(env.DB, {
+              actorId: auth!.dbUser?.id || auth!.tokenUser?.userId || 'admin',
+              actorEmail: auth!.dbUser?.email || auth!.tokenUser?.email || 'admin@local.test',
+              actorRole: auth!.role,
+              action: 'ORDER_FINANCIAL_UPDATE_REJECTED',
+              targetId: existing.id,
+              targetType: 'order',
+              details: {
+                orderNumber: existing.orderNumber,
+                attemptedAdvance: validatedAdvance,
+                authoritativeTotal: authoritativeFinalTotal,
+                reason: 'Advance payment cannot exceed authoritative order total',
+              },
+              ipAddress: getClientIp(request, isDevEnvironment(env)),
+            });
+          } catch (auditErr) {
+            console.warn('Failed to record financial update rejection audit log:', auditErr);
+          }
           return jsonResponse({
             success: false,
             error: `Invalid order update: Advance payment (৳${validatedAdvance}) cannot exceed authoritative order total (৳${authoritativeFinalTotal}). Please adjust the advance payment first before reducing the order total.`,
@@ -4879,6 +4898,34 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         updates.customerDue = customerDue;
         updates.dueAmount = customerDue;
         updates.advancePayment = validatedAdvance;
+
+        // Record audit log for order selling price / items modifications
+        const previousSubtotal = Number(existing.subtotal) || 0;
+        const previousTotal = Number(existing.totalAmount) || 0;
+        const isPriceChanged = updates.items !== undefined && (authoritativeSubtotal !== previousSubtotal || authoritativeFinalTotal !== previousTotal);
+        if (isPriceChanged) {
+          try {
+            await insertAuditLogInD1(env.DB, {
+              actorId: auth!.dbUser?.id || auth!.tokenUser?.userId || 'admin',
+              actorEmail: auth!.dbUser?.email || auth!.tokenUser?.email || 'admin@local.test',
+              actorRole: auth!.role,
+              action: 'ORDER_SELLING_PRICE_UPDATE',
+              targetId: existing.id,
+              targetType: 'order',
+              details: {
+                orderNumber: existing.orderNumber,
+                previousSubtotal,
+                newSubtotal: authoritativeSubtotal,
+                previousTotal,
+                newTotal: authoritativeFinalTotal,
+                customerDue,
+              },
+              ipAddress: getClientIp(request, isDevEnvironment(env)),
+            });
+          } catch (auditErr) {
+            console.warn('Failed to record price change audit log in D1:', auditErr);
+          }
+        }
 
         if (hasAdvanceUpdate) {
           const nowIso = new Date().toISOString();

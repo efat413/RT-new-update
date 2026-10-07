@@ -442,6 +442,9 @@ const AdminPanelContent: React.FC = () => {
   const [isAddItemToOrderOpen, setIsAddItemToOrderOpen] = useState(false);
   const [selectedAddProductId, setSelectedAddProductId] = useState('');
   const [orderItemCustomAdjust, setOrderItemCustomAdjust] = useState<Record<number, string>>({});
+  const [editAdvancePayment, setEditAdvancePayment] = useState<number | string>(0);
+  const [editAdvanceMethod, setEditAdvanceMethod] = useState<string>('Cash / Advance');
+  const [editAdvanceNote, setEditAdvanceNote] = useState<string>('');
 
   // Password Reset Modal state
   const [resettingUser, setResettingUser] = useState<UserAccount | null>(null);
@@ -654,16 +657,86 @@ const AdminPanelContent: React.FC = () => {
     currentUser.role === 'super_admin'
   );
 
+  // Granular financial permissions for buying prices and profit visibility
+  const canViewBuyingPrice = Boolean(
+    isSuperAdmin ||
+    hasPermission('product.view_buying_price') ||
+    hasPermission('product.manage_buying_price') ||
+    hasPermission('product.buying_price')
+  );
+
+  const canViewProfit = Boolean(
+    isSuperAdmin ||
+    hasPermission('product.view_profit') ||
+    hasPermission('report.profit')
+  );
+
+  const canManageOrders = Boolean(
+    isSuperAdmin ||
+    hasPermission('order.manage') ||
+    hasPermission('canManageOrders')
+  );
+
+  // Computed values for current order being edited (Authoritative live preview)
+  const editComputedSubtotal = useMemo(() => {
+    return getEditOrderSubtotal(editOrderItems);
+  }, [editOrderItems]);
+
+  const editComputedDiscount = editingOrder?.discountAmount || 0;
+  const editComputedGrandTotal = Math.max(0, editComputedSubtotal + editDeliveryFee - editComputedDiscount);
+
+  const editParsedAdvance = useMemo(() => {
+    if (typeof editAdvancePayment === 'number') return editAdvancePayment;
+    if (!editAdvancePayment || String(editAdvancePayment).trim() === '') return 0;
+    return Number(editAdvancePayment);
+  }, [editAdvancePayment]);
+
+  const isEditAdvanceInvalid = typeof editAdvancePayment === 'string' && editAdvancePayment.trim() !== '' && isNaN(Number(editAdvancePayment));
+  const isEditAdvanceNegative = !isEditAdvanceInvalid && editParsedAdvance < 0;
+  const isEditAdvanceExceedingTotal = !isEditAdvanceInvalid && !isEditAdvanceNegative && editParsedAdvance > editComputedGrandTotal;
+
+  const editAdvanceValidationError = useMemo(() => {
+    if (isEditAdvanceInvalid) {
+      return 'Invalid advance payment amount: Please enter a valid number.';
+    }
+    if (isEditAdvanceNegative) {
+      return 'Invalid advance payment: Advance payment cannot be negative (must be 0 or more).';
+    }
+    if (isEditAdvanceExceedingTotal) {
+      return `Advance payment (৳${editParsedAdvance.toLocaleString()} BDT) cannot exceed order total (৳${editComputedGrandTotal.toLocaleString()} BDT).`;
+    }
+    return null;
+  }, [isEditAdvanceInvalid, isEditAdvanceNegative, isEditAdvanceExceedingTotal, editParsedAdvance, editComputedGrandTotal]);
+
+  const editComputedCustomerDue = Math.max(
+    0,
+    Math.round((editComputedGrandTotal - (isEditAdvanceInvalid || isEditAdvanceNegative ? 0 : editParsedAdvance)) * 100) / 100
+  );
+
+  const { editLiveCost, editLiveProfit } = useMemo(() => {
+    let costSum = 0;
+    for (const it of editOrderItems) {
+      const bp = it.buyingPriceSnapshot != null
+        ? Number(it.buyingPriceSnapshot)
+        : (it.product?.buyingPrice != null ? Number(it.product.buyingPrice) : 0);
+      costSum += bp * Number(it.quantity || 1);
+    }
+    return {
+      editLiveCost: costSum,
+      editLiveProfit: editComputedSubtotal - costSum,
+    };
+  }, [editOrderItems, editComputedSubtotal]);
+
   // Executive Dashboard Profit & Financial summaries
   const [todayProfit, setTodayProfit] = useState<ProfitAnalyticsSummary | null>(null);
   const [monthProfit, setMonthProfit] = useState<ProfitAnalyticsSummary | null>(null);
 
   useEffect(() => {
-    if (isSuperAdmin) {
+    if (canViewProfit) {
       profitAnalyticsApi.getSummary({ period: 'today' }).then((res) => setTodayProfit(res)).catch(() => {});
       profitAnalyticsApi.getSummary({ period: 'month' }).then((res) => setMonthProfit(res)).catch(() => {});
     }
-  }, [isSuperAdmin, orders.length]);
+  }, [canViewProfit, orders.length]);
 
   // Auto-Sync: When Admin Panel loads, run a background sync for active 'Shipped' orders to capture real-time delivery confirmations
   useEffect(() => {
@@ -1977,6 +2050,9 @@ const AdminPanelContent: React.FC = () => {
     const subtotal = getEditOrderSubtotal(initialItems) || order.subtotal;
     const discount = order.discountAmount || 0;
     setEditTotalAmount(Math.max(0, subtotal + fee - discount));
+    setEditAdvancePayment(order.advancePayment != null ? Number(order.advancePayment) : 0);
+    setEditAdvanceMethod(order.advancePaymentMethod || 'Cash / Advance');
+    setEditAdvanceNote(order.advancePaymentNote || '');
     setEditShippingStatus(order.shippingStatus);
     setEditPaymentStatus(order.paymentStatus as any);
     setEditBankTrxId(order.transactionId || order.dbblDetails?.transactionId || '');
@@ -2004,17 +2080,37 @@ const AdminPanelContent: React.FC = () => {
     const subtotal = getEditOrderSubtotal(editOrderItems);
     const discount = editingOrder.discountAmount || 0;
     const totalAmount = Math.max(0, subtotal + editDeliveryFee - discount);
-    const currentAdvance = editingOrder.advancePayment != null ? Number(editingOrder.advancePayment) : 0;
 
-    // Requirement 7: Advance Conflict Check
-    if (currentAdvance > 0 && totalAmount < currentAdvance) {
+    const parsedAdvance = typeof editAdvancePayment === 'number'
+      ? editAdvancePayment
+      : (!editAdvancePayment || String(editAdvancePayment).trim() === '')
+      ? 0
+      : Number(editAdvancePayment);
+
+    // Validation 1: Valid numeric format
+    if (typeof editAdvancePayment === 'string' && editAdvancePayment.trim() !== '' && isNaN(Number(editAdvancePayment))) {
+      showNotification('error', 'Invalid Advance Payment', 'Advance payment must be a valid numeric amount.');
+      return;
+    }
+
+    // Validation 2: Non-negative
+    if (parsedAdvance < 0) {
+      showNotification('error', 'Invalid Advance Payment', 'Advance payment cannot be negative. Value must be 0 or more.');
+      return;
+    }
+
+    // Validation 3 & 4: Advance cannot exceed order total / price reduction conflict
+    if (parsedAdvance > totalAmount) {
       showNotification(
         'error',
         'Cannot Reduce Below Advance Payment',
-        `New order total (৳${totalAmount.toLocaleString()}) cannot be less than the already recorded advance payment (৳${currentAdvance.toLocaleString()}).`
+        `Advance payment (৳${parsedAdvance.toLocaleString()}) cannot exceed the order total (৳${totalAmount.toLocaleString()}).`
       );
       return;
     }
+
+    const validatedAdvance = parsedAdvance;
+    const customerDue = Math.max(0, Math.round((totalAmount - validatedAdvance) * 100) / 100);
 
     let totalCost = 0;
     const enrichedItems = editOrderItems.map((it) => {
@@ -2046,16 +2142,18 @@ const AdminPanelContent: React.FC = () => {
       };
     });
     // Requirement 6: Do NOT clamp loss with Math.max(0, ...)
+    // Advance Payment never reduces profit
     const totalGrossProfit = subtotal - totalCost;
-    const customerDue = Math.max(0, Math.round((totalAmount - currentAdvance) * 100) / 100);
 
     let nextPaymentStatus = editPaymentStatus;
-    if (currentAdvance > 0) {
+    if (validatedAdvance > 0) {
       if (customerDue === 0 && totalAmount > 0) {
         nextPaymentStatus = 'PAID' as any;
       } else if (customerDue > 0) {
         nextPaymentStatus = 'PARTIAL' as any;
       }
+    } else if (validatedAdvance === 0 && (editPaymentStatus === 'PARTIAL' as any || editPaymentStatus === 'PAID' as any || editPaymentStatus === 'Paid' as any)) {
+      nextPaymentStatus = (editingOrder.paymentMethod === 'dbbl' ? 'UNVERIFIED' : 'DUE') as any;
     }
 
     updateOrder(editingOrder.id, {
@@ -2065,7 +2163,9 @@ const AdminPanelContent: React.FC = () => {
       totalAmount,
       totalCost,
       totalGrossProfit,
-      advancePayment: currentAdvance,
+      advancePayment: validatedAdvance,
+      advancePaymentMethod: editAdvanceMethod.trim() || undefined,
+      advancePaymentNote: editAdvanceNote.trim() || undefined,
       customerDue,
       dueAmount: customerDue,
       customer: {
@@ -3673,13 +3773,33 @@ const AdminPanelContent: React.FC = () => {
                                   </span>
                                 </div>
 
-                                {isSuperAdmin && ord.totalGrossProfit !== undefined && (
+                                {/* Advance Payment & Customer Due display badge */}
+                                {ord.advancePayment != null && Number(ord.advancePayment) > 0 && (
+                                  <div className="p-1.5 bg-blue-50/70 border border-blue-100 rounded-lg text-[10px] space-y-0.5 font-mono">
+                                    <div className="flex items-center justify-between text-blue-800">
+                                      <span>Advance:</span>
+                                      <span className="font-bold">৳{Number(ord.advancePayment).toLocaleString()}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between text-slate-900 font-bold border-t border-blue-200/50 pt-0.5">
+                                      <span>Due (COD):</span>
+                                      <span className="text-emerald-700">
+                                        ৳{(ord.customerDue ?? Math.max(0, Math.round(((Number(ord.totalAmount) || 0) - (Number(ord.advancePayment) || 0)) * 100) / 100)).toLocaleString()}
+                                      </span>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {canViewProfit && ord.totalGrossProfit !== undefined && (
                                   <div className={`p-1.5 border rounded-lg flex items-center justify-between text-[10px] font-mono ${
                                     ord.totalGrossProfit < 0
                                       ? 'bg-rose-50 border-rose-200 text-rose-900'
                                       : 'bg-emerald-50 border-emerald-200 text-emerald-900'
                                   }`}>
-                                    <span>Cost: ৳{(ord.totalCost || 0).toLocaleString()}</span>
+                                    {canViewBuyingPrice && ord.totalCost !== undefined ? (
+                                      <span>Cost: ৳{(ord.totalCost || 0).toLocaleString()}</span>
+                                    ) : (
+                                      <span className="text-slate-500 font-sans text-[9px] uppercase tracking-wider font-semibold">Net Result</span>
+                                    )}
                                     <span className="font-bold">
                                       {ord.totalGrossProfit < 0
                                         ? `Loss: -৳${Math.abs(ord.totalGrossProfit).toLocaleString()}`
@@ -10063,64 +10183,194 @@ const AdminPanelContent: React.FC = () => {
                       <span className="text-[10px] text-slate-400">Dynamically synced across all order tabs &amp; invoices</span>
                     </div>
                     <span className="font-display font-bold text-base text-rose-600">
-                      ৳{editTotalAmount.toLocaleString()} BDT
+                      ৳{editComputedGrandTotal.toLocaleString()} BDT
                     </span>
                   </div>
 
-                  {/* Advance Payment & Customer Due display */}
-                  {editingOrder.advancePayment != null && Number(editingOrder.advancePayment) > 0 && (
-                    <div className="pt-2 border-t border-slate-200 space-y-1.5">
-                      <div className="flex items-center justify-between text-blue-700">
-                        <span className="text-[11px] font-medium">
-                          Recorded Advance Payment ({editingOrder.advancePaymentMethod || 'Advance'}):
-                        </span>
-                        <span className="font-bold font-mono">
-                          -৳{Number(editingOrder.advancePayment).toLocaleString()} BDT
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between text-slate-800 font-bold">
-                        <span className="text-[11px]">Customer Due Amount:</span>
-                        <span className="font-mono text-xs">
-                          ৳{Math.max(0, editTotalAmount - Number(editingOrder.advancePayment)).toLocaleString()} BDT
-                        </span>
-                      </div>
+                  {/* Advance Payment & Customer Due preview */}
+                  <div className="pt-2 border-t border-slate-200 space-y-1.5">
+                    <div className="flex items-center justify-between text-blue-700">
+                      <span className="text-[11px] font-medium">
+                        Advance Payment ({editAdvanceMethod || 'Advance'}):
+                      </span>
+                      <span className="font-bold font-mono">
+                        -৳{editParsedAdvance.toLocaleString()} BDT
+                      </span>
                     </div>
-                  )}
+                    <div className="flex items-center justify-between text-slate-800 font-bold">
+                      <span className="text-[11px]">Customer Due Amount (COD):</span>
+                      <span className="font-mono text-xs text-emerald-700 font-bold">
+                        ৳{editComputedCustomerDue.toLocaleString()} BDT
+                      </span>
+                    </div>
+                  </div>
 
-                  {/* Super Admin Profit / Loss Estimation */}
-                  {isSuperAdmin && (() => {
-                    let costSum = 0;
-                    for (const it of editOrderItems) {
-                      const bp = it.buyingPriceSnapshot != null
-                        ? Number(it.buyingPriceSnapshot)
-                        : (it.product?.buyingPrice != null ? Number(it.product.buyingPrice) : 0);
-                      costSum += bp * Number(it.quantity || 1);
-                    }
-                    const sub = getEditOrderSubtotal(editOrderItems);
-                    const prof = sub - costSum;
+                  {/* Permission-Guarded Profit / Loss Estimation */}
+                  {canViewProfit && (() => {
                     return (
                       <div className="pt-2 border-t border-slate-200 flex items-center justify-between text-[11px] font-mono">
                         <span className="text-slate-500">Estimated Cost &amp; Profit:</span>
                         <div className="flex items-center gap-2">
-                          <span className="text-slate-600">Cost: ৳{costSum.toLocaleString()}</span>
-                          <span className="text-slate-300">•</span>
-                          <span className={prof < 0 ? 'text-rose-600 font-bold' : 'text-emerald-700 font-bold'}>
-                            {prof < 0 ? `Loss: -৳${Math.abs(prof).toLocaleString()}` : `Profit: ৳${prof.toLocaleString()}`}
+                          {canViewBuyingPrice && (
+                            <>
+                              <span className="text-slate-600">Cost: ৳{editLiveCost.toLocaleString()}</span>
+                              <span className="text-slate-300">•</span>
+                            </>
+                          )}
+                          <span className={editLiveProfit < 0 ? 'text-rose-600 font-bold' : 'text-emerald-700 font-bold'}>
+                            {editLiveProfit < 0 ? `Loss: -৳${Math.abs(editLiveProfit).toLocaleString()}` : `Profit: ৳${editLiveProfit.toLocaleString()}`}
                           </span>
                         </div>
                       </div>
                     );
                   })()}
 
-                  {/* Requirement 7: Advance Conflict Warning */}
-                  {editingOrder.advancePayment != null && Number(editingOrder.advancePayment) > 0 && editTotalAmount < Number(editingOrder.advancePayment) && (
+                  {/* Advance Conflict Warning */}
+                  {editAdvanceValidationError && (
                     <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-[11px] font-medium flex items-center gap-2">
                       <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
                       <span>
-                        <strong>Advance Conflict:</strong> Grand total (৳{editTotalAmount.toLocaleString()}) cannot be reduced below the recorded advance payment (৳{Number(editingOrder.advancePayment).toLocaleString()}).
+                        <strong>Validation Error:</strong> {editAdvanceValidationError}
                       </span>
                     </div>
                   )}
+                </div>
+
+                {/* Dedicated Advance Payment Management Area */}
+                <div className="p-4 bg-emerald-50/50 rounded-2xl border border-emerald-200/80 space-y-3.5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center shadow-xs">
+                        <CreditCard className="w-3.5 h-3.5" />
+                      </div>
+                      <div>
+                        <h4 className="font-display font-bold text-xs text-slate-900 flex items-center gap-2">
+                          Advance Payment &amp; Customer Due
+                          {editComputedCustomerDue === 0 && editComputedGrandTotal > 0 ? (
+                            <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                              Paid in Full (Due: ৳0)
+                            </span>
+                          ) : editParsedAdvance > 0 && editComputedCustomerDue > 0 ? (
+                            <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-blue-100 text-blue-800 border border-blue-300">
+                              Partial Advance
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-slate-100 text-slate-700 border border-slate-300">
+                              Full Due (COD)
+                            </span>
+                          )}
+                        </h4>
+                        <p className="text-[10px] text-slate-500">
+                          Authorized admin management for customer advance deposits. Live recalculation.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="p-2.5 bg-white rounded-xl border border-slate-200 shadow-2xs">
+                      <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500 block">
+                        Order Total
+                      </span>
+                      <span className="text-sm font-bold font-mono text-slate-900 block mt-0.5">
+                        ৳{editComputedGrandTotal.toLocaleString()} BDT
+                      </span>
+                    </div>
+
+                    <div className="p-2.5 bg-white rounded-xl border border-blue-200 shadow-2xs">
+                      <span className="text-[9px] font-bold uppercase tracking-wider text-blue-700 block">
+                        Advance Paid
+                      </span>
+                      <span className="text-sm font-bold font-mono text-blue-700 block mt-0.5">
+                        ৳{editParsedAdvance.toLocaleString()} BDT
+                      </span>
+                    </div>
+
+                    <div className={`p-2.5 bg-white rounded-xl border shadow-2xs ${editComputedCustomerDue === 0 ? 'border-emerald-300 bg-emerald-50/20' : 'border-amber-300 bg-amber-50/20'}`}>
+                      <span className="text-[9px] font-bold uppercase tracking-wider text-slate-700 block">
+                        Customer Due
+                      </span>
+                      <span className={`text-sm font-bold font-mono block mt-0.5 ${editComputedCustomerDue === 0 ? 'text-emerald-700' : 'text-amber-800'}`}>
+                        ৳{editComputedCustomerDue.toLocaleString()} BDT
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-700 mb-1">
+                        Advance Payment Amount (৳)
+                      </label>
+                      <div className="relative">
+                        <span className="absolute left-2.5 top-1.5 text-slate-400 font-bold text-xs">৳</span>
+                        <input
+                          id="order-edit-advance-input"
+                          type="number"
+                          min="0"
+                          step="1"
+                          disabled={!canManageOrders}
+                          value={editAdvancePayment}
+                          onChange={(e) => setEditAdvancePayment(e.target.value)}
+                          placeholder="0"
+                          className="w-full pl-6 pr-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-mono font-bold text-slate-900 focus:ring-2 focus:ring-emerald-500 disabled:bg-slate-100 disabled:text-slate-400"
+                        />
+                      </div>
+                      <div className="flex items-center gap-1.5 mt-1">
+                        <button
+                          type="button"
+                          disabled={!canManageOrders}
+                          onClick={() => setEditAdvancePayment(0)}
+                          className="text-[9px] px-1.5 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold cursor-pointer disabled:opacity-50"
+                        >
+                          Reset (৳0)
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!canManageOrders}
+                          onClick={() => setEditAdvancePayment(editComputedGrandTotal)}
+                          className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-100 hover:bg-emerald-200 text-emerald-800 font-semibold cursor-pointer disabled:opacity-50"
+                        >
+                          Full (৳{editComputedGrandTotal.toLocaleString()})
+                        </button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-700 mb-1">
+                        Payment Method / Channel
+                      </label>
+                      <select
+                        id="order-edit-advance-method-select"
+                        disabled={!canManageOrders}
+                        value={editAdvanceMethod}
+                        onChange={(e) => setEditAdvanceMethod(e.target.value)}
+                        className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-medium text-slate-800 focus:ring-2 focus:ring-emerald-500 disabled:bg-slate-100 disabled:text-slate-400"
+                      >
+                        <option value="Cash / Advance">Cash in Hand / Delivery Point</option>
+                        <option value="bKash">bKash Personal / Merchant</option>
+                        <option value="Nagad">Nagad</option>
+                        <option value="Rocket">DBBL Rocket</option>
+                        <option value="Bank Transfer">Bank Transfer / DBBL</option>
+                        <option value="Upay">Upay</option>
+                        <option value="Other">Other Gateway</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-700 mb-1">
+                        TrxID / Reference Note
+                      </label>
+                      <input
+                        id="order-edit-advance-note-input"
+                        type="text"
+                        disabled={!canManageOrders}
+                        value={editAdvanceNote}
+                        onChange={(e) => setEditAdvanceNote(e.target.value)}
+                        placeholder="e.g. TrxID 9K28F... / Slip #44"
+                        className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-mono text-slate-800 focus:ring-2 focus:ring-emerald-500 disabled:bg-slate-100 disabled:text-slate-400"
+                      />
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -10267,7 +10517,7 @@ const AdminPanelContent: React.FC = () => {
                 <button
                   id="save-order-edit-btn"
                   type="submit"
-                  disabled={Boolean(editingOrder.advancePayment && Number(editingOrder.advancePayment) > 0 && editTotalAmount < Number(editingOrder.advancePayment))}
+                  disabled={Boolean(editAdvanceValidationError)}
                   className="flex-1 py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-black text-white font-bold text-xs shadow-md hover:shadow-lg active:scale-95 transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <Check className="w-4 h-4" />

@@ -260,104 +260,99 @@ async function runVerification() {
 
   const mockDb: any = {
     prepare(sql: string) {
-      return {
-        bind(...args: any[]) {
-          return {
-            async first<T = any>(): Promise<T | null> {
-              const cleanSql = sql.trim().toLowerCase();
-              if (cleanSql.includes("from pragma_table_info('orders')")) {
-                return null;
+      const createExecutors = (args: any[]) => ({
+        async first<T = any>(): Promise<T | null> {
+          const cleanSql = sql.trim().toLowerCase();
+          if (cleanSql.includes("from pragma_table_info('orders')")) {
+            return null;
+          }
+          if (cleanSql.includes('from users where lower(trim(email)) = ? or id = ?') || cleanSql.includes('from users where id = ?')) {
+            const idOrEmail = String(args[0]).toLowerCase();
+            const u = mockUsers.find((x) => x.id === args[0] || x.email.toLowerCase() === idOrEmail);
+            return (u as any) || null;
+          }
+          if (cleanSql.includes('from orders where id = ? or order_number = ?')) {
+            const idOrNum = args[0];
+            for (const o of mockOrdersStore.values()) {
+              if (o.id === idOrNum || o.order_number === idOrNum) {
+                return { ...o } as any;
               }
-              if (cleanSql.includes('from users where lower(trim(email)) = ? or id = ?') || cleanSql.includes('from users where id = ?')) {
-                const idOrEmail = String(args[0]).toLowerCase();
-                const u = mockUsers.find((x) => x.id === args[0] || x.email.toLowerCase() === idOrEmail);
-                return (u as any) || null;
-              }
-              if (cleanSql.includes('from orders where id = ? or order_number = ?')) {
-                const idOrNum = args[0];
-                for (const o of mockOrdersStore.values()) {
-                  if (o.id === idOrNum || o.order_number === idOrNum) {
-                    return { ...o } as any;
-                  }
-                }
-                return null;
-              }
-              return null;
-            },
-            async all<T = any>() {
-              const cleanSql = sql.trim().toLowerCase();
-              if (cleanSql.includes("from pragma_table_info('orders')")) {
-                return {
-                  success: true,
-                  results: [
-                    { name: 'id' }, { name: 'order_number' }, { name: 'advance_payment' },
-                    { name: 'advance_payment_method' }, { name: 'advance_payment_note' },
-                    { name: 'advance_payment_updated_at' }, { name: 'advance_payment_updated_by' },
-                  ] as any,
-                };
-              }
-              return { success: true, results: [] as any };
-            },
-            async run() {
-              const cleanSql = sql.trim().toLowerCase();
-              if (cleanSql.startsWith('update orders set')) {
-                const orderId = args[args.length - 1];
-                const existing = mockOrdersStore.get(orderId);
-                if (existing) {
-                  // Bind order:
-                  // customer_name, customer_phone, customer_address, customer_district, customer_zone, customer_notes,
-                  // items_json, subtotal, delivery_fee, total_amount, coupon_code, discount_amount,
-                  // payment_method, payment_status, transaction_id, shipping_status,
-                  // courier_name, courier_waybill, consignment_id, courier_status,
-                  // courier_booking_json, dbbl_details_json, card_details_json, last_courier_sync,
-                  // total_cost, total_profit,
-                  // advance_payment, advance_payment_method, advance_payment_note, advance_payment_updated_at, advance_payment_updated_by, id
-                  existing.customer_name = args[0];
-                  existing.customer_phone = args[1];
-                  existing.customer_address = args[2];
-                  existing.customer_district = args[3];
-                  existing.customer_zone = args[4];
-                  existing.customer_notes = args[5];
-                  existing.items_json = args[6];
-                  existing.subtotal = args[7];
-                  existing.delivery_fee = args[8];
-                  existing.total_amount = args[9];
-                  existing.coupon_code = args[10];
-                  existing.discount_amount = args[11];
-                  existing.payment_method = args[12];
-                  existing.payment_status = args[13];
-                  existing.transaction_id = args[14];
-                  existing.shipping_status = args[15];
-                  existing.total_cost = args[24];
-                  existing.total_profit = args[25];
-                  existing.advance_payment = args[26];
-                  existing.advance_payment_method = args[27];
-                  existing.advance_payment_note = args[28];
-                  existing.advance_payment_updated_at = args[29];
-                  existing.advance_payment_updated_by = args[30];
-                  mockOrdersStore.set(orderId, existing);
-                  return { success: true, meta: { changes: 1 } };
-                }
-              }
-              if (cleanSql.startsWith('insert into audit_logs')) {
-                mockAuditLogsStore.push({
-                  id: args[0],
-                  timestamp: args[1],
-                  actor_id: args[2],
-                  actor_email: args[3],
-                  actor_role: args[4],
-                  action: args[5],
-                  target_id: args[6],
-                  targetId: args[6],
-                  target_type: args[7],
-                  details_json: args[8],
-                  ip_address: args[9],
-                });
-                return { success: true };
-              }
+            }
+            return null;
+          }
+          return null;
+        },
+        async all<T = any>() {
+          const cleanSql = sql.trim().toLowerCase();
+          if (cleanSql.includes("from pragma_table_info('orders')")) {
+            return {
+              success: true,
+              results: [
+                { name: 'id' }, { name: 'order_number' }, { name: 'advance_payment' },
+                { name: 'advance_payment_method' }, { name: 'advance_payment_note' },
+                { name: 'advance_payment_updated_at' }, { name: 'advance_payment_updated_by' },
+              ] as any,
+            };
+          }
+          return { success: true, results: [] as any };
+        },
+        async run() {
+          const cleanSql = sql.trim().toLowerCase();
+          if (cleanSql.startsWith('update orders set')) {
+            const orderId = args[args.length - 1];
+            const existing = mockOrdersStore.get(orderId);
+            if (existing) {
+              existing.customer_name = args[0];
+              existing.customer_phone = args[1];
+              existing.customer_address = args[2];
+              existing.customer_district = args[3];
+              existing.customer_zone = args[4];
+              existing.customer_notes = args[5];
+              existing.items_json = args[6];
+              existing.subtotal = args[7];
+              existing.delivery_fee = args[8];
+              existing.total_amount = args[9];
+              existing.coupon_code = args[10];
+              existing.discount_amount = args[11];
+              existing.payment_method = args[12];
+              existing.payment_status = args[13];
+              existing.transaction_id = args[14];
+              existing.shipping_status = args[15];
+              existing.total_cost = args[24];
+              existing.total_profit = args[25];
+              existing.advance_payment = args[26];
+              existing.advance_payment_method = args[27];
+              existing.advance_payment_note = args[28];
+              existing.advance_payment_updated_at = args[29];
+              existing.advance_payment_updated_by = args[30];
+              mockOrdersStore.set(orderId, existing);
               return { success: true, meta: { changes: 1 } };
-            },
-          };
+            }
+          }
+          if (cleanSql.startsWith('insert into audit_logs')) {
+            mockAuditLogsStore.push({
+              id: args[0],
+              timestamp: args[1],
+              actor_id: args[2],
+              actor_email: args[3],
+              actorRole: args[4],
+              action: args[5],
+              target_id: args[6],
+              targetId: args[6],
+              target_type: args[7],
+              details_json: args[8],
+              ip_address: args[9],
+            });
+            return { success: true };
+          }
+          return { success: true, meta: { changes: 1 } };
+        },
+      });
+
+      return {
+        ...createExecutors([]),
+        bind(...args: any[]) {
+          return createExecutors(args);
         },
       };
     },

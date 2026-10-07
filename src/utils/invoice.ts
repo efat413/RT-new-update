@@ -416,12 +416,20 @@ export function generateInvoiceHtml(order: Order, settings: StoreSettings): stri
           <td>Total Balance:</td>
           <td class="amount">${safeCurrency} ${order.totalAmount.toLocaleString()} BDT</td>
         </tr>
+        ${
+          order.advancePayment && Number(order.advancePayment) > 0
+            ? `<tr>
+                <td style="color: #2563eb;">Advance Paid (${escapeHtml(order.advancePaymentMethod || 'Advance')}):</td>
+                <td class="amount" style="color: #2563eb;">-${safeCurrency} ${Number(order.advancePayment).toLocaleString()} BDT</td>
+              </tr>`
+            : ''
+        }
         <tr>
-          <td style="font-weight: 700; color: ${isPaid ? '#15803d' : '#b45309'}; padding-top: 8px;">
-            ${isPaid ? 'Amount Paid:' : 'Balance Due:'}
+          <td style="font-weight: 700; color: ${isPaid || order.customerDue === 0 ? '#15803d' : '#b45309'}; padding-top: 8px;">
+            ${isPaid || order.customerDue === 0 ? 'Amount Paid:' : 'Customer Due (COD):'}
           </td>
-          <td class="amount" style="font-weight: 700; color: ${isPaid ? '#15803d' : '#b45309'}; padding-top: 8px;">
-            ${safeCurrency} ${order.totalAmount.toLocaleString()} BDT
+          <td class="amount" style="font-weight: 700; color: ${isPaid || order.customerDue === 0 ? '#15803d' : '#b45309'}; padding-top: 8px;">
+            ${safeCurrency} ${(isPaid ? order.totalAmount : (order.customerDue ?? Math.max(0, order.totalAmount - (Number(order.advancePayment) || 0)))).toLocaleString()} BDT
           </td>
         </tr>
       </table>

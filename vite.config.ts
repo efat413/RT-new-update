@@ -4134,6 +4134,23 @@ function localApiDevPlugin(): Plugin {
               // If the Admin reduces the order total below the already-recorded advance:
               // Do NOT silently create negative customer due. Reject the update with a clear server-side validation error.
               if (validatedAdvance > authoritativeFinalTotal) {
+                devAuditLogs.unshift({
+                  id: `audit-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+                  timestamp: new Date().toISOString(),
+                  actorId: authResult.auth?.user?.id || 'admin',
+                  actorEmail: authResult.auth?.user?.email || 'admin@local.test',
+                  actorRole: authResult.auth?.role || 'admin',
+                  action: 'ORDER_FINANCIAL_UPDATE_REJECTED',
+                  targetId: old.id,
+                  targetType: 'order',
+                  details: {
+                    orderNumber: old.orderNumber,
+                    attemptedAdvance: validatedAdvance,
+                    authoritativeTotal: authoritativeFinalTotal,
+                    reason: 'Advance payment cannot exceed authoritative order total',
+                  },
+                  ipAddress: getDevClientIp(req),
+                });
                 res.statusCode = 400;
                 return res.end(JSON.stringify({
                   success: false,
@@ -4146,6 +4163,32 @@ function localApiDevPlugin(): Plugin {
               updates.customerDue = customerDue;
               updates.dueAmount = customerDue;
               updates.advancePayment = validatedAdvance;
+
+              // Record audit log for selling price modifications
+              const previousSubtotal = Number(old.subtotal) || 0;
+              const previousTotal = Number(old.totalAmount) || 0;
+              const isPriceChanged = updates.items !== undefined && (authoritativeSubtotal !== previousSubtotal || authoritativeFinalTotal !== previousTotal);
+              if (isPriceChanged) {
+                devAuditLogs.unshift({
+                  id: `audit-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+                  timestamp: new Date().toISOString(),
+                  actorId: authResult.auth?.user?.id || 'admin',
+                  actorEmail: authResult.auth?.user?.email || 'admin@local.test',
+                  actorRole: authResult.auth?.role || 'admin',
+                  action: 'ORDER_SELLING_PRICE_UPDATE',
+                  targetId: old.id,
+                  targetType: 'order',
+                  details: {
+                    orderNumber: old.orderNumber,
+                    previousSubtotal,
+                    newSubtotal: authoritativeSubtotal,
+                    previousTotal,
+                    newTotal: authoritativeFinalTotal,
+                    customerDue,
+                  },
+                  ipAddress: getDevClientIp(req),
+                });
+              }
 
               if (hasAdvanceUpdate) {
                 const nowIso = new Date().toISOString();
