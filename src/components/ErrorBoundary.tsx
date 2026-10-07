@@ -40,7 +40,18 @@ export class ErrorBoundary extends (React.Component as unknown as {
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error('ErrorBoundary caught an error:', error, errorInfo);
+    const errorType = error?.name || 'Error';
+    const isChunkLoadError =
+      error?.message?.includes('Failed to fetch dynamically imported module') ||
+      error?.message?.includes('Importing a module script failed') ||
+      error?.message?.includes('Loading chunk');
+
+    console.error(
+      `[ErrorBoundary] Caught ${errorType}${isChunkLoadError ? ' (ChunkLoadError)' : ''}:`,
+      error?.message,
+      '\nComponent stack:',
+      errorInfo?.componentStack
+    );
   }
 
   handleRetry = () => {

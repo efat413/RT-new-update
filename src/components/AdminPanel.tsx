@@ -103,6 +103,7 @@ import {
 } from '../types';
 import { BrandLogo } from './BrandLogo';
 import { ConfirmModal } from './ConfirmModal';
+import { ErrorBoundary } from './ErrorBoundary';
 import { FormattedDescription } from './FormattedDescription';
 import { ImageUploadField } from './ImageUploadField';
 import { AdminSidebar } from './AdminSidebar';
@@ -193,6 +194,21 @@ const ConfidentialProfitBadge: React.FC<ConfidentialProfitBadgeProps> = ({ profi
       </span>
     </span>
   );
+};
+
+/**
+ * Helper to compute subtotal for order items in the order edit modal.
+ * Declared at module level to prevent Temporal Dead Zone ReferenceError during initial render.
+ */
+export const getEditOrderSubtotal = (items: any[]): number => {
+  if (!Array.isArray(items)) return 0;
+  return items.reduce((sum, item) => {
+    const p =
+      item?.sellingPriceSnapshot != null && !isNaN(Number(item.sellingPriceSnapshot))
+        ? Number(item.sellingPriceSnapshot)
+        : Number(item?.product?.price || 0);
+    return sum + p * Number(item?.quantity || 1);
+  }, 0);
 };
 
 const AdminPanelContent: React.FC = () => {
@@ -1760,6 +1776,12 @@ const AdminPanelContent: React.FC = () => {
     setInlineSfSecretKey('');
   };
 
+  const copyTrackingLink = (url: string, id: string) => {
+    navigator.clipboard.writeText(url);
+    setCopiedTrackingId(id);
+    setTimeout(() => setCopiedTrackingId(null), 2000);
+  };
+
   const handleExecuteCourierBooking = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!courierModalOrder) return;
@@ -1874,23 +1896,7 @@ const AdminPanelContent: React.FC = () => {
     updateOrderStatus(orderId, status);
   };
 
-  const copyTrackingLink = (url: string, id: string) => {
-    navigator.clipboard.writeText(url);
-    setCopiedTrackingId(id);
-    setTimeout(() => setCopiedTrackingId(null), 2000);
-  };
-
   // --- ORDER EDIT & DELETE HANDLERS ---
-  const getEditOrderSubtotal = (items: any[]) => {
-    return items.reduce((sum, item) => {
-      const p =
-        item.sellingPriceSnapshot != null && !isNaN(Number(item.sellingPriceSnapshot))
-          ? Number(item.sellingPriceSnapshot)
-          : Number(item.product?.price || 0);
-      return sum + p * Number(item.quantity || 1);
-    }, 0);
-  };
-
   const handleUpdateOrderItemPrice = (index: number, newPrice: number | string) => {
     let priceToStore: number | string = newPrice;
     let numericPrice = 0;
@@ -4260,17 +4266,19 @@ const AdminPanelContent: React.FC = () => {
             </div>
 
             {(productsSubView === 'featured' || productStockFilter === 'featured') ? (
-              <React.Suspense fallback={<AdminTabFallback />}>
-                <FeaturedProductsManagement
-                  products={products}
-                  categories={categories}
-                  featuredProducts={featuredProducts}
-                  onToggleFeatured={toggleProductFeatured}
-                  hasPermission={hasPermission}
-                  isSuperAdmin={isSuperAdmin}
-                  onOpenEditModal={openEditProductModal}
-                />
-              </React.Suspense>
+              <ErrorBoundary compact fallbackTitle="Featured Products Unavailable" fallbackMessage="Could not load featured products management module.">
+                <React.Suspense fallback={<AdminTabFallback />}>
+                  <FeaturedProductsManagement
+                    products={products}
+                    categories={categories}
+                    featuredProducts={featuredProducts}
+                    onToggleFeatured={toggleProductFeatured}
+                    hasPermission={hasPermission}
+                    isSuperAdmin={isSuperAdmin}
+                    onOpenEditModal={openEditProductModal}
+                  />
+                </React.Suspense>
+              </ErrorBoundary>
             ) : (
               <>
 
@@ -5165,9 +5173,11 @@ const AdminPanelContent: React.FC = () => {
             {/* MARKETING PIXELS & ADVANCED MATCHING SECTION */}
             {(settingsSectionFilter === 'all' || settingsSectionFilter === 'pixels') && (
               <div id="settings-pixels-section" className="space-y-4">
-                <React.Suspense fallback={<AdminTabFallback />}>
-                  <AdminMarketingPixelsTab />
-                </React.Suspense>
+                <ErrorBoundary compact fallbackTitle="Pixels Unavailable" fallbackMessage="Could not load marketing pixels management.">
+                  <React.Suspense fallback={<AdminTabFallback />}>
+                    <AdminMarketingPixelsTab />
+                  </React.Suspense>
+                </ErrorBoundary>
               </div>
             )}
 
@@ -6209,18 +6219,20 @@ const AdminPanelContent: React.FC = () => {
           !hasPermission('canManageSettings') ? (
             renderPermissionRestrictedNotice('canManageSettings', 'Hero Slides')
           ) : (
-            <React.Suspense fallback={<AdminTabFallback />}>
-              <AdminSlidesTab
-                slides={slides}
-                categories={categories}
-                onAddSlide={addSlide}
-                onUpdateSlide={updateSlide}
-                onDeleteSlide={deleteSlide}
-                onResetSlides={resetSlides}
-                onReorderSlides={reorderSlides}
-                canManageSlides={hasPermission('canManageSettings')}
-              />
-            </React.Suspense>
+            <ErrorBoundary compact fallbackTitle="Slides Unavailable" fallbackMessage="Could not load hero slides manager.">
+              <React.Suspense fallback={<AdminTabFallback />}>
+                <AdminSlidesTab
+                  slides={slides}
+                  categories={categories}
+                  onAddSlide={addSlide}
+                  onUpdateSlide={updateSlide}
+                  onDeleteSlide={deleteSlide}
+                  onResetSlides={resetSlides}
+                  onReorderSlides={reorderSlides}
+                  canManageSlides={hasPermission('canManageSettings')}
+                />
+              </React.Suspense>
+            </ErrorBoundary>
           )
         )}
 
@@ -6231,15 +6243,17 @@ const AdminPanelContent: React.FC = () => {
           !hasPermission('canManageSettings') ? (
             renderPermissionRestrictedNotice('canManageSettings', 'Courier APIs')
           ) : (
-            <React.Suspense fallback={<AdminTabFallback />}>
-              <AdminCouriersTab
-                courierConfigs={courierConfigs}
-                onAddCourier={addCourierConfig}
-                onUpdateCourier={updateCourierConfig}
-                onDeleteCourier={deleteCourierConfig}
-                onResetCouriers={resetCourierConfigs}
-              />
-            </React.Suspense>
+            <ErrorBoundary compact fallbackTitle="Couriers Unavailable" fallbackMessage="Could not load courier management.">
+              <React.Suspense fallback={<AdminTabFallback />}>
+                <AdminCouriersTab
+                  courierConfigs={courierConfigs}
+                  onAddCourier={addCourierConfig}
+                  onUpdateCourier={updateCourierConfig}
+                  onDeleteCourier={deleteCourierConfig}
+                  onResetCouriers={resetCourierConfigs}
+                />
+              </React.Suspense>
+            </ErrorBoundary>
           )
         )}
 
@@ -6953,9 +6967,11 @@ const AdminPanelContent: React.FC = () => {
           !hasPermission('canManageSettings') ? (
             renderPermissionRestrictedNotice('canManageSettings', 'Marketing Pixels & Event Tracking')
           ) : (
-            <React.Suspense fallback={<AdminTabFallback />}>
-              <AdminMarketingPixelsTab />
-            </React.Suspense>
+            <ErrorBoundary compact fallbackTitle="Pixels Unavailable" fallbackMessage="Could not load marketing pixels tab.">
+              <React.Suspense fallback={<AdminTabFallback />}>
+                <AdminMarketingPixelsTab />
+              </React.Suspense>
+            </ErrorBoundary>
           )
         )}
 
@@ -6966,9 +6982,11 @@ const AdminPanelContent: React.FC = () => {
           !hasPermission('canManageSettings') ? (
             renderPermissionRestrictedNotice('canManageSettings', 'Promo Vouchers & Discounts')
           ) : (
-            <React.Suspense fallback={<AdminTabFallback />}>
-              <AdminVouchersTab />
-            </React.Suspense>
+            <ErrorBoundary compact fallbackTitle="Vouchers Unavailable" fallbackMessage="Could not load promo vouchers tab.">
+              <React.Suspense fallback={<AdminTabFallback />}>
+                <AdminVouchersTab />
+              </React.Suspense>
+            </ErrorBoundary>
           )
         )}
 
@@ -6976,9 +6994,11 @@ const AdminPanelContent: React.FC = () => {
         {/* TAB 11: APP DEBUG & SYSTEM HEALTH DIAGNOSTICS                */}
         {/* ============================================================ */}
         {activeTab === 'debug' && (
-          <React.Suspense fallback={<AdminTabFallback />}>
-            <AdminDebugTab onNavigateTab={(tab) => setActiveTab(tab as any)} />
-          </React.Suspense>
+          <ErrorBoundary compact fallbackTitle="Debug Unavailable" fallbackMessage="Could not load system debug tab.">
+            <React.Suspense fallback={<AdminTabFallback />}>
+              <AdminDebugTab onNavigateTab={(tab) => setActiveTab(tab as any)} />
+            </React.Suspense>
+          </ErrorBoundary>
         )}
 
         {/* ============================================================ */}
@@ -6988,9 +7008,11 @@ const AdminPanelContent: React.FC = () => {
           !isSuperAdmin ? (
             renderPermissionRestrictedNotice('canManageSettings' as any, 'Profit & Financial Analytics (Super Admin Only)')
           ) : (
-            <React.Suspense fallback={<AdminTabFallback />}>
-              <AdminProfitAnalyticsTab />
-            </React.Suspense>
+            <ErrorBoundary compact fallbackTitle="Profit Analytics Unavailable" fallbackMessage="Could not load profit analytics tab.">
+              <React.Suspense fallback={<AdminTabFallback />}>
+                <AdminProfitAnalyticsTab />
+              </React.Suspense>
+            </ErrorBoundary>
           )
         )}
         </main>
@@ -10690,24 +10712,28 @@ const AdminPanelContent: React.FC = () => {
       {/* ============================================================ */}
       {/* MODAL: GRANULAR ADMIN RBAC PERMISSION MANAGEMENT             */}
       {/* ============================================================ */}
-      <React.Suspense fallback={null}>
-        <PermissionManagementModal
-          targetUser={permissionsModalUser}
-          isOpen={Boolean(permissionsModalUser)}
-          onClose={() => setPermissionsModalUser(null)}
-          onSaveSuccess={(updatedUser) => {
-            if (updatedUser.role === 'customer') {
-              if (selectedStaffUserId === updatedUser.id) {
-                setSelectedStaffUserId('');
-              }
-              setAccountFeedback(`Successfully converted ${updatedUser.name} to Customer and revoked admin access.`);
-            } else {
-              setAccountFeedback(`Successfully saved granular permissions for ${updatedUser.name} (${updatedUser.role.toUpperCase()}).`);
-            }
-            setTimeout(() => setAccountFeedback(null), 4000);
-          }}
-        />
-      </React.Suspense>
+      {permissionsModalUser && (
+        <ErrorBoundary compact fallbackTitle="Permission Modal Unavailable" fallbackMessage="Could not load permissions management modal.">
+          <React.Suspense fallback={null}>
+            <PermissionManagementModal
+              targetUser={permissionsModalUser}
+              isOpen={Boolean(permissionsModalUser)}
+              onClose={() => setPermissionsModalUser(null)}
+              onSaveSuccess={(updatedUser) => {
+                if (updatedUser.role === 'customer') {
+                  if (selectedStaffUserId === updatedUser.id) {
+                    setSelectedStaffUserId('');
+                  }
+                  setAccountFeedback(`Successfully converted ${updatedUser.name} to Customer and revoked admin access.`);
+                } else {
+                  setAccountFeedback(`Successfully saved granular permissions for ${updatedUser.name} (${updatedUser.role.toUpperCase()}).`);
+                }
+                setTimeout(() => setAccountFeedback(null), 4000);
+              }}
+            />
+          </React.Suspense>
+        </ErrorBoundary>
+      )}
 
       {/* Super Admin Password Change Modal */}
       {isSuperAdminPwModalOpen && (

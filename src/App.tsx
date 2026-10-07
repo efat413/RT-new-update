@@ -30,7 +30,16 @@ import {
 // Code-splitting: Lazy-load route pages
 // Storefront visitors do NOT download heavy admin, product detail, or category listing chunks during initial load
 const AdminPanel = React.lazy(() =>
-  import('./components/AdminPanel').then((m) => ({ default: m.AdminPanel }))
+  import('./components/AdminPanel')
+    .then((m) => ({ default: m.AdminPanel }))
+    .catch((err) => {
+      const retryKey = 'chunk_retry_admin';
+      if (typeof window !== 'undefined' && !sessionStorage.getItem(retryKey)) {
+        sessionStorage.setItem(retryKey, 'true');
+        window.location.reload();
+      }
+      throw err;
+    })
 );
 const ResetPasswordPage = React.lazy(() =>
   import('./components/ResetPasswordPage').then((m) => ({ default: m.ResetPasswordPage }))
@@ -382,7 +391,11 @@ const StoreContent: React.FC = () => {
     );
   }
 
-  if (currentView === 'admin') {
+  if (
+    currentView === 'admin' ||
+    (typeof window !== 'undefined' &&
+      (window.location.pathname === '/admin' || window.location.pathname.startsWith('/admin/')))
+  ) {
     return (
       <>
         <ErrorBoundary fallbackTitle="Admin Panel Unavailable" fallbackMessage="Could not load the administrative dashboard. Please reload or try again.">
