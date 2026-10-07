@@ -1083,7 +1083,9 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     dbblDetails?: Order['dbblDetails'];
     cardDetails?: Order['cardDetails'];
   }): Promise<Order> => {
-    // Security Hardening: Use native Web Crypto CSPRNG for order number and idempotency key
+    // Security Hardening: Generate cryptographically secure order number and unique idempotency key.
+    // The server authoritatively binds this idempotency key to the customer's authenticated or guest
+    // identity and a deterministic SHA-256 fingerprint of the order payload to prevent cross-user replay.
     const randBuf = new Uint32Array(1);
     crypto.getRandomValues(randBuf);
     const randNum = 10000000 + (randBuf[0] % 90000000);

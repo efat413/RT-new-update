@@ -453,8 +453,54 @@ function localApiDevPlugin(): Plugin {
   let devCourierWebhookLogs: any[] = [];
   const devPasswordResetTokens = new Map<string, { id: string; userId: string; tokenHash: string; expiresAt: number; usedAt: number | null; createdAt: number }>();
   const devRateLimits = new Map<string, { count: number; resetAt: number }>();
-  const devOrderIdempotencyMap = new Map<string, { order: any; timestamp: number }>();
+  const devOrderIdempotencyMap = new Map<string, { order: any; payload?: any; timestamp: number }>();
   const devWebhookReplays = new Map<string, { createdAt: number; expiresAt: number }>();
+
+  /**
+   * Hardened Order Idempotency Security Helpers (Dev Server):
+   * Binds idempotency validation to authenticated user or verified guest contact details,
+   * along with a deterministic SHA-256 fingerprint of the canonical request payload.
+   */
+  const deriveCustomerIdentityScopeDev = (
+    authenticatedUserId?: string,
+    customerPhone?: string,
+    customerEmail?: string
+  ): string => {
+    if (authenticatedUserId && authenticatedUserId.trim()) {
+      return `auth:${authenticatedUserId.trim()}`;
+    }
+    const cleanPhone = String(customerPhone || '').replace(/\D/g, '');
+    const cleanEmail = String(customerEmail || '').toLowerCase().trim();
+    return `guest:${cleanPhone}:${cleanEmail}`;
+  };
+
+  const computeOrderPayloadFingerprintDev = (orderData: any): string => {
+    const cleanPhone = String(orderData?.customer?.phone || '').replace(/\D/g, '');
+    const cleanEmail = String(orderData?.customer?.email || orderData?.userEmail || '').toLowerCase().trim();
+    const deliveryZone = String(orderData?.customer?.deliveryZone || orderData?.deliveryZone || '').trim().toLowerCase();
+    const paymentMethod = String(orderData?.paymentMethod || '').toLowerCase().trim();
+    const couponCode = String(orderData?.couponCode || '').toUpperCase().trim();
+    const address = String(orderData?.customer?.fullAddress || '').trim().toLowerCase();
+
+    const rawItems = Array.isArray(orderData?.items) ? orderData.items : [];
+    const items = rawItems.map((it: any) => ({
+      p: String(it.product?.id || it.productId || it.id || '').trim(),
+      v: String(it.selectedVariantId || it.variantId || '').trim(),
+      q: Number(it.quantity) || 1,
+    })).sort((a: any, b: any) => a.p.localeCompare(b.p) || a.v.localeCompare(b.v));
+
+    const canonicalPayload = JSON.stringify({
+      ph: cleanPhone,
+      em: cleanEmail,
+      dz: deliveryZone,
+      ad: address,
+      pm: paymentMethod,
+      cp: couponCode,
+      it: items,
+    });
+
+    return nodeCrypto.createHash('sha256').update(canonicalPayload).digest('hex');
+  };
 
   const checkAndRecordDevWebhookReplay = (fingerprint: string, ttlSeconds: number = 600): { isReplay: boolean } => {
     const now = Date.now();
@@ -3906,12 +3952,77 @@ function localApiDevPlugin(): Plugin {
                 }
               }
 
+              // Authoritative Identity Determination (dev server):
+              // Support BOTH HttpOnly cookie ('auth_token') and 'Authorization: Bearer <token>' via requireDevAuth
+              const devAuth = requireDevAuth(req);
+              let devUserId: string | undefined = undefined;
+              let devUserEmail: string | undefined = undefined;
+              let devUserObj: any = null;
+
+              if (!devAuth.error && devAuth.auth?.user) {
+                devUserObj = devAuth.auth.user;
+                devUserId = String(devUserObj.id || '').trim() || undefined;
+                devUserEmail = String(devUserObj.email || '').trim().toLowerCase() || undefined;
+              }
+
+              const cleanEmail = (rawOrder.customer?.email || rawOrder.userEmail || devUserEmail || '').toLowerCase().trim();
+              const customerIdentity = deriveCustomerIdentityScopeDev(devUserId, cleanPhone, cleanEmail);
+              const payloadFingerprint = computeOrderPayloadFingerprintDev(rawOrder);
+
               const idempotencyKey = ((req.headers['idempotency-key'] || req.headers['x-idempotency-key'] || rawOrder.idempotencyKey || '') as string).trim();
               if (idempotencyKey) {
                 const cached = devOrderIdempotencyMap.get(idempotencyKey);
                 if (cached && Date.now() - cached.timestamp < 15 * 60 * 1000) {
+                  const meta = cached.payload?._meta;
+
+                  // 1. Identity binding check: Prevent cross-user replay
+                  if (meta?.ownerIdentity && meta.ownerIdentity !== customerIdentity) {
+                    res.statusCode = 409;
+                    return res.end(JSON.stringify({
+                      success: false,
+                      error: 'Idempotency key has already been used by a different customer session.',
+                      code: 'IDEMPOTENCY_IDENTITY_MISMATCH',
+                    }));
+                  } else if (!meta?.ownerIdentity && cached.order) {
+                    // Legacy cached record fallback
+                    const cachedUserId = cached.order.userId;
+                    const cachedPhone = (cached.order.customer?.phone || '').replace(/\D/g, '');
+                    if (devUserId && cachedUserId && devUserId !== cachedUserId) {
+                      res.statusCode = 409;
+                      return res.end(JSON.stringify({
+                        success: false,
+                        error: 'Idempotency key has already been used by a different customer session.',
+                        code: 'IDEMPOTENCY_IDENTITY_MISMATCH',
+                      }));
+                    }
+                    if (cleanPhone && cachedPhone && cleanPhone !== cachedPhone) {
+                      res.statusCode = 409;
+                      return res.end(JSON.stringify({
+                        success: false,
+                        error: 'Idempotency key has already been used by a different contact phone.',
+                        code: 'IDEMPOTENCY_IDENTITY_MISMATCH',
+                      }));
+                    }
+                  }
+
+                  // 2. Payload fingerprint check: Prevent parameter tampering
+                  if (meta?.payloadFingerprint && meta.payloadFingerprint !== payloadFingerprint) {
+                    res.statusCode = 409;
+                    return res.end(JSON.stringify({
+                      success: false,
+                      error: 'Idempotency key was previously used with different order parameters.',
+                      code: 'IDEMPOTENCY_PAYLOAD_MISMATCH',
+                    }));
+                  }
+
                   res.statusCode = 200;
-                  return res.end(JSON.stringify({ success: true, order: sanitizeDevOrder(cached.order, false), idempotent: true }));
+                  res.setHeader('X-Idempotency-Cache', 'HIT');
+                  return res.end(JSON.stringify({
+                    success: true,
+                    message: `Order #${cached.order.orderNumber} successfully retrieved (idempotent request).`,
+                    order: sanitizeDevOrder(cached.order, false),
+                    idempotent: true,
+                  }));
                 }
               }
 
@@ -3955,19 +4066,7 @@ function localApiDevPlugin(): Plugin {
               crypto.getRandomValues(freshOrderBytes);
               const freshOrderNum = `RT-${new Date().getFullYear()}-${10000000 + (freshOrderBytes[0] % 90000000)}`;
 
-              // Authoritative Identity Determination (dev server):
-              // Support BOTH HttpOnly cookie ('auth_token') and 'Authorization: Bearer <token>' via requireDevAuth
-              const devAuth = requireDevAuth(req);
-              let devUserId: string | undefined = undefined;
-              let devUserEmail: string | undefined = undefined;
-              let devUserObj: any = null;
-
-              if (!devAuth.error && devAuth.auth?.user) {
-                devUserObj = devAuth.auth.user;
-                devUserId = String(devUserObj.id || '').trim() || undefined;
-                devUserEmail = String(devUserObj.email || '').trim().toLowerCase() || undefined;
-              }
-
+              // Reuse authoritative dev identity resolved during idempotency verification
               const orderCustomer = { ...(rawOrder.customer || {}) };
               if (devUserId && devUserEmail) {
                 orderCustomer.userId = devUserId;
@@ -4021,7 +4120,22 @@ function localApiDevPlugin(): Plugin {
 
               devOrders.unshift(order);
               if (idempotencyKey) {
-                devOrderIdempotencyMap.set(idempotencyKey, { order, timestamp: Date.now() });
+                const idempotentPayload = {
+                  success: true,
+                  message: `Order #${order.orderNumber} successfully retrieved (idempotent request).`,
+                  order: sanitizeDevOrder(order, false),
+                  idempotent: true,
+                  _meta: {
+                    ownerIdentity: customerIdentity,
+                    payloadFingerprint: payloadFingerprint,
+                    createdAt: Date.now(),
+                  },
+                };
+                devOrderIdempotencyMap.set(idempotencyKey, {
+                  order,
+                  payload: idempotentPayload,
+                  timestamp: Date.now(),
+                });
               }
 
               res.statusCode = 201;

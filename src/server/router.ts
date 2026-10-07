@@ -555,8 +555,66 @@ const loginAttemptMap = new Map<string, { count: number; lockedUntil: number }>(
 /**
  * Server-side order idempotency and duplicate double-click protection cache (15-minute TTL)
  */
-const orderIdempotencyMap = new Map<string, { order: Order; timestamp: number }>();
+interface IdempotencyCacheEntry {
+  order: Order;
+  payload: any;
+  timestamp: number;
+}
+const orderIdempotencyMap = new Map<string, IdempotencyCacheEntry>();
 const orderRecentSubmissionMap = new Map<string, { order: Order; timestamp: number }>();
+
+/**
+ * Hardened Order Idempotency Security Helpers:
+ * 1. deriveCustomerIdentityScope:
+ *    Authoritatively binds idempotency keys to user identity (when authenticated)
+ *    or normalized customer phone and email (guest checkout). Prevents cross-customer
+ *    idempotency key hijacking and cross-tenant replay attacks.
+ * 2. computeOrderPayloadFingerprint:
+ *    Calculates a deterministic SHA-256 cryptographic digest of the canonical order
+ *    payload (items, quantities, delivery destination, payment method, coupon code).
+ *    Ensures idempotency keys cannot be maliciously replayed with mutated parameters.
+ */
+export function deriveCustomerIdentityScope(
+  authenticatedUserId?: string,
+  customerPhone?: string,
+  customerEmail?: string
+): string {
+  if (authenticatedUserId && authenticatedUserId.trim()) {
+    return `auth:${authenticatedUserId.trim()}`;
+  }
+  const cleanPhone = String(customerPhone || '').replace(/\D/g, '');
+  const cleanEmail = String(customerEmail || '').toLowerCase().trim();
+  return `guest:${cleanPhone}:${cleanEmail}`;
+}
+
+export async function computeOrderPayloadFingerprint(orderData: any): Promise<string> {
+  const cleanPhone = String(orderData?.customer?.phone || '').replace(/\D/g, '');
+  const cleanEmail = String(orderData?.customer?.email || orderData?.userEmail || '').toLowerCase().trim();
+  const deliveryZone = String(orderData?.customer?.deliveryZone || orderData?.deliveryZone || '').trim().toLowerCase();
+  const paymentMethod = String(orderData?.paymentMethod || '').toLowerCase().trim();
+  const couponCode = String(orderData?.couponCode || '').toUpperCase().trim();
+  const address = String(orderData?.customer?.fullAddress || '').trim().toLowerCase();
+
+  const rawItems = Array.isArray(orderData?.items) ? orderData.items : [];
+  const items = rawItems.map((it: any) => ({
+    p: String(it.product?.id || it.productId || it.id || '').trim(),
+    v: String(it.selectedVariantId || it.variantId || '').trim(),
+    q: Number(it.quantity) || 1,
+  })).sort((a, b) => a.p.localeCompare(b.p) || a.v.localeCompare(b.v));
+
+  const canonicalPayload = JSON.stringify({
+    ph: cleanPhone,
+    em: cleanEmail,
+    dz: deliveryZone,
+    ad: address,
+    pm: paymentMethod,
+    cp: couponCode,
+    it: items,
+  });
+
+  const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonicalPayload));
+  return bufferToHex(hashBuffer);
+}
 
 function cleanupOrderAbuseMaps(): void {
   const now = Date.now();
@@ -4541,6 +4599,15 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       }
 
       // 3. Duplicate & Idempotency Protection: Client-provided idempotency key with persistent D1 storage
+      // Security Hardening: Idempotency is strictly bound to customer identity (user ID or guest phone/email)
+      // and the deterministic SHA-256 fingerprint of the order payload to prevent cross-user token reuse.
+      const customerIdentity = deriveCustomerIdentityScope(
+        orderData.userId,
+        cleanPhone,
+        (orderData.customer?.email || orderData.userEmail || '').toLowerCase().trim()
+      );
+      const payloadFingerprint = await computeOrderPayloadFingerprint(orderData);
+
       const idempotencyKey = (
         request.headers.get('idempotency-key') ||
         request.headers.get('x-idempotency-key') ||
@@ -4550,7 +4617,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       ).trim();
 
       if (idempotencyKey) {
-        // Tier 1: Check persistent Cloudflare D1 storage
+        // Look up cached idempotency record (first persistent D1, then in-memory map)
+        let cachedEntry: { payload: any; createdAt: number } | null = null;
+
         if (env.DB) {
           try {
             const row = await env.DB.prepare(
@@ -4560,10 +4629,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
             if (row && row.response_json) {
               const now = Date.now();
               if (now - row.created_at < 24 * 60 * 60 * 1000) {
-                const cachedPayload = JSON.parse(row.response_json);
-                return jsonResponse(cachedPayload, 200, {
-                  'X-Idempotency-Cache': 'HIT',
-                });
+                cachedEntry = {
+                  payload: JSON.parse(row.response_json),
+                  createdAt: row.created_at,
+                };
               }
             }
           } catch (idemErr) {
@@ -4571,24 +4640,84 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           }
         }
 
-        // Tier 2: Check in-memory map
-        const cached = orderIdempotencyMap.get(idempotencyKey);
-        if (cached && Date.now() - cached.timestamp < 15 * 60 * 1000) {
+        if (!cachedEntry) {
+          const mem = orderIdempotencyMap.get(idempotencyKey);
+          if (mem && Date.now() - mem.timestamp < 15 * 60 * 1000) {
+            cachedEntry = {
+              payload: mem.payload,
+              createdAt: mem.timestamp,
+            };
+          }
+        }
+
+        if (cachedEntry) {
+          const cachedPayload = cachedEntry.payload;
+          const meta = cachedPayload?._meta;
+
+          // Security Verification 1: Identity Binding Check
+          // An idempotency key MUST NOT be reused across different users or guest sessions.
+          if (meta?.ownerIdentity && meta.ownerIdentity !== customerIdentity) {
+            await rollbackOrderRateLimit(clientIp, env.DB);
+            return jsonResponse(
+              {
+                success: false,
+                error: 'Idempotency key has already been used by a different customer session.',
+                code: 'IDEMPOTENCY_IDENTITY_MISMATCH',
+              },
+              409
+            );
+          } else if (!meta?.ownerIdentity && cachedPayload?.order) {
+            // Backward compatibility with legacy cached records:
+            const cachedUserId = cachedPayload.order.userId;
+            const cachedPhone = (cachedPayload.order.customer?.phone || '').replace(/\D/g, '');
+            if (orderData.userId && cachedUserId && orderData.userId !== cachedUserId) {
+              await rollbackOrderRateLimit(clientIp, env.DB);
+              return jsonResponse(
+                { success: false, error: 'Idempotency key has already been used by a different customer session.', code: 'IDEMPOTENCY_IDENTITY_MISMATCH' },
+                409
+              );
+            }
+            if (cleanPhone && cachedPhone && cleanPhone !== cachedPhone) {
+              await rollbackOrderRateLimit(clientIp, env.DB);
+              return jsonResponse(
+                { success: false, error: 'Idempotency key has already been used by a different contact phone.', code: 'IDEMPOTENCY_IDENTITY_MISMATCH' },
+                409
+              );
+            }
+          }
+
+          // Security Verification 2: Request Payload Fingerprint Check
+          // An idempotency key cannot be replayed with mutated order parameters.
+          if (meta?.payloadFingerprint && meta.payloadFingerprint !== payloadFingerprint) {
+            await rollbackOrderRateLimit(clientIp, env.DB);
+            return jsonResponse(
+              {
+                success: false,
+                error: 'Idempotency key was previously used with different order parameters.',
+                code: 'IDEMPOTENCY_PAYLOAD_MISMATCH',
+              },
+              409
+            );
+          }
+
+          // Valid Idempotent Replay Match: Rollback consumed rate limit and return cached response
+          await rollbackOrderRateLimit(clientIp, env.DB);
+          const sanitizedOrder = sanitizeOrderForRole(cachedPayload.order, false);
           return jsonResponse(
             {
               success: true,
-              message: `Order #${cached.order.orderNumber} successfully retrieved (idempotent request).`,
-              order: sanitizeOrderForRole(cached.order, false),
+              message: `Order #${cachedPayload.order?.orderNumber || ''} successfully retrieved (idempotent request).`,
+              order: sanitizedOrder,
               idempotent: true,
             },
-            200
+            200,
+            { 'X-Idempotency-Cache': 'HIT' }
           );
         }
       }
 
       // 4. Duplicate Click Protection: Rapid double-click within 15 seconds from same phone & IP
-      const itemsCount = Array.isArray(orderData.items) ? orderData.items.length : 0;
-      const doubleClickFingerprint = `${clientIp}:${cleanPhone}:${itemsCount}`;
+      const doubleClickFingerprint = `${clientIp}:${cleanPhone}:${payloadFingerprint.slice(0, 16)}`;
       const recent = orderRecentSubmissionMap.get(doubleClickFingerprint);
       if (recent && Date.now() - recent.timestamp < 15000) {
         return jsonResponse(
@@ -4610,15 +4739,26 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
       // Cache for idempotency & rapid duplicate avoidance (both persistent D1 and memory)
       if (idempotencyKey) {
-        orderIdempotencyMap.set(idempotencyKey, { order: saved, timestamp: Date.now() });
+        const idempotentPayload = {
+          success: true,
+          message: `Order #${saved.orderNumber} successfully retrieved (idempotent request).`,
+          order: sanitizeOrderForRole(saved, false),
+          idempotent: true,
+          _meta: {
+            ownerIdentity: customerIdentity,
+            payloadFingerprint: payloadFingerprint,
+            createdAt: Date.now(),
+          },
+        };
+
+        orderIdempotencyMap.set(idempotencyKey, {
+          order: saved,
+          payload: idempotentPayload,
+          timestamp: Date.now(),
+        });
+
         if (env.DB) {
           try {
-            const idempotentPayload = {
-              success: true,
-              message: `Order #${saved.orderNumber} successfully retrieved (idempotent request).`,
-              order: sanitizeOrderForRole(saved, false),
-              idempotent: true,
-            };
             await env.DB.prepare(`
               INSERT INTO order_idempotency (key, order_id, order_number, response_json, created_at)
               VALUES (?, ?, ?, ?, ?)
