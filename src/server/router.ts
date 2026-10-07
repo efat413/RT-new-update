@@ -4428,25 +4428,65 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       }
 
       // Authoritative Identity Determination:
-      // If user is authenticated, derive userId & userEmail authoritatively from verified token.
-      // If user is guest/unauthenticated, strip client-supplied userId and userEmail to prevent account impersonation.
+      // Supports BOTH HttpOnly cookie ('auth_token') and 'Authorization: Bearer <token>' headers
+      // by reusing existing authentication utilities (extractTokenFromRequest, requireAuth, verifyAuthToken).
+      // If a valid authenticated session exists:
+      //   - Authoritatively attach verified userId and userEmail to the order payload
+      //   - Synchronize customer delivery information with the verified user's identity
+      // If unauthenticated (guest checkout) or session token is invalid/expired:
+      //   - Preserve existing guest checkout functionality seamlessly
+      //   - Strip client-supplied userId to prevent account impersonation
       verifiedTokenUser = null;
-      const authHeader = request.headers.get('Authorization') || '';
-      if (authHeader.startsWith('Bearer ')) {
-        const token = authHeader.slice(7).trim();
+      let authenticatedDbUser: any = null;
+
+      const token = extractTokenFromRequest(request);
+      if (token) {
         try {
-          const secret = await resolveAuthSecret(env);
-          verifiedTokenUser = await verifyAuthToken(token, secret, env);
-        } catch {}
+          // Re-use existing requireAuth helper (checks token, DB existence, password signature, and active status)
+          const authRes = await requireAuth(request, env);
+          if (!authRes.errorResponse && authRes.auth) {
+            authenticatedDbUser = authRes.auth.dbUser;
+            verifiedTokenUser = authRes.auth.tokenUser;
+          } else {
+            // Fallback token verification using resolveAuthSecret & verifyAuthToken
+            // (e.g. for valid JWTs when D1 user lookup is transiently bypassed or in testing)
+            const secret = await resolveAuthSecret(env);
+            const fallbackTokenUser = await verifyAuthToken(token, secret, env);
+            if (fallbackTokenUser) {
+              verifiedTokenUser = fallbackTokenUser;
+            }
+          }
+        } catch {
+          // If token verification encounters an error, safely treat as unauthenticated guest checkout
+        }
       }
 
       if (verifiedTokenUser) {
-        orderData.userId = verifiedTokenUser.userId;
-        orderData.userEmail = verifiedTokenUser.email;
+        const resolvedUserId = (authenticatedDbUser?.id || verifiedTokenUser.userId || '').trim();
+        const resolvedUserEmail = (authenticatedDbUser?.email || verifiedTokenUser.email || '').trim().toLowerCase();
+
+        orderData.userId = resolvedUserId || undefined;
+        orderData.userEmail = resolvedUserEmail || undefined;
+
+        if (orderData.customer) {
+          orderData.customer.userId = resolvedUserId || undefined;
+          if (resolvedUserEmail) {
+            orderData.customer.email = resolvedUserEmail;
+          }
+          if (!orderData.customer.fullName && authenticatedDbUser?.name) {
+            orderData.customer.fullName = authenticatedDbUser.name;
+          }
+          if (!orderData.customer.phone && authenticatedDbUser?.phone) {
+            orderData.customer.phone = authenticatedDbUser.phone;
+          }
+        }
       } else {
-        // Guest checkout
+        // Guest checkout: preserve delivery info but strip client-supplied userId to prevent impersonation
         orderData.userId = undefined;
         orderData.userEmail = undefined;
+        if (orderData.customer) {
+          orderData.customer.userId = undefined;
+        }
       }
 
       if (!orderData.customer?.fullName || !orderData.customer?.phone || !orderData.customer?.fullAddress) {

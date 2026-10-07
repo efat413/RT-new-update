@@ -3912,6 +3912,33 @@ function localApiDevPlugin(): Plugin {
               const freshOrderId = `ord-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
               const freshOrderNum = `RT-${new Date().getFullYear()}-${10000000 + Math.floor(Math.random() * 90000000)}`;
 
+              // Authoritative Identity Determination (dev server):
+              // Support BOTH HttpOnly cookie ('auth_token') and 'Authorization: Bearer <token>' via requireDevAuth
+              const devAuth = requireDevAuth(req);
+              let devUserId: string | undefined = undefined;
+              let devUserEmail: string | undefined = undefined;
+              let devUserObj: any = null;
+
+              if (!devAuth.error && devAuth.auth?.user) {
+                devUserObj = devAuth.auth.user;
+                devUserId = String(devUserObj.id || '').trim() || undefined;
+                devUserEmail = String(devUserObj.email || '').trim().toLowerCase() || undefined;
+              }
+
+              const orderCustomer = { ...(rawOrder.customer || {}) };
+              if (devUserId && devUserEmail) {
+                orderCustomer.userId = devUserId;
+                orderCustomer.email = devUserEmail;
+                if (!orderCustomer.fullName && devUserObj?.name) {
+                  orderCustomer.fullName = devUserObj.name;
+                }
+                if (!orderCustomer.phone && devUserObj?.phone) {
+                  orderCustomer.phone = devUserObj.phone;
+                }
+              } else {
+                orderCustomer.userId = undefined;
+              }
+
               // Force initial payment & shipping status: prevent client spoofing
               const paymentMethod = rawOrder.paymentMethod === 'dbbl' ? 'dbbl' : 'COD';
               const paymentStatus = paymentMethod === 'dbbl' ? 'Unverified' : 'Pending';
@@ -3919,6 +3946,9 @@ function localApiDevPlugin(): Plugin {
 
               const order = {
                 ...rawOrder,
+                userId: devUserId,
+                userEmail: devUserEmail,
+                customer: orderCustomer,
                 id: freshOrderId,
                 orderNumber: freshOrderNum,
                 items: verifiedItems,

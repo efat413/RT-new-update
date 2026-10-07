@@ -2849,6 +2849,8 @@ export function rowToOrder(row: OrderRow): Order {
       district: row.customer_district || '',
       deliveryZone: (row.customer_zone as any) || 'inside_dhaka',
       notes: row.customer_notes || undefined,
+      email: row.user_email || undefined,
+      userId: row.user_id || undefined,
     },
     items,
     subtotal: Number(row.subtotal) || 0,
