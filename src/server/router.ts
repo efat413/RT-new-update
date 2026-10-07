@@ -2649,8 +2649,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           };
         }
 
-        const cacheControl = isPrivileged
-          ? 'no-store, no-cache, must-revalidate, max-age=0'
+        const cacheControl = (isPrivileged || includeInactive)
+          ? 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0, private'
           : (search ? 'public, max-age=15, s-maxage=30, stale-while-revalidate=15' : 'public, max-age=30, s-maxage=60, stale-while-revalidate=30');
 
         return jsonResponse(responsePayload, 200, {
@@ -2790,7 +2790,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         if (!product) return jsonResponse({ success: false, error: 'Product not found' }, 404);
 
         // Inactive / deleted products protection:
-        const isInactive = product.status !== 'active' || Boolean((product as any).isDeleted);
+        const isInactive = Boolean(
+          (product.status && product.status !== 'active' && (product.status as string) !== 'published') ||
+          (product as any).isDeleted
+        );
         if (isInactive) {
           // Public customers and unauthenticated users must never discover or view inactive products
           if (!user || user.role === 'customer') {
@@ -2810,8 +2813,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
         const safeProduct = sanitizeProductForRole(product, { isSuperAdmin, canViewBuyingPrice, canViewProfit });
 
-        const cacheControl = hasProductView
-          ? 'no-store, no-cache, must-revalidate, max-age=0'
+        const cacheControl = (hasProductView || isInactive)
+          ? 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0, private'
           : 'public, max-age=15, s-maxage=45, stale-while-revalidate=30';
 
         return jsonResponse({ success: true, product: safeProduct }, 200, {

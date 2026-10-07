@@ -2471,7 +2471,7 @@ function localApiDevPlugin(): Plugin {
 
             let list = [...devProducts];
             if (!includeInactive) {
-              list = list.filter((p) => p.status !== 'inactive' && !p.isDeleted);
+              list = list.filter((p) => !p.isDeleted && (p.status === 'active' || p.status === 'published' || !p.status));
             }
             if (cat && cat !== 'all') {
               const targetCategory = devCategories.find((c) => c.id === cat || c.slug === cat);
@@ -2535,8 +2535,8 @@ function localApiDevPlugin(): Plugin {
             }
 
             const sanitized = pagedList.map((p) => sanitizeDevProduct(p, { isSuperAdmin, canViewBuyingPrice, canViewProfit }));
-            const cacheControl = isPrivileged
-              ? 'no-store, no-cache, must-revalidate, max-age=0'
+            const cacheControl = (isPrivileged || includeInactive)
+              ? 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0, private'
               : (search ? 'public, max-age=15, s-maxage=30, stale-while-revalidate=15' : 'public, max-age=30, s-maxage=60, stale-while-revalidate=30');
             res.setHeader('Cache-Control', cacheControl);
             res.setHeader('Vary', 'Origin, Cookie, Authorization, Accept-Encoding');
@@ -2696,7 +2696,10 @@ function localApiDevPlugin(): Plugin {
             }
 
             // Inactive product protection:
-            const isInactive = found.status === 'inactive' || Boolean((found as any).isDeleted);
+            const isInactive = Boolean(
+              (found.status && found.status !== 'active' && found.status !== 'published') ||
+              (found as any).isDeleted
+            );
             if (isInactive) {
               if (!auth || auth.role === 'customer') {
                 res.statusCode = 404;
@@ -2713,8 +2716,8 @@ function localApiDevPlugin(): Plugin {
               }
             }
 
-            const singleCacheControl = hasProductView
-              ? 'no-store, no-cache, must-revalidate, max-age=0'
+            const singleCacheControl = (hasProductView || isInactive)
+              ? 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0, private'
               : 'public, max-age=15, s-maxage=45, stale-while-revalidate=30';
             res.setHeader('Cache-Control', singleCacheControl);
             res.setHeader('Vary', 'Origin, Cookie, Authorization, Accept-Encoding');

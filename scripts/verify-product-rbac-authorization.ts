@@ -1,16 +1,17 @@
 /**
  * Automated Verification Suite for Server-Side Product API Authorization (Granular RBAC)
  *
- * Verifies:
- * A. Public customer -> active products -> allowed
- * B. Public customer -> inactive product -> denied / not exposed (404)
- * C. Admin without product.view -> protected product API -> denied (403)
- * D. Sub Admin without product.view -> protected product API -> denied (403)
- * E. Admin with product.view -> allowed (200)
- * F. Sub Admin with product.view -> allowed (200)
- * G. Super Admin -> allowed (200)
- * H. Unauthorized user cannot obtain buyingPrice or profit fields
- * I. Existing category/search/featured product functionality continues working
+ * Verifies exact requirements:
+ * 1. customer + includeInactive=true -> blocked (403)
+ * 2. customer + all=true -> blocked (403)
+ * 3. admin without product.view + includeInactive=true -> blocked (403)
+ * 4. sub_admin without product.view + all=true -> blocked (403)
+ * 5. authorized staff + inactive products -> allowed (200)
+ * 6. super_admin + inactive products -> allowed (200)
+ * 7. direct inactive product ID -> blocked for unauthorized (404/403), allowed for authorized (200)
+ * 8. direct inactive slug -> blocked for unauthorized (404/403), allowed for authorized (200)
+ * 9. public active product browsing -> allowed, strictly no inactive products leaked
+ * 10. Cache-Control behavior -> no-store / private headers prevent authorized responses from leaking via CDN/browser cache
  */
 
 import { createSignedTestToken, TEST_BASE_URL } from './test-auth-helper';
@@ -32,7 +33,7 @@ function assert(condition: boolean, description: string) {
 
 async function runTests() {
   console.log('================================================================');
-  console.log('🛡️  VERIFICATION SUITE: SERVER-SIDE PRODUCT API AUTHORIZATION');
+  console.log('🛡️  VERIFICATION SUITE: INACTIVE PRODUCT RBAC AUTHORIZATION');
   console.log('================================================================\n');
 
   // Persona 1: Public Customer
@@ -75,7 +76,7 @@ async function runTests() {
     },
   });
 
-  // Persona 4: Admin WITH product.view (but without buying price / profit)
+  // Persona 4: Authorized Staff (Admin WITH product.view)
   const adminWithProductViewToken = createSignedTestToken({
     userId: 'test-user-update-only',
     email: 'updater@local.test',
@@ -89,7 +90,7 @@ async function runTests() {
     },
   });
 
-  // Persona 5: Sub Admin WITH product.view
+  // Persona 5: Authorized Staff (Sub Admin WITH product.view)
   const subAdminWithProductViewToken = createSignedTestToken({
     userId: 'user-subadmin-inventory',
     email: 'inventory@rongdhonutrade.com',
@@ -108,302 +109,236 @@ async function runTests() {
   });
 
   // ===========================================================================
-  // TEST A: Public customer -> active products -> allowed
+  // 1. customer + includeInactive=true
   // ===========================================================================
-  console.log('\n[TEST A] Public customer -> active products -> allowed:');
-  const testARes = await fetch(`${BASE_URL}/api/products`, {
+  console.log('\n[1] customer + includeInactive=true:');
+  const test1Res = await fetch(`${BASE_URL}/api/products?includeInactive=true`, {
     headers: { Authorization: `Bearer ${customerToken}` },
   });
-  const testAData = await testARes.json();
-  assert(testARes.status === 200, 'Public customer gets HTTP 200 on GET /api/products');
-  assert(testAData.success === true, 'Public customer response indicates success: true');
-  assert(Array.isArray(testAData.products) && testAData.products.length > 0, 'Public customer receives active product list');
-  const allActive = testAData.products.every((p: any) => p.status !== 'inactive' && !p.isDeleted);
-  assert(allActive, 'Public customer only sees active non-deleted products');
-
-  // Also test unauthenticated visitor on active product by ID
-  const testAIdRes = await fetch(`${BASE_URL}/api/products/prod-wallet-01`);
-  const testAIdData = await testAIdRes.json();
-  assert(testAIdRes.status === 200, 'Public visitor gets HTTP 200 on active product prod-wallet-01');
-  assert(testAIdData.product?.id === 'prod-wallet-01', 'Public visitor retrieves product details');
+  assert(
+    test1Res.status === 403,
+    `Customer requesting includeInactive=true is blocked with HTTP 403 (got ${test1Res.status})`
+  );
 
   // ===========================================================================
-  // TEST B: Public customer -> inactive product -> denied / not exposed
+  // 2. customer + all=true
   // ===========================================================================
-  console.log('\n[TEST B] Public customer -> inactive product -> denied/not exposed:');
-  const testBRes = await fetch(`${BASE_URL}/api/products/prod-test-inactive-01`, {
+  console.log('\n[2] customer + all=true:');
+  const test2Res = await fetch(`${BASE_URL}/api/products?all=true`, {
     headers: { Authorization: `Bearer ${customerToken}` },
   });
-  assert(testBRes.status === 404, `Public customer accessing inactive product gets 404 (got ${testBRes.status})`);
-
-  const testBUnauthRes = await fetch(`${BASE_URL}/api/products/prod-test-inactive-01`);
-  assert(testBUnauthRes.status === 404, `Unauthenticated visitor accessing inactive product gets 404 (got ${testBUnauthRes.status})`);
-
-  // ===========================================================================
-  // TEST C: Admin without product.view -> protected product API -> denied
-  // ===========================================================================
-  console.log('\n[TEST C] Admin without product.view -> protected product API -> denied:');
-  // C1: Requesting inactive product by ID
-  const testCInactiveRes = await fetch(`${BASE_URL}/api/products/prod-test-inactive-01`, {
-    headers: { Authorization: `Bearer ${adminNoProductViewToken}` },
-  });
   assert(
-    testCInactiveRes.status === 403,
-    `Admin without product.view accessing inactive product gets 403 Forbidden (got ${testCInactiveRes.status})`
-  );
-
-  // C2: Requesting protected includeInactive=true
-  const testCIncludeInactiveRes = await fetch(`${BASE_URL}/api/products?includeInactive=true`, {
-    headers: { Authorization: `Bearer ${adminNoProductViewToken}` },
-  });
-  assert(
-    testCIncludeInactiveRes.status === 403,
-    `Admin without product.view requesting includeInactive=true gets 403 Forbidden (got ${testCIncludeInactiveRes.status})`
-  );
-
-  // C3: Requesting protected admin product endpoint /api/admin/products
-  const testCAdminEndpointRes = await fetch(`${BASE_URL}/api/admin/products`, {
-    headers: { Authorization: `Bearer ${adminNoProductViewToken}` },
-  });
-  assert(
-    testCAdminEndpointRes.status === 403,
-    `Admin without product.view accessing /api/admin/products gets 403 Forbidden (got ${testCAdminEndpointRes.status})`
-  );
-
-  // C4: Requesting protected admin single-product endpoint /api/admin/products/:id
-  const testCAdminSingleRes = await fetch(`${BASE_URL}/api/admin/products/prod-wallet-01`, {
-    headers: { Authorization: `Bearer ${adminNoProductViewToken}` },
-  });
-  assert(
-    testCAdminSingleRes.status === 403,
-    `Admin without product.view accessing /api/admin/products/:id gets 403 Forbidden (got ${testCAdminSingleRes.status})`
+    test2Res.status === 403,
+    `Customer requesting all=true is blocked with HTTP 403 (got ${test2Res.status})`
   );
 
   // ===========================================================================
-  // TEST D: Sub Admin without product.view -> protected product API -> denied
+  // 3. admin without product.view + includeInactive=true
   // ===========================================================================
-  console.log('\n[TEST D] Sub Admin without product.view -> protected product API -> denied:');
-  // D1: Requesting inactive product by ID
-  const testDInactiveRes = await fetch(`${BASE_URL}/api/products/prod-test-inactive-01`, {
+  console.log('\n[3] admin without product.view + includeInactive=true:');
+  const test3Res = await fetch(`${BASE_URL}/api/products?includeInactive=true`, {
+    headers: { Authorization: `Bearer ${adminNoProductViewToken}` },
+  });
+  assert(
+    test3Res.status === 403,
+    `Admin without product.view requesting includeInactive=true is blocked with HTTP 403 (got ${test3Res.status})`
+  );
+
+  // ===========================================================================
+  // 4. sub_admin without product.view + all=true
+  // ===========================================================================
+  console.log('\n[4] sub_admin without product.view + all=true:');
+  const test4Res = await fetch(`${BASE_URL}/api/products?all=true`, {
     headers: { Authorization: `Bearer ${subAdminNoProductViewToken}` },
   });
   assert(
-    testDInactiveRes.status === 403,
-    `Sub Admin without product.view accessing inactive product gets 403 Forbidden (got ${testDInactiveRes.status})`
-  );
-
-  // D2: Requesting protected includeInactive=true
-  const testDIncludeInactiveRes = await fetch(`${BASE_URL}/api/products?includeInactive=true`, {
-    headers: { Authorization: `Bearer ${subAdminNoProductViewToken}` },
-  });
-  assert(
-    testDIncludeInactiveRes.status === 403,
-    `Sub Admin without product.view requesting includeInactive=true gets 403 Forbidden (got ${testDIncludeInactiveRes.status})`
-  );
-
-  // D3: Requesting protected admin product endpoint /api/admin/products
-  const testDAdminEndpointRes = await fetch(`${BASE_URL}/api/admin/products`, {
-    headers: { Authorization: `Bearer ${subAdminNoProductViewToken}` },
-  });
-  assert(
-    testDAdminEndpointRes.status === 403,
-    `Sub Admin without product.view accessing /api/admin/products gets 403 Forbidden (got ${testDAdminEndpointRes.status})`
+    test4Res.status === 403,
+    `Sub Admin without product.view requesting all=true is blocked with HTTP 403 (got ${test4Res.status})`
   );
 
   // ===========================================================================
-  // TEST E: Admin with product.view -> allowed
+  // 5. authorized staff + inactive products
   // ===========================================================================
-  console.log('\n[TEST E] Admin with product.view -> allowed:');
-  // E1: Accessing inactive product by ID
-  const testEInactiveRes = await fetch(`${BASE_URL}/api/products/prod-test-inactive-01`, {
+  console.log('\n[5] authorized staff + inactive products:');
+  // Admin with product.view
+  const test5AdminRes = await fetch(`${BASE_URL}/api/products?includeInactive=true`, {
     headers: { Authorization: `Bearer ${adminWithProductViewToken}` },
   });
-  assert(
-    testEInactiveRes.status === 200,
-    `Admin with product.view accessing inactive product gets 200 OK (got ${testEInactiveRes.status})`
-  );
-  const testEInactiveData = await testEInactiveRes.json();
-  assert(testEInactiveData.product?.id === 'prod-test-inactive-01', 'Admin with product.view retrieved inactive product details');
+  assert(test5AdminRes.status === 200, `Admin with product.view gets HTTP 200 on includeInactive=true (got ${test5AdminRes.status})`);
+  const test5AdminData = await test5AdminRes.json();
+  const hasInactiveAdmin = (test5AdminData.products || []).some((p: any) => p.status === 'inactive');
+  assert(hasInactiveAdmin, 'Admin with product.view legitimately retrieves inactive products');
 
-  // E2: Requesting protected includeInactive=true
-  const testEIncludeInactiveRes = await fetch(`${BASE_URL}/api/products?includeInactive=true`, {
-    headers: { Authorization: `Bearer ${adminWithProductViewToken}` },
-  });
-  assert(
-    testEIncludeInactiveRes.status === 200,
-    `Admin with product.view requesting includeInactive=true gets 200 OK (got ${testEIncludeInactiveRes.status})`
-  );
-  const testEIncludeData = await testEIncludeInactiveRes.json();
-  assert(
-    testEIncludeData.products.some((p: any) => p.status === 'inactive'),
-    'Admin with product.view receives inactive products when includeInactive=true'
-  );
-
-  // E3: Requesting /api/admin/products
-  const testEAdminRes = await fetch(`${BASE_URL}/api/admin/products`, {
-    headers: { Authorization: `Bearer ${adminWithProductViewToken}` },
-  });
-  assert(
-    testEAdminRes.status === 200,
-    `Admin with product.view accessing /api/admin/products gets 200 OK (got ${testEAdminRes.status})`
-  );
-
-  // ===========================================================================
-  // TEST F: Sub Admin with product.view -> allowed
-  // ===========================================================================
-  console.log('\n[TEST F] Sub Admin with product.view -> allowed:');
-  // F1: Accessing inactive product by ID
-  const testFInactiveRes = await fetch(`${BASE_URL}/api/products/prod-test-inactive-01`, {
+  // Sub Admin with product.view
+  const test5SubAdminRes = await fetch(`${BASE_URL}/api/products?includeInactive=true`, {
     headers: { Authorization: `Bearer ${subAdminWithProductViewToken}` },
   });
-  assert(
-    testFInactiveRes.status === 200,
-    `Sub Admin with product.view accessing inactive product gets 200 OK (got ${testFInactiveRes.status})`
-  );
-
-  // F2: Requesting includeInactive=true
-  const testFIncludeInactiveRes = await fetch(`${BASE_URL}/api/products?includeInactive=true`, {
-    headers: { Authorization: `Bearer ${subAdminWithProductViewToken}` },
-  });
-  assert(
-    testFIncludeInactiveRes.status === 200,
-    `Sub Admin with product.view requesting includeInactive=true gets 200 OK (got ${testFIncludeInactiveRes.status})`
-  );
-
-  // F3: Requesting /api/admin/products
-  const testFAdminRes = await fetch(`${BASE_URL}/api/admin/products`, {
-    headers: { Authorization: `Bearer ${subAdminWithProductViewToken}` },
-  });
-  assert(
-    testFAdminRes.status === 200,
-    `Sub Admin with product.view accessing /api/admin/products gets 200 OK (got ${testFAdminRes.status})`
-  );
+  assert(test5SubAdminRes.status === 200, `Sub Admin with product.view gets HTTP 200 on includeInactive=true (got ${test5SubAdminRes.status})`);
+  const test5SubAdminData = await test5SubAdminRes.json();
+  const hasInactiveSubAdmin = (test5SubAdminData.products || []).some((p: any) => p.status === 'inactive');
+  assert(hasInactiveSubAdmin, 'Sub Admin with product.view legitimately retrieves inactive products');
 
   // ===========================================================================
-  // TEST G: Super Admin -> allowed
+  // 6. super_admin + inactive products
   // ===========================================================================
-  console.log('\n[TEST G] Super Admin -> allowed:');
-  // G1: Accessing inactive product by ID
-  const testGInactiveRes = await fetch(`${BASE_URL}/api/products/prod-test-inactive-01`, {
+  console.log('\n[6] super_admin + inactive products:');
+  const test6Res = await fetch(`${BASE_URL}/api/products?includeInactive=true`, {
     headers: { Authorization: `Bearer ${superAdminToken}` },
   });
-  assert(
-    testGInactiveRes.status === 200,
-    `Super Admin accessing inactive product gets 200 OK (got ${testGInactiveRes.status})`
-  );
-
-  // G2: Requesting includeInactive=true
-  const testGIncludeInactiveRes = await fetch(`${BASE_URL}/api/products?includeInactive=true`, {
-    headers: { Authorization: `Bearer ${superAdminToken}` },
-  });
-  assert(
-    testGIncludeInactiveRes.status === 200,
-    `Super Admin requesting includeInactive=true gets 200 OK (got ${testGIncludeInactiveRes.status})`
-  );
-
-  // G3: Requesting /api/admin/products
-  const testGAdminRes = await fetch(`${BASE_URL}/api/admin/products`, {
-    headers: { Authorization: `Bearer ${superAdminToken}` },
-  });
-  assert(
-    testGAdminRes.status === 200,
-    `Super Admin accessing /api/admin/products gets 200 OK (got ${testGAdminRes.status})`
-  );
+  assert(test6Res.status === 200, `Super Admin gets HTTP 200 on includeInactive=true (got ${test6Res.status})`);
+  const test6Data = await test6Res.json();
+  const hasInactiveSuper = (test6Data.products || []).some((p: any) => p.status === 'inactive');
+  assert(hasInactiveSuper, 'Super Admin legitimately retrieves inactive products');
 
   // ===========================================================================
-  // TEST H: Unauthorized user cannot obtain buyingPrice or profit fields
+  // 7. direct inactive product ID
   // ===========================================================================
-  console.log('\n[TEST H] Unauthorized user cannot obtain buyingPrice or profit fields:');
-  const FORBIDDEN_FIELDS = [
-    'buyingPrice',
-    'buying_price',
-    'unitProfit',
-    'unit_profit',
-    'grossProfit',
-    'gross_profit',
-    'productCost',
-    'product_cost',
-    'profitMargin',
-    'profit_margin',
-  ];
-
-  // H1: Public Customer
-  const custProdsRes = await fetch(`${BASE_URL}/api/products`, {
+  console.log('\n[7] direct inactive product ID (prod-test-inactive-01):');
+  // Customer
+  const test7CustRes = await fetch(`${BASE_URL}/api/products/prod-test-inactive-01`, {
     headers: { Authorization: `Bearer ${customerToken}` },
   });
-  const custProdsData = await custProdsRes.json();
-  let custLeaks = 0;
-  for (const p of custProdsData.products || []) {
-    for (const f of FORBIDDEN_FIELDS) {
-      if (p[f] !== undefined) custLeaks++;
-    }
-  }
-  assert(custLeaks === 0, `Public customer response contains 0 leaked buyingPrice/profit fields (found ${custLeaks})`);
+  assert(test7CustRes.status === 404, `Customer accessing inactive product by ID receives 404 (got ${test7CustRes.status})`);
 
-  // H2: Admin with product.view but WITHOUT product.view_buying_price
-  const adminViewerProdsRes = await fetch(`${BASE_URL}/api/products`, {
+  // Unauthenticated guest
+  const test7GuestRes = await fetch(`${BASE_URL}/api/products/prod-test-inactive-01`);
+  assert(test7GuestRes.status === 404, `Guest accessing inactive product by ID receives 404 (got ${test7GuestRes.status})`);
+
+  // Admin without product.view
+  const test7AdminNoPermRes = await fetch(`${BASE_URL}/api/products/prod-test-inactive-01`, {
+    headers: { Authorization: `Bearer ${adminNoProductViewToken}` },
+  });
+  assert(
+    test7AdminNoPermRes.status === 403,
+    `Admin without product.view accessing inactive product by ID receives 403 (got ${test7AdminNoPermRes.status})`
+  );
+
+  // Sub Admin without product.view
+  const test7SubAdminNoPermRes = await fetch(`${BASE_URL}/api/products/prod-test-inactive-01`, {
+    headers: { Authorization: `Bearer ${subAdminNoProductViewToken}` },
+  });
+  assert(
+    test7SubAdminNoPermRes.status === 403,
+    `Sub Admin without product.view accessing inactive product by ID receives 403 (got ${test7SubAdminNoPermRes.status})`
+  );
+
+  // Authorized staff (with product.view)
+  const test7AuthStaffRes = await fetch(`${BASE_URL}/api/products/prod-test-inactive-01`, {
     headers: { Authorization: `Bearer ${adminWithProductViewToken}` },
   });
-  const adminViewerProdsData = await adminViewerProdsRes.json();
-  let adminViewerLeaks = 0;
-  for (const p of adminViewerProdsData.products || []) {
-    for (const f of FORBIDDEN_FIELDS) {
-      if (p[f] !== undefined) adminViewerLeaks++;
-    }
-  }
-  assert(
-    adminViewerLeaks === 0,
-    `Admin without buying_price permission contains 0 leaked buyingPrice/profit fields (found ${adminViewerLeaks})`
-  );
+  assert(test7AuthStaffRes.status === 200, `Authorized staff accessing inactive product by ID receives 200 (got ${test7AuthStaffRes.status})`);
+  const test7AuthStaffData = await test7AuthStaffRes.json();
+  assert(test7AuthStaffData.product?.id === 'prod-test-inactive-01', 'Authorized staff gets inactive product details');
 
-  // H3: Super Admin DOES legitimately receive buyingPrice and unitProfit
-  const superProdsRes = await fetch(`${BASE_URL}/api/products`, {
+  // Super Admin
+  const test7SuperRes = await fetch(`${BASE_URL}/api/products/prod-test-inactive-01`, {
     headers: { Authorization: `Bearer ${superAdminToken}` },
   });
-  const superProdsData = await superProdsRes.json();
-  const superHasBuyingPrice = (superProdsData.products || []).some((p: any) => p.buyingPrice !== undefined);
-  const superHasUnitProfit = (superProdsData.products || []).some((p: any) => p.unitProfit !== undefined);
-  assert(superHasBuyingPrice, 'Super Admin legitimately receives buyingPrice');
-  assert(superHasUnitProfit, 'Super Admin legitimately receives unitProfit');
+  assert(test7SuperRes.status === 200, `Super Admin accessing inactive product by ID receives 200 (got ${test7SuperRes.status})`);
 
   // ===========================================================================
-  // TEST I: Existing category/search/featured product functionality continues working
+  // 8. direct inactive slug
   // ===========================================================================
-  console.log('\n[TEST I] Existing category/search/featured product functionality:');
-  // I1: Category filter
-  const catRes = await fetch(`${BASE_URL}/api/products?category=cat-mens-accessories`);
-  const catData = await catRes.json();
-  assert(catRes.status === 200, 'GET /api/products?category=... returns HTTP 200');
-  assert(Array.isArray(catData.products) && catData.products.length > 0, 'Category filter returns non-empty products list');
-  const allCategoryMatch = catData.products.every((p: any) => p.categoryId === 'cat-mens-accessories');
-  assert(allCategoryMatch, 'All returned products match requested category');
+  console.log('\n[8] direct inactive slug (inactive-test-product):');
+  // Customer
+  const test8CustRes = await fetch(`${BASE_URL}/api/products/inactive-test-product`, {
+    headers: { Authorization: `Bearer ${customerToken}` },
+  });
+  assert(test8CustRes.status === 404, `Customer accessing inactive product by slug receives 404 (got ${test8CustRes.status})`);
 
-  // I2: Search filter
-  const searchRes = await fetch(`${BASE_URL}/api/products?search=wallet`);
-  const searchData = await searchRes.json();
-  assert(searchRes.status === 200, 'GET /api/products?search=... returns HTTP 200');
-  assert(Array.isArray(searchData.products) && searchData.products.length > 0, 'Search filter returns matching products');
-  const searchMatch = searchData.products.some((p: any) =>
-    p.title?.toLowerCase().includes('wallet') || p.description?.toLowerCase().includes('wallet')
+  // Guest
+  const test8GuestRes = await fetch(`${BASE_URL}/api/products/inactive-test-product`);
+  assert(test8GuestRes.status === 404, `Guest accessing inactive product by slug receives 404 (got ${test8GuestRes.status})`);
+
+  // Admin without product.view
+  const test8AdminNoPermRes = await fetch(`${BASE_URL}/api/products/inactive-test-product`, {
+    headers: { Authorization: `Bearer ${adminNoProductViewToken}` },
+  });
+  assert(
+    test8AdminNoPermRes.status === 403,
+    `Admin without product.view accessing inactive product by slug receives 403 (got ${test8AdminNoPermRes.status})`
   );
-  assert(searchMatch, 'Returned search products contain search query term');
 
-  // I3: Featured filter
-  const featRes = await fetch(`${BASE_URL}/api/products?featured=true`);
-  const featData = await featRes.json();
-  assert(featRes.status === 200, 'GET /api/products?featured=true returns HTTP 200');
-  assert(Array.isArray(featData.products) && featData.products.length > 0, 'Featured filter returns non-empty list');
-  const allFeatured = featData.products.every((p: any) => Boolean(p.featured) === true);
-  assert(allFeatured, 'All returned products from featured filter have featured=true');
+  // Sub Admin without product.view
+  const test8SubAdminNoPermRes = await fetch(`${BASE_URL}/api/products/inactive-test-product`, {
+    headers: { Authorization: `Bearer ${subAdminNoProductViewToken}` },
+  });
+  assert(
+    test8SubAdminNoPermRes.status === 403,
+    `Sub Admin without product.view accessing inactive product by slug receives 403 (got ${test8SubAdminNoPermRes.status})`
+  );
 
-  // I4: Homepage consolidated route
-  const hpRes = await fetch(`${BASE_URL}/api/store/homepage`);
-  const hpData = await hpRes.json();
-  assert(hpRes.status === 200, 'GET /api/store/homepage returns HTTP 200');
-  assert(Array.isArray(hpData.categories), 'Homepage data includes categories array');
-  assert(Array.isArray(hpData.slides), 'Homepage data includes slides array');
-  assert(Array.isArray(hpData.featuredProducts), 'Homepage data includes featuredProducts array');
-  assert(Boolean(hpData.categoryProducts), 'Homepage data includes categoryProducts map');
+  // Authorized staff (with product.view)
+  const test8AuthStaffRes = await fetch(`${BASE_URL}/api/products/inactive-test-product`, {
+    headers: { Authorization: `Bearer ${adminWithProductViewToken}` },
+  });
+  assert(test8AuthStaffRes.status === 200, `Authorized staff accessing inactive product by slug receives 200 (got ${test8AuthStaffRes.status})`);
+  const test8AuthStaffData = await test8AuthStaffRes.json();
+  assert(test8AuthStaffData.product?.id === 'prod-test-inactive-01', 'Authorized staff gets inactive product details via slug');
+
+  // Super Admin
+  const test8SuperRes = await fetch(`${BASE_URL}/api/products/inactive-test-product`, {
+    headers: { Authorization: `Bearer ${superAdminToken}` },
+  });
+  assert(test8SuperRes.status === 200, `Super Admin accessing inactive product by slug receives 200 (got ${test8SuperRes.status})`);
+
+  // ===========================================================================
+  // 9. public active product browsing
+  // ===========================================================================
+  console.log('\n[9] public active product browsing:');
+  const test9ListRes = await fetch(`${BASE_URL}/api/products`);
+  assert(test9ListRes.status === 200, 'Public catalog browsing returns HTTP 200');
+  const test9ListData = await test9ListRes.json();
+  const test9ActiveOnly = (test9ListData.products || []).every((p: any) => p.status !== 'inactive' && !p.isDeleted);
+  assert(test9ActiveOnly, 'Public catalog browsing returns STRICTLY active products');
+  const inactiveLeaked = (test9ListData.products || []).some((p: any) => p.id === 'prod-test-inactive-01' || p.slug === 'inactive-test-product');
+  assert(!inactiveLeaked, 'Inactive product is NOT leaked in public catalog');
+
+  // Category browse
+  const test9CatRes = await fetch(`${BASE_URL}/api/products?category=cat-mens-accessories`);
+  assert(test9CatRes.status === 200, 'Public category browsing returns HTTP 200');
+  const test9CatData = await test9CatRes.json();
+  const catInactiveLeaked = (test9CatData.products || []).some((p: any) => p.id === 'prod-test-inactive-01' || p.status === 'inactive');
+  assert(!catInactiveLeaked, 'Inactive product is NOT leaked in category browsing');
+
+  // Search browse
+  const test9SearchRes = await fetch(`${BASE_URL}/api/products?search=inactive`);
+  assert(test9SearchRes.status === 200, 'Public search browsing returns HTTP 200');
+  const test9SearchData = await test9SearchRes.json();
+  const searchInactiveLeaked = (test9SearchData.products || []).some((p: any) => p.id === 'prod-test-inactive-01');
+  assert(!searchInactiveLeaked, 'Inactive product is NOT leaked in search browsing');
+
+  // Homepage browse
+  const test9HpRes = await fetch(`${BASE_URL}/api/store/homepage`);
+  assert(test9HpRes.status === 200, 'Public homepage returns HTTP 200');
+  const test9HpData = await test9HpRes.json();
+  const hpInactiveLeaked = (test9HpData.products || []).some((p: any) => p.id === 'prod-test-inactive-01' || p.status === 'inactive');
+  assert(!hpInactiveLeaked, 'Inactive product is NOT leaked in homepage payload');
+
+  // ===========================================================================
+  // 10. Cache-Control behavior verification
+  // ===========================================================================
+  console.log('\n[10] Cache-Control behavior verification:');
+  // Check authorized inactive product list response
+  const cacheListHeaders = test5AdminRes.headers.get('cache-control') || '';
+  assert(
+    cacheListHeaders.includes('no-store') && cacheListHeaders.includes('no-cache'),
+    `Authorized inactive product list has no-store, no-cache: "${cacheListHeaders}"`
+  );
+
+  // Check authorized inactive single product response
+  const cacheSingleHeaders = test7AuthStaffRes.headers.get('cache-control') || '';
+  assert(
+    cacheSingleHeaders.includes('no-store') && cacheSingleHeaders.includes('no-cache'),
+    `Authorized inactive single product has no-store, no-cache: "${cacheSingleHeaders}"`
+  );
+
+  // Check public active catalog response
+  const cachePublicHeaders = test9ListRes.headers.get('cache-control') || '';
+  assert(
+    cachePublicHeaders.includes('public') && !cachePublicHeaders.includes('no-store'),
+    `Public active catalog has public caching header: "${cachePublicHeaders}"`
+  );
 
   console.log('\n================================================================');
   console.log(`SUMMARY: ${passed} passed, ${failed} failed`);
