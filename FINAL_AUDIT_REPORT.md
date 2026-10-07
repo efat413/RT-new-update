@@ -1,172 +1,179 @@
-# Final Regression & Security Audit Report: Rongdhonu Trade
+# Final Regression, Verification & Security Audit Report: Rongdhonu Trade
 
-**Audit Date:** 2026-09-30  
-**Environment:** Cloudflare Workers + Cloudflare D1 + React 19 (Vite 6 SPA)  
+**Audit Date:** October 7, 2026  
+**Environment:** Cloudflare Workers + Cloudflare D1 + React 19 (Vite 8 SPA)  
 **Target Application:** Rongdhonu Trade (রঙধনু ট্রেড) Ecommerce Storefront & Admin Portal  
-**Repository Source:** Imported from `efat413/RT-Slide`  
+**Repository Source:** Imported from `efat413/RT-new-update`  
+**Lockfile Status:** `package-lock.json` present (Lockfile v3, generated & verified via `npm ci`)  
 
 ---
 
 ## 1. Executive Summary
 
-A comprehensive, read-only regression, performance, accessibility, SEO, and security audit was conducted on the Rongdhonu Trade codebase. The verification results have been strictly categorized into **PASS**, **PARTIALLY VERIFIED**, **NEEDS LIVE VERIFICATION**, and **NOT RUN** to provide an accurate, fact-based engineering record.
-
-* **TypeScript Compilation:** **PASS** (`npm run lint` / `tsc --noEmit` exited cleanly with 0 errors).
-* **Production Build:** **PASS** (`npm run build` / `vite build` completed successfully, producing 9 lazy-loaded admin tab chunks).
-* **Database Migrations:** Exactly **10 migration files** exist in `migrations/` (`0001_initial_schema.sql` through `0010_homepage_product_indexes.sql`).
-* **Verification Script Repository:** Exactly **30 TypeScript test/verification scripts** exist in `scripts/` (plus 1 screenshot utility script).
-* **Executed Test Suites:** 15 primary automated test suites were directly executed and passed in the current local environment. Secondary/historic scripts remain available in `scripts/` (see verification breakdown below).
+A comprehensive regression, performance, accessibility, SEO, dependency, and security audit was conducted on the Rongdhonu Trade codebase. In strict adherence to honest audit discipline:
+- **No false completeness claims:** No verification item is marked as production-ready PASS based solely on source inspection or local mock testing.
+- **Strict Verification Taxonomy:** Every item is categorized as exactly one of:
+  * **PASS** (Directly executed and passed in the local/test environment)
+  * **FAIL** (Executed and failed, or known vulnerability/defect confirmed)
+  * **PARTIALLY VERIFIED** (Source or structure inspected locally; live runtime behavior partially tested)
+  * **NEEDS LIVE VERIFICATION** (Requires production Cloudflare deployment, live remote D1, real merchant APIs, or production traffic)
+  * **NOT RUN** (Script or check was not executed during this audit run)
+- **Resolved Contradictions:**
+  * Fixed historical claim that the repository contained only 10 migrations (`0001` through `0010`); exactly **20 migration files** exist (`0001` through `0020_advance_payment.sql`).
+  * Fixed historical contradiction claiming "fully locked" when `package-lock.json` was absent; `package-lock.json` has now been generated, verified via `npm ci`, and committed.
+  * Corrected claims of "No remaining issues"; live cloud and third-party production verifications remain pending.
+  * Documented the 3 high-severity dev-dependency advisories reported by `npm audit` in `miniflare` under `wrangler`.
 
 ---
 
-## 2. Test Execution Matrix
+## 2. Test Execution & Verification Categorization
 
-The following matrix documents the verification scripts actually executed during this audit:
+### A. Local Source-Code & Build Verification
 
 | Test Suite / Area | Script / Command | Status | Result / Output Summary |
 |---|---|---|---|
-| **TypeScript / Typecheck** | `npm run lint` (`tsc --noEmit`) | **PASS** | Clean compilation across all client, server, and utility TypeScript modules with 0 errors. |
-| **Production Build** | `npm run build` (`vite build`) | **PASS** | Production bundle built cleanly; 9 lazy-loaded admin chunks generated so storefront visitors never download admin code. |
-| **Category SEO & Canonical URLs** | `scripts/verify-category-seo-urls.ts` | **PASS** | 5/5 checks passed: All sitemap URLs use clean `/category/{slug}` format (0 query params); canonical tag & CollectionPage schema verified; D1 titles/descriptions preserved; legacy `?category=` returns 301 redirect; product URLs remain `/product/{id}`. |
-| **Regression Audit** | `scripts/verify-regression-audit.ts` | **PASS** | Valid direct product URL (200), invalid product (404), valid category (200), invalid category (404), root (200), admin (200), reset-password (200), unknown route (404). |
-| **SEO & Brand Regression** | `scripts/verify-seo-regression.ts` | **PASS** | 91/91 checks passed: robots.txt directives, dynamic sitemap.xml, canonical URLs, Schema.org Product/Organization/WebSite, bilingual English/Bengali keywords, zero buying price leakage. |
-| **Fixes & Worker Integrity** | `scripts/verify-fixes.ts` | **PASS** | 38/38 checks passed: Product SSR injection, Category SSR injection, `ADMIN_SECRET` fail-closed production security, robots.txt & sitemap.xml route rules. |
-| **Security Hardening** | `scripts/verify-security-hardening.ts` | **PASS** | 4/4 checks passed: Registration rate limiting (429), SSRF block against 16 metadata/loopback targets, PNG magic bytes, path traversal rejection, sanitized public health check. |
-| **Courier Webhook Security** | `scripts/verify-courier-webhook-security.ts` | **PASS** | 17/17 checks passed: Webhook secret masking (`••••••••`), controlled merge preservation, HMAC-SHA256 signature verification, RBAC `courier.configure` gating. |
-| **Password Reset System** | `scripts/verify-password-reset-system.ts` | **PASS** | Anti-enumeration identical response for existing/non-existing accounts, server-side rate limiting (attempt 6 -> 429), SHA-256 token hash storage, single-use enforcement, 60-minute expiration (15-min rate limit attempt window). |
-| **Final Performance Audit** | `scripts/verify-final-performance-audit.ts` | **PASS** | HTML preconnects, in-flight request deduplication (3 concurrent calls -> exactly 1 network request for homepage & auth), LCP eager banner loading, card lazy loading. |
-| **Homepage Performance** | `scripts/verify-homepage-performance.ts` | **PASS** | Consolidated `/api/store/homepage` average latency ~20.91ms, 36.63 KB payload, public stale-while-revalidate caching, strictly sanitized public product objects. |
-| **Image Performance** | `scripts/verify-image-performance.ts` | **PASS** | Responsive image presets (card, thumbnail, detail, banner, logo), query transformation (`?w=&q=`), WebP format negotiation, immutable media cache headers. |
-| **Upload Rate Limit** | `scripts/verify-upload-rate-limit.ts` | **PASS** | 8/8 checks passed: 10 uploads allowed then 11th triggered HTTP 429 with `Retry-After: 60`, unauthenticated upload rejected (401), customer upload forbidden (403), >10MB rejected (413). |
-| **RBAC Matrix** | `scripts/verify-part3a-rbac.ts` | **PASS** | 35 granular permissions, Super Admin escalation block, customer permission stripping, server-authoritative buying price & unit profit stripping. |
-| **Frontend Permission UI** | `scripts/verify-part3b1-permissions.ts` | **PASS** | 34/34 checks passed: `hasPermission` / `canUser` helpers, UI button gating, zero reliance on client localStorage flags for server authorization. |
-
-### Secondary & Supplementary Scripts in `scripts/`
-
-The repository contains 15 additional scripts created during earlier development phases or specialized audits:
-
-| Script | Status | Notes |
-|---|---|---|
-| `scripts/verify-auth-security-fixes.ts` | **PASS** | Superseded/subsumed by `verify-security-hardening.ts` and `verify-fixes.ts`. |
-| `scripts/verify-performance-issues-1-and-2.ts` | **PASS** | Covers D1 batching and WebP conversion. |
-| `scripts/verify-homepage-and-category-loading.ts` | **PASS** | Verified category capping and pagination. |
-| `scripts/verify-orders-pagination.ts` | **NOT RUN** | Targeted migration 0009 order pagination tests. |
-| `scripts/verify-orders-live.ts` | **NOT RUN** | Specialized live order creation simulation. |
-| `scripts/verify-auth-architecture.ts` | **NOT RUN** | Historical auth architecture check. |
-| `scripts/verify-auth-boundary.ts` | **NOT RUN** | Historical boundary check. |
-| `scripts/verify-profit-system.ts` | **NOT RUN** | Historical profit recalculation verification. |
-| `scripts/verify-invoice.ts` | **NOT RUN** | Static invoice generation testing. |
-| `scripts/verify-product-video.ts` | **NOT RUN** | Video embed sanitizer check. |
-| `scripts/verify-part2-admin-operations.ts` | **NOT RUN** | Historical admin operations suite. |
-| `scripts/verify-part3b2-permission-ui.ts` | **NOT RUN** | Supplementary UI permission check. |
-| `scripts/verify-part3b3-product-rbac-ui.ts` | **NOT RUN** | Supplementary product RBAC UI check. |
-| `scripts/verify-12-critical-high-issues.ts` | **NOT RUN** | Historical consolidated regression test. |
-| `scripts/verify-health-and-tracking-privacy.ts` | **NOT RUN** | Targeted health and tracking privacy check. |
-| `scripts/generate-screenshot.js` | **NOT RUN** | Asset generation utility script (Puppeteer screenshot generator). |
+| **TypeScript Compilation** | `npm run lint` (`tsc --noEmit`) | **PASS** | Clean compilation across all client, server, and utility TypeScript modules with 0 errors. |
+| **Production Asset Build** | `npm run build` (`vite build`) | **PASS** | Production bundle built cleanly (1725 modules transformed in ~1.36s); 9 lazy-loaded admin chunks generated. |
+| **Deterministic Install** | `npm ci` | **PASS** | Clean install executed from `package-lock.json` (87 packages installed in 14s). |
+| **Production Dependency Audit** | `npm audit --omit=dev` | **PASS** | Exactly **0 vulnerabilities** found in production runtime dependencies. |
+| **Development Dependency Audit** | `npm audit` | **FAIL** | **3 high severity vulnerabilities** in dev tooling (`wrangler` -> `miniflare` -> `sharp <0.35.5`, CVE-2026-96889). Fix requires a breaking downgrade to `wrangler@4.15.2`. |
 
 ---
 
-## 3. Database Migrations Status
+### B. Automated Tests Actually Executed in Current Environment
 
-The database schema is managed via Cloudflare D1 SQL migrations. Exactly **10 migration files** exist in `migrations/`:
+The following automated test suites were directly executed and verified:
+
+| Test Suite | Execution Command | Status | Result Summary |
+|---|---|---|---|
+| **Part 3A RBAC Matrix** | `npx tsx scripts/verify-part3a-rbac.ts` | **PASS** | 35 granular permissions, Super Admin escalation block, customer permission stripping, server-authoritative buying price & profit stripping. |
+| **Frontend Permission UI** | `npx tsx scripts/verify-part3b1-permissions.ts` | **PASS** | 34/34 checks passed: `hasPermission` / `canUser` helpers, UI button gating, zero reliance on client localStorage. |
+| **Admin Privilege Escalation** | `npx tsx scripts/verify-admin-permission-escalation.ts` | **PASS** | 10/10 security tests passed: Admin cannot modify own/other admin permissions, cannot elevate role to super_admin, cannot access settings.manage. |
+| **Settings Authorization Hardening** | `npx tsx scripts/verify-settings-authorization-hardening.ts` | **PASS** | All 5 test suites passed: `settings.manage` is Super Admin-only; admin/sub-admin denied; crafted payloads blocked; operational courier permissions preserved. |
+| **Legacy Permission Compatibility** | `npx tsx scripts/verify-legacy-permission-audit.ts` | **PASS** | All 5 test suites passed: Legacy mapping table verified; sensitive financial/settings/user aliases blocked for non-super-admins; broad flags cannot escalate. |
+| **Category SEO & Canonical URLs** | `npx tsx scripts/verify-category-seo-urls.ts` | **PASS** | Clean `/category/{slug}` URLs, canonical tag, D1 title/description preservation, legacy `?category=` 301 redirect. |
+| **SEO & Brand Regression** | `npx tsx scripts/verify-seo-regression.ts` | **PASS** | 91/91 checks passed: robots.txt directives, dynamic sitemap.xml, Schema.org bilingual schemas, zero buying price leakage. |
+| **Server Fixes & SSR** | `npx tsx scripts/verify-fixes.ts` | **PASS** | 38/38 checks passed: Product SSR injection, Category SSR injection, `ADMIN_SECRET` fail-closed verification. |
+| **General Regression Audit** | `npx tsx scripts/verify-regression-audit.ts` | **PASS** | Product 200, invalid product 404, category 200, invalid category 404, root 200, admin 200, unknown route 404. |
+| **Security Hardening** | `npx tsx scripts/verify-security-hardening.ts` | **PASS** | Registration rate limiting (429), SSRF block against 16 metadata/loopback targets, PNG magic bytes, path traversal rejection. |
+| **Courier Webhook Security** | `npx tsx scripts/verify-courier-webhook-security.ts` | **PASS** | 17/17 checks passed: Webhook secret masking (`••••••••`), controlled merge, HMAC-SHA256 signature verification, RBAC `courier.configure` gating. |
+| **Password Reset System** | `npx tsx scripts/verify-password-reset-system.ts` | **PASS** | Anti-enumeration generic 200 responses, rate limiting (attempt 6 -> 429), SHA-256 token hashing, single-use invalidation, 60-min expiration. |
+| **Upload Rate Limit** | `npx tsx scripts/verify-upload-rate-limit.ts` | **PASS** | 8/8 checks passed: 10 uploads allowed then 11th triggers HTTP 429 (`Retry-After: 60`), unauthenticated 401, customer 403, >10MB 413. |
+| **Image Delivery & WebP** | `npx tsx scripts/verify-image-performance.ts` | **PASS** | Responsive image presets (card, thumbnail, detail, banner, logo), query transformation (`?w=&q=`), WebP format negotiation. |
+| **Homepage Performance** | `npx tsx scripts/verify-homepage-performance.ts` | **PASS** | Consolidated `/api/store/homepage` batch endpoint, payload ~36.6 KB, public stale-while-revalidate headers. |
+| **Final Performance Audit** | `npx tsx scripts/verify-final-performance-audit.ts` | **PASS** | HTML preconnects, in-flight request deduplication, LCP eager banner loading, card lazy loading. |
+| **D1 Homepage & Image Optimization** | `npx tsx scripts/verify-performance-issues-1-and-2.ts` | **PASS** | D1 batching and WebP conversion verified. |
+| **Homepage & Category Loading** | `npx tsx scripts/verify-homepage-and-category-loading.ts` | **PASS** | Verified category capping at $\le 6$ and server-side pagination. |
+| **Auth Security Fixes** | `npx tsx scripts/verify-auth-security-fixes.ts` | **PASS** | Dynamic Super Admin resolution, zero plaintext credentials, current password requirement for self updates. |
+
+---
+
+### C. Secondary & Historical Scripts in `scripts/` (Not Run During This Turn)
+
+The repository contains 78 test scripts. The following representative scripts were **NOT RUN** during the immediate turn and remain available for dedicated re-verification:
+
+| Script | Status | Description / Notes |
+|---|---|---|
+| `scripts/verify-inventory-concurrency.ts` | **NOT RUN** | SQLite atomic trigger stock deduction & race test. |
+| `scripts/verify-audit-log-performance.ts` | **NOT RUN** | Audit log server-side clamping (50-200) test. |
+| `scripts/verify-product-api-performance.ts` | **NOT RUN** | Catalog pagination limit clamping (24-48) test. |
+| `scripts/verify-courier-webhook-atomicity.ts` | **NOT RUN** | D1 primary key conflict replay protection test. |
+| `scripts/verify-advance-payment.ts` | **NOT RUN** | Advance payment flow verification. |
+| `scripts/verify-advance-payment-foundation.ts` | **NOT RUN** | Advance payment DB foundation checks. |
+| `scripts/verify-final-advance-payment-suite.ts` | **NOT RUN** | End-to-end advance payment verification. |
+| `scripts/verify-orders-pagination.ts` | **NOT RUN** | Migration 0009 order pagination index verification. |
+| `scripts/verify-orders-live.ts` | **NOT RUN** | Live order creation simulation. |
+| `scripts/verify-account-deletion.ts` | **NOT RUN** | Customer account deletion test. |
+| `scripts/verify-admin-order-variant-edit.ts` | **NOT RUN** | Admin order variant editing test. |
+| `scripts/verify-admin-session-timeout.ts` | **NOT RUN** | Admin session idle/absolute timeout test. |
+| `scripts/verify-analytics-audit.ts` | **NOT RUN** | Profit & sales analytics audit test. |
+| `scripts/verify-d1-query-optimizations.ts` | **NOT RUN** | D1 prepared statements optimization test. |
+| `scripts/verify-featured-products-system.ts` | **NOT RUN** | Featured products sort order test. |
+| `scripts/verify-cloudflare-caching.ts` | **NOT RUN** | Edge cache header simulation test. |
+| `scripts/verify-code-splitting.ts` | **NOT RUN** | Static chunk inspection test. |
+| `scripts/verify-comprehensive-security-suite.ts` | **NOT RUN** | Consolidated multi-check security suite. |
+| `scripts/verify-courier-cod-synchronization.ts` | **NOT RUN** | Courier COD balance sync test. |
+| `scripts/verify-courier-credential-storage-security.ts`| **NOT RUN** | Courier credential masking and storage test. |
+| `scripts/verify-malformed-json-handling.ts` | **NOT RUN** | Bad JSON payload rejection test. |
+| `scripts/verify-malformed-json-security.ts` | **NOT RUN** | JSON security parser test. |
+| `scripts/verify-order-price-recalculation.ts` | **NOT RUN** | Server-side price recalculation test. |
+| `scripts/verify-order-rate-limit.ts` | **NOT RUN** | Order creation rate limit test. |
+| `scripts/verify-password-reset-and-demo-user-removal.ts`| **NOT RUN** | Demo user cleanup check. |
+| `scripts/verify-pixel-analytics-optimization.ts` | **NOT RUN** | Marketing pixel loading test. |
+| `scripts/verify-privacy-pixel-audit.ts` | **NOT RUN** | Pixel privacy and consent check. |
+| `scripts/verify-product-authorization-suite.ts` | **NOT RUN** | Product RBAC authorization suite. |
+| `scripts/verify-product-buying-price-flow.ts` | **NOT RUN** | Product buying price privacy flow test. |
+| `scripts/verify-product-rbac-authorization.ts` | **NOT RUN** | Granular product RBAC test. |
+| `scripts/verify-safe-error-handling.ts` | **NOT RUN** | 500 error sanitization test. |
+| `scripts/verify-seed-data-elimination.ts` | **NOT RUN** | Seed data cleanup test. |
+| `scripts/verify-slider-order-management.ts` | **NOT RUN** | Slider management test. |
+| `scripts/verify-slug-history-and-sitemap.ts` | **NOT RUN** | Slug 301 history & sitemap test. |
+| `scripts/verify-steadfast-test-webhook-fix.ts` | **NOT RUN** | Steadfast webhook simulation test. |
+| `scripts/verify-variant-selection-flow.ts` | **NOT RUN** | UI variant selection test. |
+| `scripts/verify-verified-purchase-security.ts` | **NOT RUN** | Verified purchase review security test. |
+| `scripts/verify-webhook-admin-secret-separation.ts`| **NOT RUN** | Separate admin and webhook secret test. |
+| `scripts/verify-webhook-replay-protection.ts` | **NOT RUN** | Webhook replay protection test. |
+
+---
+
+## 3. Database Migrations Status (Authoritative)
+
+The database schema is managed via Cloudflare D1 SQL migrations. Exactly **20 migration files** exist in `migrations/`:
 
 | Migration File | Description | Verification Status |
 |---|---|---|
-| `0001_initial_schema.sql` | Base schema: users, categories, products, orders, order_items, settings, coupons, reviews. | **PASS** (schema inspected & active in dev DB) |
-| `0002_seed_initial_data.sql` | Initial catalog seeds, categories, initial admin account. | **PASS** (data seeded & verified) |
+| `0001_initial_schema.sql` | Base schema: users, categories, products, orders, order_items, settings, coupons, reviews. | **PASS** (schema active in dev DB) |
+| `0002_seed_initial_data.sql` | Initial catalog seeds, categories, initial admin account. | **PASS** (data seeded in dev DB) |
 | `0003_media_assets.sql` | Media asset metadata table for uploaded images. | **PASS** (media upload APIs verified) |
 | `0004_buying_price_and_expenses.sql` | Financial tracking: buying_price, expense_records, order profit snapshots. | **PASS** (financial sanitization verified) |
 | `0005_audit_logs.sql` | Admin audit logging table (`audit_logs`). | **PASS** (audit log recording verified) |
 | `0006_password_reset_tokens.sql` | Password reset tokens table (`password_reset_tokens`) with SHA-256 hashes. | **PASS** (token verification & single-use verified) |
 | `0007_rate_limits_and_schema_cleanup.sql` | Rate limiting table (`rate_limits`) and schema integrity cleanup. | **PASS** (rate limiting verified) |
 | `0008_order_idempotency.sql` | Idempotency keys for order checkout (`idempotency_key` column on orders). | **PASS** (order idempotency verified) |
-| `0009_orders_pagination_indexes.sql` | Composite indexes for high-volume order queries and pagination. | **PARTIALLY VERIFIED** (SQL syntax and index definitions inspected; live D1 query planner execution plan not measured) |
+| `0009_orders_pagination_indexes.sql` | Composite indexes for high-volume order queries and pagination. | **PARTIALLY VERIFIED** (SQL syntax inspected; remote query execution plan pending) |
 | `0010_homepage_product_indexes.sql` | Composite index `idx_products_cat_status_featured_created` for fast homepage category queries. | **PASS** (homepage batch endpoint benchmarks verified) |
-
-*Note: Earlier documentation erroneously referenced 15 migrations. The actual count is exactly 10 migrations (`0001` through `0010`).*
-
----
-
-## 4. Detailed Verification By Feature Domain
-
-### A. Product Domain
-* **Product Click Navigation:** **PASS** — Client-side navigation via `handleProductClick` updates URL to `/product/:id`, smooth-scrolls to top, and avoids full document reloads.
-* **Direct Product URL:** **PASS** — Accessing `/product/:id` triggers Worker SSR pipeline, returning HTTP 200 with product-specific `<title>`, OpenGraph meta, and Product Schema.org JSON-LD.
-* **Copied URL:** **PASS** — `copyProductLink` produces clean canonical links (`https://rongdhonutrade.com/product/:id`).
-* **New Tab / Refresh:** **PASS** — Direct navigation and browser refreshes on `/product/:id` serve complete semantic HTML and rehydrate client state cleanly.
-* **Invalid Product Route:** **PASS** — Non-existent product IDs strictly return HTTP 404 with no-index headers and no redirect cascades.
-* **Related Products:** **PASS** — ProductDetailView queries active category products to render the related items carousel.
-* **Quick View:** **PASS** — Modal opens in-memory without initiating redundant full-catalog network fetches. Variant choices, quantity, and CTAs (Add to Cart, Buy Now) are displayed cleanly above Product Details.
-* **Add to Cart & Buy Now:** **PASS** — Variant selectors (size/color) enforce choices; stock availability is verified; Buy Now directly triggers checkout.
-
-### B. Category Domain
-* **Clean Category URL:** **PASS** — Serves `/category/:slug` with server-side rendered category title, meta description, and CollectionPage structured data.
-* **Sitemap Category URLs:** **PASS** — All category URLs in `sitemap.xml` strictly use `https://rongdhonutrade.com/category/{slug}` with zero `?category=` query parameters.
-* **Category Canonical URLs:** **PASS** — Both SSR HTML (`<link rel="canonical">`) and client-side SEO state emit `https://rongdhonutrade.com/category/{slug}`.
-* **Legacy Query Redirect:** **PASS** — Requests to `/?category={slug}` or `/?cat={id}` return HTTP 301 Permanent Redirect to `/category/{slug}`.
-* **Direct URL & Refresh:** **PASS** — Refreshes on `/category/:slug` return HTTP 200 OK.
-* **Invalid Category:** **PASS** — Non-existent category slugs strictly return HTTP 404.
-* **Preservation of D1 Category Data:** **PASS** — Category titles and descriptions display exact text from D1 without rewrite or replacement.
-
-### C. SEO & Metadata
-* **Product Canonical URL:** **PASS** — Injected into `<link rel="canonical">` and Open Graph `og:url`.
-* **Dynamic Sitemap (`/sitemap.xml`):** **PASS** — Generated dynamically from authoritative tables; includes homepage, active categories, and active products; excludes `/admin`, `/checkout`, `/account`, `/cart`, and `/api`.
-* **Old `?product=` Redirect:** **PASS** — Legacy query parameters trigger a HTTP 301 Permanent Redirect to `/product/:id`.
-* **Duplicate Product URLs:** **PASS** — Canonicalization prevents duplicate indexation across search engines.
-* **Bilingual Brand Representation:** **PASS** — English ("Rongodhonu Trade", "Rongdhonu") and Bengali ("রঙধনু ট্রেড", "রংধনু") represented in titles, descriptions, and Organization schema.
-
-### D. Accessibility
-* **Generic div with aria-label:** **PASS** — Zero generic `div` elements with `aria-label` without semantic role in `src/`.
-* **Button & Link Names:** **PASS** — Interactive buttons and links contain explicit text nodes or descriptive `aria-label` / `title` attributes.
-* **Keyboard Navigation & Focus:** **PASS** — Modals support `Escape` key dismissal and focus trapping; controls display visible `focus:ring-2` focus rings.
-* **Color Contrast & Indicators:** **PASS** — Stock status and sale badges include both icons and text, avoiding color-only status communication.
-
-### E. Security
-* **Authentication Security:** **PASS** — Server-authoritative via HttpOnly JWT cookies. No auth tokens in localStorage. Stale legacy tokens automatically purged.
-* **RBAC & Privilege Escalation:** **PASS** — 35 fine-grained permissions. Non-super-admins cannot grant Super Admin-only permissions (`permission.manage`, `user.manage`, `user.delete`).
-* **Super Admin Identity Protection:** **PASS** — Resolved strictly from server environment variables; hidden from non-super-admins in user listings.
-* **Financial Protection:** **PASS** — Server-side recalculation of order totals, prices, and delivery charges. `buyingPrice` and `unitProfit` stripped from all public endpoints.
-* **Courier & Webhook Protection:** **PASS** — Courier secrets masked as `••••••••` in all admin APIs. Inbound webhooks verified with HMAC-SHA256. Outbound test webhooks protected by SSRF filtering against loopback and AWS/GCP metadata endpoints.
-* **Password Reset System:** **PASS** — Anti-enumeration generic 200 responses; 64-character crypto-random token; SHA-256 token hash storage; single-use token invalidation; 60-minute expiration; server-side rate-limited (15-min attempt window).
-* **Password Change:** **PASS** — Requires current password verification; rotating 32-hex (128-bit) `pwdSig` invalidates all prior sessions across devices (legacy 16-character format strictly rejected).
-* **Image Upload Security:** **PASS** — Magic-byte header verification, random media keys, path traversal protection, and rate limiting (10 uploads/min).
-* **Database Parameterization:** **PASS** — Parameterized queries across all D1 operations.
-
-### F. Performance
-* **Duplicate Request Elimination:** **PASS** — Removed duplicate hero carousel ambient backdrop image request; added in-flight request deduplication on `/api/store/homepage` and `/api/auth/me`.
-* **Homepage Initial Load:** **PASS** — Consolidated single endpoint `/api/store/homepage` loading categories, slides, settings, and capped products in 1 batch.
-* **Image Delivery & Loading Strategy:** **PASS** — LCP hero banner and header logo set to `loading="eager"`, `fetchPriority="high"`, `decoding="sync"`; below-the-fold product cards set to `loading="lazy"`. DNS prefetch and preconnect tags configured in `index.html`.
-* **Admin Code Splitting:** **PASS** — Admin dashboard, tabs, and reset password page split into 9 lazy-loaded chunks via `React.lazy()`. Storefront visitors never download admin JavaScript.
+| `0011_webhook_replays.sql` | Atomic primary key `fingerprint` table for webhook deduplication. | **PARTIALLY VERIFIED** (inspected in schema.sql; local tests passed) |
+| `0012_featured_sort_order.sql` | Adds `sort_order` and featured product ordering. | **PARTIALLY VERIFIED** (SQL syntax inspected) |
+| `0013_atomic_inventory_guards.sql` | SQLite triggers preventing negative stock and ensuring atomic deduction. | **PARTIALLY VERIFIED** (triggers active in dev schema) |
+| `0014_courier_credentials_cleanup.sql` | Cleans up legacy courier credentials from settings store. | **PARTIALLY VERIFIED** (SQL syntax inspected) |
+| `0015_remove_demo_users.sql` | Removes demo and test accounts from database. | **PARTIALLY VERIFIED** (SQL syntax inspected) |
+| `0016_slider_active_status.sql` | Adds active status column to hero slider banners. | **PARTIALLY VERIFIED** (SQL syntax inspected) |
+| `0017_product_slug.sql` | Adds clean product URL slugs. | **PARTIALLY VERIFIED** (SQL syntax inspected) |
+| `0018_product_slug_history.sql` | Adds 301 redirect history table for renamed product slugs. | **PARTIALLY VERIFIED** (SQL syntax inspected) |
+| `0019_reviews_verified_purchase_security.sql` | Guards customer reviews to verified purchases. | **PARTIALLY VERIFIED** (SQL syntax inspected) |
+| `0020_advance_payment.sql` | Adds advance payment tracking columns on orders. | **PARTIALLY VERIFIED** (SQL syntax inspected) |
 
 ---
 
-## 5. Verification Limitations
+## 4. Production Checks Still Required (NEEDS LIVE VERIFICATION)
 
-The following limitations apply to the testing performed in the current environment:
+The following operational verifications **CANNOT** be completed in the local sandbox and require execution against live Cloudflare production infrastructure:
 
-1. **Simulated D1 vs Remote Production D1:**
-   * Local verification tests run against the local Vite development server with simulated D1 bindings and in-memory mock states. Remote D1 database latency, connection pooling, and multi-region replication were not tested directly.
-2. **Local Worker Middleware vs Cloudflare Global Edge:**
-   * SSR HTML injection and routing were verified using `vite.config.ts` dev middleware and the `src/worker.ts` implementation code. The compiled Cloudflare Worker bundle running on actual V8 isolates on Cloudflare Workers edge nodes requires post-deployment verification.
-3. **Mocked External Services:**
-   * External third-party integrations (Steadfast Courier API endpoints, Resend transactional email API) were verified using mocked HTTP responses and sandbox handlers. Real network dispatch to Steadfast and Resend production servers was not performed to prevent sending live orders or real emails during testing.
-4. **Synthetic Performance vs Real User Monitoring:**
-   * Latency benchmarks (~20ms for homepage API) reflect local loopback measurements. Real-world 3G/4G latency and packet loss across mobile networks in Bangladesh were not measured.
-5. **Headless Tests vs Full Browser Session:**
-   * Automated tests used Node.js `fetch` and unit test runners. End-to-end user browser interactions (e.g., full checkout completion through payment gateway or pixel tracking fires) were verified structurally but not via automated browser driver (e.g. Playwright/Cypress).
-
----
-
-## 6. Remaining Verification Required
-
-The following checks **CANNOT** be completed in the local sandbox and **MUST** be verified on the live Cloudflare production deployment:
-
-| Area | Verification Task | Status | Requirement |
+| Area | Scope | Status | Requirement / Expected Verification Action |
 |---|---|---|---|
-| **Production Cloudflare Deployment** | Execute `wrangler deploy` and verify worker builds and deploys without runtime error. | **NEEDS LIVE VERIFICATION** | Cloudflare account & API token required. |
-| **Production D1 Schema Migration** | Execute `wrangler d1 migrations apply rongdhonu-db --remote` to apply migrations `0001` through `0010`. | **NEEDS LIVE VERIFICATION** | Cloudflare D1 production database access required. |
-| **Cloudflare Edge Cache Status** | Inspect `CF-Cache-Status` response header on `/api/store/homepage` (verify `HIT`, `MISS`, `STALE` behavior across edge PoPs). | **NEEDS LIVE VERIFICATION** | Production URL required. |
-| **Production Secrets Configuration** | Confirm all production secrets (`ADMIN_SECRET`, `JWT_SECRET`, `STEADFAST_API_KEY`, `STEADFAST_SECRET_KEY`, `COURIER_WEBHOOK_SECRET`, `RESEND_API_KEY`, `SUPER_ADMIN_EMAILS`, `SUPER_ADMIN_USER_IDS`) are set via `wrangler secret put`. | **NEEDS LIVE VERIFICATION** | Production Cloudflare dashboard / CLI required. |
-| **Live Steadfast Courier Webhooks** | Receive real test webhook from Steadfast and verify HMAC-SHA256 signature verification in production Worker. | **NEEDS LIVE VERIFICATION** | Active Steadfast merchant account required. |
-| **Live Resend Email Deliverability** | Trigger real password reset and verify delivery to inbox under production SPF/DKIM/DMARC policies. | **NEEDS LIVE VERIFICATION** | Configured domain & Resend production key required. |
-| **Real Mobile Core Web Vitals** | Measure real-user LCP, INP, and CLS via Google Search Console and Cloudflare Web Analytics on actual mobile devices. | **NEEDS LIVE VERIFICATION** | Production traffic required. |
+| **1. Cloudflare Workers Deployment** | Worker bundling & runtime isolates | **NEEDS LIVE VERIFICATION** | Execute `wrangler deploy` and verify worker starts with 0 runtime exceptions on Cloudflare edge. |
+| **2. Remote D1 Database Migrations** | Cloudflare D1 Remote Database | **NEEDS LIVE VERIFICATION** | Execute `wrangler d1 migrations apply rongdhonu-db --remote` to apply all 20 migrations (`0001` through `0020`) to the production database. |
+| **3. Production Secret Bindings** | Cloudflare Secret Vault | **NEEDS LIVE VERIFICATION** | Verify `ADMIN_SECRET`, `JWT_SECRET`, `STEADFAST_API_KEY`, `STEADFAST_SECRET_KEY`, `COURIER_WEBHOOK_SECRET`, `RESEND_API_KEY`, `SUPER_ADMIN_EMAILS`, and `SUPER_ADMIN_USER_IDS` via `wrangler secret put`. |
+| **4. Cloudflare Edge Caching** | CDN Caching & Header Inspection | **NEEDS LIVE VERIFICATION** | Inspect `CF-Cache-Status` response header on `/api/store/homepage` across regional edge points of presence (Dhaka, Singapore, etc.). |
+| **5. Live Courier Webhooks** | Steadfast Inbound Webhooks | **NEEDS LIVE VERIFICATION** | Transmit a real live test webhook from Steadfast Courier and inspect Cloudflare Worker logs for successful HMAC-SHA256 signature verification. |
+| **6. Live Transactional Email** | Resend API & DNS Deliverability | **NEEDS LIVE VERIFICATION** | Trigger a real password reset email from the production domain and verify delivery to an external inbox under active SPF, DKIM, and DMARC DNS policies. |
+| **7. Real-Device Performance** | Real User Monitoring (RUM) | **NEEDS LIVE VERIFICATION** | Measure 75th percentile LCP, INP, and CLS on real mobile hardware over 3G/4G cellular networks in Bangladesh via Google Search Console and Cloudflare Web Analytics. |
+
+---
+
+## 5. Confirmed Fixed Issues vs. Confirmed Remaining Bugs
+
+### Confirmed Fixed Issues
+1. **Protected Store Settings Authorization:** Added `settings.manage` to `SUPER_ADMIN_ONLY_PERMISSIONS`. Denied to normal admins, sub-admins, and crafted HTTP requests.
+2. **Legacy Permission Alias Security:** Normalized key inspection and authoritative canonical mapping prevent any legacy alias (`product.buying_price`, `report.profit`, `manage_settings`, etc.) from granting sensitive access to non-super-admins.
+3. **Broad Legacy Flags Immunity:** Confirmed `mapLegacyPermissionsToGranular` never grants sensitive financial, settings, or user management permissions.
+4. **Reproducible Package Lock:** Generated `package-lock.json` and verified with `npm ci`.
+5. **Zero Production Runtime Vulnerabilities:** `npm audit --omit=dev` confirms 0 vulnerabilities in runtime code.
+6. **Masking of Courier Secrets:** Courier credentials masked (`••••••••`) on read endpoints with controlled merge on update.
+7. **SSRF Blocking on Webhook Testing:** Outbound webhooks strictly validate destination IP addresses, rejecting private and cloud metadata addresses.
+8. **PBKDF2 Password Hashing & Rotating Session Invalidation:** 100,000 iteration PBKDF2 with 128-bit `pwdSig` session invalidation.
+9. **Password Reset Timing Equalization:** Uniform execution delay and dummy cryptographic operations prevent account enumeration.
+
+### Confirmed Remaining Bugs & Discrepancies
+1. **Dev Tooling High Vulnerability Advisories:** `npm audit` reports 3 high-severity vulnerabilities in `wrangler` -> `miniflare` -> `sharp <0.35.5` (CVE-2026-96889). Awaiting an upstream patch from Cloudflare without breaking major version downgrades.
+2. **Live Cloudflare & External Integration Pending:** Remote D1 migrations (`0001` through `0020`), Cloudflare production deployment, live Steadfast webhooks, and Resend production email deliverability require live cloud environment credentials and remain **NEEDS LIVE VERIFICATION**.

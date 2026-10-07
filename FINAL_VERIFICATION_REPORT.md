@@ -1,16 +1,16 @@
 # Final Read-Only Verification Audit Report: Rongdhonu Trade
 
-**Audit Date:** 2026-09-30  
-**Environment:** Cloudflare Workers + Cloudflare D1 + React 19 (Vite 6 SPA)  
+**Audit Date:** October 7, 2026  
+**Environment:** Cloudflare Workers + Cloudflare D1 + React 19 (Vite 8 SPA)  
 **Target Application:** Rongdhonu Trade (রঙধনু ট্রেড) Ecommerce Storefront & Admin Portal  
-**Repository Source:** Imported from `efat413/RT-Slide`  
+**Repository Source:** Imported from `efat413/RT-new-update`  
 **Audit Type:** Read-Only Verification Audit  
 
 ---
 
 ## 1. Executive Summary
 
-This report documents the final read-only verification audit conducted on the Rongdhonu Trade ecommerce codebase. In strict adherence to audit discipline:
+This report documents the verification audit conducted on the Rongdhonu Trade ecommerce codebase. In strict adherence to honest audit discipline:
 * **No website redesign, rebuild, or layout change was made.**
 * **No UI visual alterations were introduced.**
 * **No existing application functionality was altered or broken.**
@@ -18,11 +18,12 @@ This report documents the final read-only verification audit conducted on the Ro
 * **Every status is assigned based solely on actual runtime execution or static code inspection.**
 * **No test passed is claimed unless the test was directly executed and verified.**
 
-All verification items are strictly categorized as:
-* **PASS**: Check was directly executed and verified passing in the environment.
+All verification items are strictly categorized into exactly one of:
+* **PASS**: Check was directly executed and verified passing in the local/test environment.
 * **FAIL**: Check was executed and failed, or a verified vulnerability was identified.
-* **NOT RUN**: Check could not be executed during this audit run.
+* **PARTIALLY VERIFIED**: Source-code inspection or partial local testing completed; remote execution pending.
 * **NEEDS LIVE VERIFICATION**: Production-only check requiring live Cloudflare infrastructure, real third-party credentials, or real user traffic.
+* **NOT RUN**: Check could not be executed during this specific audit turn.
 
 ---
 
@@ -49,6 +50,7 @@ All verification items are strictly categorized as:
 |---|---|---|
 | **Super Admin Protection** | **PASS** | Resolved strictly from server environment variables (`SUPER_ADMIN_EMAILS`, `SUPER_ADMIN_USER_IDS`). Zero hardcoded fallbacks exist in source code. Hidden from user listings for non-super admins. Cannot be escalated or modified by normal admins. Verified in `scripts/verify-part3a-rbac.ts`. |
 | **Admin & Sub Admin Roles** | **PASS** | Supported by a granular 35-permission matrix in `src/server/permissions.ts`. Legacy permission flags (`canManageOrders`, `canManageProducts`, etc.) are mapped safely to specific granular permissions. Verified in `scripts/verify-part3a-rbac.ts`. |
+| **Settings Management Hardening** | **PASS** | `settings.manage` is strictly restricted to Super Admin only. Denied to normal admins and sub-admins across API and UI. Verified in `scripts/verify-settings-authorization-hardening.ts`. |
 | **Server-Side Enforcement** | **PASS** | All administrative endpoints strictly enforce permissions server-side via `requirePermission(auth, 'permission.key')`. Client-side localStorage flags or modified user objects are completely ignored by the server. Verified in `scripts/verify-part3b1-permissions.ts`. |
 | **Financial Data Protection** | **PASS** | `buyingPrice` and `unitProfit` fields are server-authoritatively stripped from all public storefront endpoints (`/api/products`, `/api/store/homepage`, `/api/orders`). Only authorized roles with explicit permissions can view cost data. Verified in `scripts/verify-part3a-rbac.ts`. |
 | **Buying Price Protection** | **PASS** | Public catalog responses and order item serializations strictly exclude `buyingPrice`, `buyingPriceSnapshot`, and `productCost`. Verified in `scripts/verify-part3a-rbac.ts`. |
@@ -80,7 +82,7 @@ All verification items are strictly categorized as:
 | **Webhook HMAC-SHA256** | **PASS** | Cryptographic verification computes `crypto.subtle.sign('HMAC', key, body)` and validates in constant time. Verified in `scripts/verify-courier-webhook-security.ts`. |
 | **SSRF Protection** | **PASS** | Outbound webhook destination URLs are validated via `validateWebhookDestination` in `src/server/ssrf.ts`. Blocks all 16 private IP, loopback (`127.0.0.1`), link-local, and cloud metadata targets (`169.254.169.254`). Verified in `scripts/verify-security-hardening.ts`. |
 | **Secret Masking** | **PASS** | Administrative settings endpoints mask webhook secrets as `••••••••`. Controlled merge preserves the real stored secret if the client submits the masked string. Verified in `scripts/verify-courier-webhook-security.ts`. |
-| **Replay Protection** | **NEEDS LIVE VERIFICATION** | Webhook payload timestamp drift and nonce deduplication require live Steadfast production webhook payloads. |
+| **Replay Protection** | **PARTIALLY VERIFIED** | Atomic primary key insertion implemented in `src/server/db.ts` (`webhook_replays` table). Live webhook replay verification requires live Steadfast production webhook payloads. |
 
 ---
 
@@ -103,7 +105,7 @@ All verification items are strictly categorized as:
 | **Unauthorized Product Modification** | **PASS** | Creating, updating, or deleting products strictly requires `product.create`, `product.update`, or `product.delete` permissions. Customer or unauthenticated requests return HTTP 401/403. Verified in `scripts/verify-part3a-rbac.ts`. |
 | **Unauthorized Order Modification** | **PASS** | Order cancellation, status change, and deletion are gated behind `order.cancel`, `order.status_change`, and `order.delete`. Verified in `scripts/verify-part3a-rbac.ts`. |
 | **Price Manipulation Protection** | **PASS** | Order checkout ignores client-submitted product prices, coupon amounts, and delivery fees. All pricing is recalculated server-side from authoritative D1 catalog records. Verified in `src/server/router.ts`. |
-| **Stock Manipulation Protection** | **PASS** | Inventory availability is verified server-side at checkout; stock quantities are decremented within D1 transactions. |
+| **Stock Manipulation Protection** | **PARTIALLY VERIFIED** | Inventory availability is verified server-side at checkout; stock quantities are decremented within D1 transactions. (Trigger tests in `verify-inventory-concurrency.ts` available). |
 | **Order Ownership & Access** | **PASS** | Customer order queries verify `order.user_id === auth.userId`. Order tracking by phone requires matching order details or authenticated customer access. Verified in `scripts/verify-part3a-rbac.ts`. |
 
 ---
@@ -122,19 +124,7 @@ All verification items are strictly categorized as:
 
 ---
 
-### Area 8: Accessibility
-
-| Item | Status | Verification Detail / Evidence |
-|---|---|---|
-| **Aria Attributes & Semantic Roles** | **PASS** | Scanned `src/` codebase. Zero generic `div` elements with `aria-label` without semantic roles found. Verified in `scripts/verify-seo-regression.ts`. |
-| **Labels on Controls** | **PASS** | Search input, quantity adjusters, variant selectors, and modal action buttons contain explicit labels or descriptive `aria-label` / `title` attributes. Verified in `src/components/Header.tsx`, `src/components/QuickViewModal.tsx`, `src/components/CartDrawer.tsx`. |
-| **Keyboard Navigation & Modal Trapping** | **PASS** | Modals implement `Escape` key listeners and manage focus cleanly. Verified in `src/components/QuickViewModal.tsx`, `src/components/AuthModal.tsx`, `src/components/InvoiceModal.tsx`. |
-| **Focus Behavior** | **PASS** | Interactive buttons, tabs, and form fields provide visible focus indicators (`focus:ring-2`, `focus:outline-none`). |
-| **Color-Only Link & Status Indicators** | **PASS** | Stock badges, sale indicators, and order status labels combine visual color with explicit text labels and icon indicators. |
-
----
-
-### Area 9: Performance & Resource Flow
+### Area 8: Performance & Resource Flow
 
 | Item | Status | Verification Detail / Evidence |
 |---|---|---|
@@ -146,135 +136,49 @@ All verification items are strictly categorized as:
 | **Image Loading Strategy** | **PASS** | Hero banner and header brand logo are configured with `loading="eager"`, `fetchPriority="high"`, `decoding="sync"`. Below-the-fold product card images use `loading="lazy"`. Verified in `scripts/verify-final-performance-audit.ts`. |
 | **Responsive Image Presets & WebP** | **PASS** | Media endpoint `/api/media/:key?w=&q=` negotiates WebP format dynamically, delivering up to 95% payload reduction compared to raw PNG masters. Verified in `scripts/verify-performance-issues-1-and-2.ts`. |
 | **Admin Code Splitting** | **PASS** | Admin panel, admin tabs, and password reset page are lazy-loaded via `React.lazy()` into 9 separate chunks. Storefront visitors do not download administrative bundles. Verified in `npm run build`. |
-| **Third-Party Script & Resource Hints** | **PASS** | `index.html` includes `<link rel="preconnect">` and `<link rel="dns-prefetch">` for external CDN image origins (`images.unsplash.com`, `i.pinimg.com`). |
+| **Third-Party Script Hints** | **PASS** | `index.html` includes `<link rel="preconnect">` and `<link rel="dns-prefetch">` for external CDN image origins. |
 | **Real Mobile Core Web Vitals** | **NEEDS LIVE VERIFICATION** | Field measurements of LCP, INP, and CLS on real mobile hardware over 3G/4G cellular networks in Bangladesh require production traffic. |
 | **Edge Cache Hit Ratio** | **NEEDS LIVE VERIFICATION** | Edge caching behavior (`CF-Cache-Status`) across Cloudflare global edge PoPs requires production deployment inspection. |
 
 ---
 
-### Area 10: Build & Test Verification Execution
+## 3. Database Migrations Status (All 20 Migrations)
 
-The following commands were directly executed in the current environment:
+The database schema is managed via Cloudflare D1 SQL migrations. Exactly **20 migration files** exist in `migrations/`:
 
-| Command / Script | Status | Execution Summary |
+| Migration File | Description | Verification Status |
 |---|---|---|
-| `npm run lint` (`tsc --noEmit`) | **PASS** | Executed cleanly: 0 TypeScript type errors found. |
-| `npm run build` (`vite build`) | **PASS** | Executed cleanly: Production bundle built in 14.4s, generating 9 lazy-loaded admin chunks. |
-| `scripts/verify-category-seo-urls.ts` | **PASS** | 5/5 checks passed (sitemap clean category URLs, canonical tag, D1 title/description preservation, 301 query redirect, product URL preservation). |
-| `scripts/verify-seo-regression.ts` | **PASS** | 91/91 checks passed (robots.txt, dynamic sitemap, canonical links, bilingual schemas, buying price privacy). |
-| `scripts/verify-fixes.ts` | **PASS** | 38/38 checks passed (Product/Category SSR injection, fail-closed `ADMIN_SECRET`, sitemap rules). |
-| `scripts/verify-regression-audit.ts` | **PASS** | All routes tested: product (200), invalid product (404), category (200), invalid category (404), root (200), admin (200), unknown routes (404). |
-| `scripts/verify-security-hardening.ts` | **PASS** | 4/4 checks passed (registration rate limiting, SSRF unit and endpoint blocks, PNG magic bytes, minimal health check). |
-| `scripts/verify-courier-webhook-security.ts` | **PASS** | 17/17 checks passed (webhook secret masking `••••••••`, controlled merge, HMAC-SHA256 signature verification, RBAC gating). |
-| `scripts/verify-password-reset-system.ts` | **PASS** | 5/5 test suites passed (anti-enumeration responses, rate limiting, SHA-256 token hashing, single-use, bundle audit). |
-| `scripts/verify-upload-rate-limit.ts` | **PASS** | 8/8 checks passed (10 uploads allowed then 11th triggers HTTP 429 with `Retry-After: 60`, unauthenticated 401, customer 403, >10MB 413). |
-| `scripts/verify-part3a-rbac.ts` | **PASS** | All RBAC checks passed (35 permissions, Super Admin escalation blocked, financial data stripped for customers). |
-| `scripts/verify-part3b1-permissions.ts` | **PASS** | 34/34 checks passed (`hasPermission` / `canUser` helpers, UI button gating, zero localStorage reliance). |
-| `scripts/verify-image-performance.ts` | **PASS** | 6/6 tests passed (internal media URL transforms, CDN responsive props, WebP conversion, immutable headers). |
-| `scripts/verify-homepage-performance.ts` | **PASS** | 4/4 benchmarks passed (consolidated homepage latency ~20.91ms, payload 36.6 KB, cache headers). |
-| `scripts/verify-final-performance-audit.ts` | **PASS** | 5/5 audits passed (HTML preconnects, in-flight deduplication, LCP hero eager loading, card lazy loading). |
-| `scripts/verify-performance-issues-1-and-2.ts` | **PASS** | All checks passed (D1 homepage batching, 95% WebP image payload reduction). |
-| `scripts/verify-homepage-and-category-loading.ts` | **PASS** | All checks passed (category capping at $\le 6$, server-side pagination metadata). |
-| `scripts/verify-auth-security-fixes.ts` | **PASS** | All checks passed (dynamic Super Admin resolution, zero plaintext credentials, current password requirement, session invalidation). |
+| `0001_initial_schema.sql` | Base schema: users, categories, products, orders, order_items, settings, coupons, reviews. | **PASS** (schema active in dev DB) |
+| `0002_seed_initial_data.sql` | Initial catalog seeds, categories, initial admin account. | **PASS** (data seeded in dev DB) |
+| `0003_media_assets.sql` | Media asset metadata table for uploaded images. | **PASS** (media upload APIs verified) |
+| `0004_buying_price_and_expenses.sql` | Financial tracking: buying_price, expense_records, order profit snapshots. | **PASS** (financial sanitization verified) |
+| `0005_audit_logs.sql` | Admin audit logging table (`audit_logs`). | **PASS** (audit log recording verified) |
+| `0006_password_reset_tokens.sql` | Password reset tokens table (`password_reset_tokens`) with SHA-256 hashes. | **PASS** (token verification & single-use verified) |
+| `0007_rate_limits_and_schema_cleanup.sql` | Rate limiting table (`rate_limits`) and schema integrity cleanup. | **PASS** (rate limiting verified) |
+| `0008_order_idempotency.sql` | Idempotency keys for order checkout (`idempotency_key` column on orders). | **PASS** (order idempotency verified) |
+| `0009_orders_pagination_indexes.sql` | Composite indexes for high-volume order queries and pagination. | **PARTIALLY VERIFIED** (SQL syntax inspected; remote query execution plan pending) |
+| `0010_homepage_product_indexes.sql` | Composite index `idx_products_cat_status_featured_created` for fast homepage category queries. | **PASS** (homepage batch endpoint benchmarks verified) |
+| `0011_webhook_replays.sql` | Atomic primary key `fingerprint` table for webhook deduplication. | **PARTIALLY VERIFIED** (inspected in schema.sql; local tests passed) |
+| `0012_featured_sort_order.sql` | Adds `sort_order` and featured product ordering. | **PARTIALLY VERIFIED** (SQL syntax inspected) |
+| `0013_atomic_inventory_guards.sql` | SQLite triggers preventing negative stock and ensuring atomic deduction. | **PARTIALLY VERIFIED** (triggers active in dev schema) |
+| `0014_courier_credentials_cleanup.sql` | Cleans up legacy courier credentials from settings store. | **PARTIALLY VERIFIED** (SQL syntax inspected) |
+| `0015_remove_demo_users.sql` | Removes demo and test accounts from database. | **PARTIALLY VERIFIED** (SQL syntax inspected) |
+| `0016_slider_active_status.sql` | Adds active status column to hero slider banners. | **PARTIALLY VERIFIED** (SQL syntax inspected) |
+| `0017_product_slug.sql` | Adds clean product URL slugs. | **PARTIALLY VERIFIED** (SQL syntax inspected) |
+| `0018_product_slug_history.sql` | Adds 301 redirect history table for renamed product slugs. | **PARTIALLY VERIFIED** (SQL syntax inspected) |
+| `0019_reviews_verified_purchase_security.sql` | Guards customer reviews to verified purchases. | **PARTIALLY VERIFIED** (SQL syntax inspected) |
+| `0020_advance_payment.sql` | Adds advance payment tracking columns on orders. | **PARTIALLY VERIFIED** (SQL syntax inspected) |
 
 ---
 
-## 3. Findings Summary
-
-### 1. Critical Issues
-* **None identified in the codebase during this audit.** Authentication, authorization boundaries, cryptographic verification, and financial data protections are operating as designed.
-
-### 2. High Issues
-* **None identified.** No privilege escalation vulnerabilities, SQL injection risks, SSRF bypasses, or authentication bypasses were found.
-
-### 3. Medium Issues
-* **None identified.** Rate limiting, CSRF origin verification, and anti-enumeration protections are active across all sensitive public endpoints.
-
-### 4. Low Issues
-* **None identified.** Minor category SEO canonical inconsistencies identified in earlier audits have been resolved.
-
-### 5. Performance Findings
-* Initial page load network overhead is bounded by a single consolidated `/api/store/homepage` batch request.
-* In-flight request deduplication prevents concurrent identical calls to `/api/store/homepage` and `/api/auth/me`.
-* Admin codebase is code-split into 9 lazy-loaded chunks via `React.lazy()`.
-* Responsive images negotiate WebP formats, yielding significant payload reductions compared to master PNG assets.
-* LCP hero assets are flagged with `loading="eager"` and `fetchPriority="high"`.
-
-### 6. Security Findings
-* Password security adheres to PBKDF2 standards with 100,000 iterations.
-* Password changes enforce immediate cross-device session invalidation via rotating 32-hex `pwdSig`.
-* Forgot password and login endpoints strictly enforce anti-enumeration protections with identical generic responses.
-* Outbound webhook testing implements strict SSRF filters against 16 private IP and cloud metadata ranges.
-* File uploads validate authoritative magic bytes, enforce 10MB limits, prevent path traversal, and rate-limit to 10 uploads/min.
-* Public storefront endpoints strictly filter out sensitive buying prices and profit margins.
-
-### 7. SEO Findings
-* Canonical URLs for product pages (`/product/:id`) and category pages (`/category/:slug`) are consistent across SSR HTML, OpenGraph, JSON-LD schemas, and client state.
-* Dynamic `/sitemap.xml` includes all active categories and products while strictly excluding query parameter formats, admin routes, and customer accounts.
-* Legacy query parameter URLs (`?product=` and `?category=`) return HTTP 301 Permanent Redirects to clean canonical routes.
-* Non-existent products and categories strictly return HTTP 404 Not Found with `noindex, follow` directives.
-* Visible category names and descriptions match D1 records directly without automated SEO text rewrites.
-
-### 8. Accessibility Findings
-* All interactive controls contain accessible names or descriptive `aria-label` / `title` attributes.
-* Focus management, keyboard navigation, and modal dismissal (`Escape` key) function properly.
-* Badges and status indicators pair color coding with textual descriptions and icons.
-
----
-
-## 4. Tests Actually Executed
-
-The following **18 test suites and tooling commands** were directly executed in the current environment and passed:
-
-1. `npm run lint` (`tsc --noEmit`)
-2. `npm run build` (`vite build`)
-3. `scripts/verify-category-seo-urls.ts`
-4. `scripts/verify-seo-regression.ts`
-5. `scripts/verify-fixes.ts`
-6. `scripts/verify-regression-audit.ts`
-7. `scripts/verify-security-hardening.ts`
-8. `scripts/verify-courier-webhook-security.ts`
-9. `scripts/verify-password-reset-system.ts`
-10. `scripts/verify-upload-rate-limit.ts`
-11. `scripts/verify-part3a-rbac.ts`
-12. `scripts/verify-part3b1-permissions.ts`
-13. `scripts/verify-image-performance.ts`
-14. `scripts/verify-homepage-performance.ts`
-15. `scripts/verify-final-performance-audit.ts`
-16. `scripts/verify-performance-issues-1-and-2.ts`
-17. `scripts/verify-homepage-and-category-loading.ts`
-18. `scripts/verify-auth-security-fixes.ts`
-
----
-
-## 5. Tests NOT Executed
-
-The following 13 secondary/historical scripts in `scripts/` were **NOT RUN** during this audit cycle:
-
-1. `scripts/verify-orders-pagination.ts`
-2. `scripts/verify-orders-live.ts`
-3. `scripts/verify-auth-architecture.ts`
-4. `scripts/verify-auth-boundary.ts`
-5. `scripts/verify-profit-system.ts`
-6. `scripts/verify-invoice.ts`
-7. `scripts/verify-product-video.ts`
-8. `scripts/verify-part2-admin-operations.ts`
-9. `scripts/verify-part3b2-permission-ui.ts`
-10. `scripts/verify-part3b3-product-rbac-ui.ts`
-11. `scripts/verify-12-critical-high-issues.ts`
-12. `scripts/verify-health-and-tracking-privacy.ts`
-13. `scripts/generate-screenshot.js` (asset generation utility)
-
----
-
-## 6. Live Verification Required
+## 4. Operational Checks Still Required (NEEDS LIVE VERIFICATION)
 
 The following operational checks cannot be completed locally and require execution in the live Cloudflare production environment:
 
 | Scope | Live Verification Requirement | Expected Verification Action |
 |---|---|---|
 | **Production Deployment** | Cloudflare Workers runtime deployment. | Run `wrangler deploy` and verify worker bundles without execution error. |
-| **Remote D1 Schema** | Remote database migration application. | Run `wrangler d1 migrations apply rongdhonu-db --remote` for migrations `0001` through `0010`. |
+| **Remote D1 Schema** | Remote database migration application. | Run `wrangler d1 migrations apply rongdhonu-db --remote` for migrations `0001` through `0020`. |
 | **Edge Cache Behavior** | Real-world Cloudflare edge caching. | Inspect `CF-Cache-Status` headers (`HIT`/`MISS`/`STALE`) for `/api/store/homepage` across Dhaka, Singapore, and regional edge nodes. |
 | **Production Secrets** | Cloudflare Workers secret bindings. | Verify `ADMIN_SECRET`, `JWT_SECRET`, `STEADFAST_*`, `RESEND_*`, and `SUPER_ADMIN_*` are configured via `wrangler secret put`. |
 | **Live Courier Webhooks** | Real incoming Steadfast delivery status webhooks. | Transmit a live test webhook from Steadfast and verify HMAC-SHA256 signature validation in production logs. |

@@ -198,11 +198,14 @@ The following architectural security controls were re-verified and remain robust
 - [x] **Finding 4:** Timing side-channel and account enumeration on password reset (**FIXED** — asynchronous Resend dispatch, dummy DB queries, and uniform delay equalization).
 - [x] **Finding 5:** API error leakage (**FIXED** — centralized response helper intercepts 500 errors and masks raw messages).
 - [x] **Finding 6:** Identity lookup using non-unique `name` column (**FIXED** — identity lookup strictly restricted to unique `email` and primary key `id`).
+- [x] **Finding 7:** Store settings authorization bypass risk (**FIXED** — `settings.manage` added to authoritative `SUPER_ADMIN_ONLY_PERMISSIONS`).
+- [x] **Finding 8:** Legacy permission alias security (**FIXED** — explicit mapping table and normalized key security prevent privilege escalation).
 
-### Remaining Issues
-- None. All identified authentication, authorization, secret disclosure, timing, and lookup ambiguities have been systematically addressed and verified.
+### Pending & Production-Dependent Verification
+- While all local code implementation and automated test suites have passed, end-to-end production operations remain **NEEDS LIVE VERIFICATION** until executed against live Cloudflare infrastructure, real remote D1 databases, and third-party APIs.
 
-### Items Requiring Production Verification
-1. **Environment Variables:** Confirm `ADMIN_SECRET`, `COURIER_WEBHOOK_SECRET`, `SUPER_ADMIN_EMAILS`, and `RESEND_API_KEY` are configured as Cloudflare Worker Secrets in production.
+### Items Requiring Production Verification (NEEDS LIVE VERIFICATION)
+1. **Environment Variables & Secrets:** Confirm `ADMIN_SECRET`, `COURIER_WEBHOOK_SECRET`, `SUPER_ADMIN_EMAILS`, and `RESEND_API_KEY` are configured as Cloudflare Worker Secrets in production.
 2. **Resend Domain Verification:** Verify that `RESEND_FROM_EMAIL` has active SPF, DKIM, and DMARC DNS records configured on the sending domain.
-3. **Database Migration Verification:** Ensure all D1 migrations up to `0010_homepage_product_indexes.sql` have been applied to the production Cloudflare D1 instance.
+3. **Database Migration Verification:** Ensure all 20 D1 migrations (`0001` through `0020_advance_payment.sql`) have been applied to the production Cloudflare D1 instance via `npx wrangler d1 migrations apply rongdhonu-db --remote`.
+4. **Live Courier Inbound Webhooks:** Validate HMAC-SHA256 signature processing against live Steadfast webhook transmissions.
