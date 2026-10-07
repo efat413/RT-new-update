@@ -1588,11 +1588,16 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         );
       }
 
-      // Clear failed rate limit on successful credentials
-      await Promise.all([
-        clearFailedAttempts(rateKey, env.DB),
-        clearFailedAttempts(ipRateKey, env.DB),
-      ]);
+      // Security Hardening: Reset account-specific failed attempts upon successful login,
+      // so a legitimate user who previously mistyped their password is not locked out on subsequent attempts.
+      //
+      // CRITICAL SECURITY CONTROL (Credential Stuffing & Password Spraying Protection):
+      // Do NOT clear the global IP rate limit (`ipRateKey`).
+      // Clearing the IP limiter on successful login would allow an attacker possessing a valid account
+      // (or test credentials) to repeatedly reset their IP rate limit and execute unlimited brute-force
+      // attacks against other accounts from that IP address.
+      // The IP rate limit must persist and expire naturally according to its TTL window (900s / 15 minutes).
+      await clearFailedAttempts(rateKey, env.DB);
 
       // If user had plaintext password in D1, upgrade to PBKDF2 hash immediately and refresh userRow
       if (userRow.password && !userRow.password.startsWith('pbkdf2:')) {

@@ -1615,6 +1615,26 @@ function localApiDevPlugin(): Plugin {
               return res.end(JSON.stringify({ success: false, error: 'Email/Username is required.' }));
             }
 
+            const clientIp = getDevClientIp(req);
+            const ipRateKey = `login:ip:${clientIp}`;
+            const rateKey = `login:${clientIp}:${identifier}`;
+
+            if (!checkDevRateLimit(ipRateKey, 25, 900)) {
+              res.statusCode = 429;
+              return res.end(JSON.stringify({
+                success: false,
+                error: 'Too many login attempts from this network. Please wait before trying again.',
+              }));
+            }
+
+            if (!checkDevRateLimit(rateKey, 5, 900)) {
+              res.statusCode = 429;
+              return res.end(JSON.stringify({
+                success: false,
+                error: 'Too many failed login attempts for this account. Please wait before trying again.',
+              }));
+            }
+
             const isSuperAdminIdentifier =
               identifier === 'admin' ||
               identifier === 'superadmin' ||
@@ -1642,9 +1662,15 @@ function localApiDevPlugin(): Plugin {
             }
 
             if (!isPasswordValid || !foundUser) {
+              recordDevRateAttempt(rateKey, 900);
+              recordDevRateAttempt(ipRateKey, 900);
               res.statusCode = 401;
               return res.end(JSON.stringify({ success: false, error: 'Invalid email/username or password.' }));
             }
+
+            // Security Hardening: Reset account-specific failed attempts upon successful login,
+            // but do NOT clear the global IP rate limit (ipRateKey) to prevent attacker bypassing IP limits.
+            devRateLimits.delete(rateKey);
 
             // Account status enforcement: Inactive or suspended accounts cannot authenticate
             if (foundUser.status === 'inactive' || foundUser.status === 'suspended' || foundUser.is_active === 0) {
