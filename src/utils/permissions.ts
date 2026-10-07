@@ -16,6 +16,9 @@ import {
   isValidPermissionKey,
   isSuperAdminOnlyPermission,
   mapLegacyPermissionsToGranular,
+  getCanonicalPermissionKey,
+  LEGACY_PERMISSION_MAPPINGS,
+  type LegacyPermissionMapping,
 } from '../server/permissions';
 import { type UserAccount, type AdminPermissions, type UserRole } from '../types';
 
@@ -27,6 +30,9 @@ export {
   SUPER_ADMIN_ONLY_PERMISSIONS,
   isValidPermissionKey,
   isSuperAdminOnlyPermission,
+  getCanonicalPermissionKey,
+  LEGACY_PERMISSION_MAPPINGS,
+  type LegacyPermissionMapping,
 };
 
 /**
@@ -71,6 +77,11 @@ export function hasUserPermission(
       return false;
     }
 
+    const canonical = getCanonicalPermissionKey(permStr);
+    if (canonical && isSuperAdminOnlyPermission(canonical)) {
+      return false;
+    }
+
     // Strict Financial Security: Any financial alias or cost/profit query is permanently Super Admin-only
     const normalizedKey = permStr.toLowerCase().replace(/[^a-z0-9]/g, '');
     if (
@@ -83,7 +94,15 @@ export function hasUserPermission(
       normalizedKey.includes('reportfinancial') ||
       normalizedKey.includes('costprice') ||
       normalizedKey.includes('purchaseprice') ||
-      normalizedKey.includes('productcost')
+      normalizedKey.includes('productcost') ||
+      normalizedKey.includes('settingsmanage') ||
+      normalizedKey.includes('managesettings') ||
+      normalizedKey.includes('usermanage') ||
+      normalizedKey.includes('manageuser') ||
+      normalizedKey.includes('userdelete') ||
+      normalizedKey.includes('deleteuser') ||
+      normalizedKey.includes('permissionmanage') ||
+      normalizedKey.includes('managepermission')
     ) {
       return false;
     }
@@ -95,6 +114,11 @@ export function hasUserPermission(
     // Direct match on user.permissions
     if (permStr in user.permissions) {
       return Boolean(user.permissions[permStr]);
+    }
+
+    // Canonical key match on user.permissions
+    if (canonical && canonical in user.permissions) {
+      return Boolean(user.permissions[canonical]);
     }
 
     // Cross-alias checks for buying price and profit

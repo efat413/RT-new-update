@@ -722,7 +722,7 @@ function localApiDevPlugin(): Plugin {
     const permStr = String(permission);
     if (isSuperAdminOnlyPermission(permStr as any)) return false;
 
-    // Strict Financial Security: Any financial alias or cost/profit query is permanently Super Admin-only
+    // Strict Financial & Privileged Security: Any financial, settings, user, or permission alias is permanently Super Admin-only
     const normalizedKey = permStr.toLowerCase().replace(/[^a-z0-9]/g, '');
     if (
       normalizedKey.includes('buyingprice') ||
@@ -734,7 +734,15 @@ function localApiDevPlugin(): Plugin {
       normalizedKey.includes('reportfinancial') ||
       normalizedKey.includes('costprice') ||
       normalizedKey.includes('purchaseprice') ||
-      normalizedKey.includes('productcost')
+      normalizedKey.includes('productcost') ||
+      normalizedKey.includes('settingsmanage') ||
+      normalizedKey.includes('managesettings') ||
+      normalizedKey.includes('usermanage') ||
+      normalizedKey.includes('manageuser') ||
+      normalizedKey.includes('userdelete') ||
+      normalizedKey.includes('deleteuser') ||
+      normalizedKey.includes('permissionmanage') ||
+      normalizedKey.includes('managepermission')
     ) {
       return false; // Permanently Super Admin-only!
     }

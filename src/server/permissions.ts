@@ -623,8 +623,295 @@ export function isValidPermissionKey(key: string): key is PermissionKey {
 /**
  * Checks whether a permission key is strictly Super Admin only
  */
-export function isSuperAdminOnlyPermission(key: PermissionKey): boolean {
-  return SUPER_ADMIN_ONLY_PERMISSIONS.has(key);
+export function isSuperAdminOnlyPermission(key: PermissionKey | string): boolean {
+  if (SUPER_ADMIN_ONLY_PERMISSIONS.has(key as PermissionKey)) return true;
+  const canonical = getCanonicalPermissionKey(key);
+  if (canonical && SUPER_ADMIN_ONLY_PERMISSIONS.has(canonical)) return true;
+  return false;
+}
+
+/**
+ * Explicit Legacy Permission Mapping & Sensitivity Dictionary
+ * Part of audit & backward-compatibility guarantee.
+ * Maps legacy/deprecated names, camelCase keys, and aliases to their canonical PermissionKey.
+ */
+export interface LegacyPermissionMapping {
+  legacyKey: string;
+  canonicalKey: PermissionKey;
+  sensitivity: 'super_admin_only' | 'sensitive' | 'operational';
+  description: string;
+}
+
+export const LEGACY_PERMISSION_MAPPINGS: Record<string, LegacyPermissionMapping> = {
+  // 1. Sensitive Financial Aliases (Super Admin Only)
+  'product.buying_price': {
+    legacyKey: 'product.buying_price',
+    canonicalKey: 'product.view_buying_price',
+    sensitivity: 'super_admin_only',
+    description: 'Wholesale buying price viewing alias.',
+  },
+  'buying_price': {
+    legacyKey: 'buying_price',
+    canonicalKey: 'product.view_buying_price',
+    sensitivity: 'super_admin_only',
+    description: 'Shorthand buying price viewing alias.',
+  },
+  'buyingPrice': {
+    legacyKey: 'buyingPrice',
+    canonicalKey: 'product.view_buying_price',
+    sensitivity: 'super_admin_only',
+    description: 'CamelCase buying price viewing alias.',
+  },
+  'view_buying_price': {
+    legacyKey: 'view_buying_price',
+    canonicalKey: 'product.view_buying_price',
+    sensitivity: 'super_admin_only',
+    description: 'Shorthand viewing buying price alias.',
+  },
+  'viewBuyingPrice': {
+    legacyKey: 'viewBuyingPrice',
+    canonicalKey: 'product.view_buying_price',
+    sensitivity: 'super_admin_only',
+    description: 'CamelCase viewing buying price alias.',
+  },
+  'product.manage_buying_price': {
+    legacyKey: 'product.manage_buying_price',
+    canonicalKey: 'product.manage_buying_price',
+    sensitivity: 'super_admin_only',
+    description: 'Wholesale buying price management authority.',
+  },
+  'manage_buying_price': {
+    legacyKey: 'manage_buying_price',
+    canonicalKey: 'product.manage_buying_price',
+    sensitivity: 'super_admin_only',
+    description: 'Shorthand buying price management alias.',
+  },
+  'manageBuyingPrice': {
+    legacyKey: 'manageBuyingPrice',
+    canonicalKey: 'product.manage_buying_price',
+    sensitivity: 'super_admin_only',
+    description: 'CamelCase buying price management alias.',
+  },
+  'product.view_profit': {
+    legacyKey: 'product.view_profit',
+    canonicalKey: 'product.view_profit',
+    sensitivity: 'super_admin_only',
+    description: 'Unit gross profit and margin access.',
+  },
+  'report.profit': {
+    legacyKey: 'report.profit',
+    canonicalKey: 'report.profit',
+    sensitivity: 'super_admin_only',
+    description: 'Store profit analytics reports.',
+  },
+  'profit': {
+    legacyKey: 'profit',
+    canonicalKey: 'product.view_profit',
+    sensitivity: 'super_admin_only',
+    description: 'Shorthand profit alias.',
+  },
+  'unitprofit': {
+    legacyKey: 'unitprofit',
+    canonicalKey: 'product.view_profit',
+    sensitivity: 'super_admin_only',
+    description: 'Shorthand unit profit alias.',
+  },
+  'unitProfit': {
+    legacyKey: 'unitProfit',
+    canonicalKey: 'product.view_profit',
+    sensitivity: 'super_admin_only',
+    description: 'CamelCase unit profit alias.',
+  },
+  'view_profit': {
+    legacyKey: 'view_profit',
+    canonicalKey: 'product.view_profit',
+    sensitivity: 'super_admin_only',
+    description: 'Shorthand view profit alias.',
+  },
+  'viewProfit': {
+    legacyKey: 'viewProfit',
+    canonicalKey: 'product.view_profit',
+    sensitivity: 'super_admin_only',
+    description: 'CamelCase view profit alias.',
+  },
+  'report_profit': {
+    legacyKey: 'report_profit',
+    canonicalKey: 'report.profit',
+    sensitivity: 'super_admin_only',
+    description: 'Snake_case profit report alias.',
+  },
+  'reportProfit': {
+    legacyKey: 'reportProfit',
+    canonicalKey: 'report.profit',
+    sensitivity: 'super_admin_only',
+    description: 'CamelCase profit report alias.',
+  },
+  'report.financial': {
+    legacyKey: 'report.financial',
+    canonicalKey: 'report.financial',
+    sensitivity: 'super_admin_only',
+    description: 'Financial reports and operating expenses.',
+  },
+  'report_financial': {
+    legacyKey: 'report_financial',
+    canonicalKey: 'report.financial',
+    sensitivity: 'super_admin_only',
+    description: 'Snake_case financial report alias.',
+  },
+  'reportFinancial': {
+    legacyKey: 'reportFinancial',
+    canonicalKey: 'report.financial',
+    sensitivity: 'super_admin_only',
+    description: 'CamelCase financial report alias.',
+  },
+  'analytics.financial': {
+    legacyKey: 'analytics.financial',
+    canonicalKey: 'report.financial',
+    sensitivity: 'super_admin_only',
+    description: 'Analytics module financial report alias.',
+  },
+
+  // 2. Protected Store Settings Aliases (Super Admin Only)
+  'settings.manage': {
+    legacyKey: 'settings.manage',
+    canonicalKey: 'settings.manage',
+    sensitivity: 'super_admin_only',
+    description: 'Store settings configuration authority.',
+  },
+  'manage_settings': {
+    legacyKey: 'manage_settings',
+    canonicalKey: 'settings.manage',
+    sensitivity: 'super_admin_only',
+    description: 'Snake_case store settings management alias.',
+  },
+  'manageSettings': {
+    legacyKey: 'manageSettings',
+    canonicalKey: 'settings.manage',
+    sensitivity: 'super_admin_only',
+    description: 'CamelCase store settings management alias.',
+  },
+
+  // 3. User & RBAC Management Aliases (Super Admin Only)
+  'user.manage': {
+    legacyKey: 'user.manage',
+    canonicalKey: 'user.manage',
+    sensitivity: 'super_admin_only',
+    description: 'Admin user creation and management authority.',
+  },
+  'manage_users': {
+    legacyKey: 'manage_users',
+    canonicalKey: 'user.manage',
+    sensitivity: 'super_admin_only',
+    description: 'Snake_case admin user management alias.',
+  },
+  'manageUsers': {
+    legacyKey: 'manageUsers',
+    canonicalKey: 'user.manage',
+    sensitivity: 'super_admin_only',
+    description: 'CamelCase admin user management alias.',
+  },
+  'user.delete': {
+    legacyKey: 'user.delete',
+    canonicalKey: 'user.delete',
+    sensitivity: 'super_admin_only',
+    description: 'Admin user deletion authority.',
+  },
+  'delete_users': {
+    legacyKey: 'delete_users',
+    canonicalKey: 'user.delete',
+    sensitivity: 'super_admin_only',
+    description: 'Snake_case user deletion alias.',
+  },
+  'deleteUsers': {
+    legacyKey: 'deleteUsers',
+    canonicalKey: 'user.delete',
+    sensitivity: 'super_admin_only',
+    description: 'CamelCase user deletion alias.',
+  },
+  'permission.manage': {
+    legacyKey: 'permission.manage',
+    canonicalKey: 'permission.manage',
+    sensitivity: 'super_admin_only',
+    description: 'RBAC permission management authority.',
+  },
+  'manage_permissions': {
+    legacyKey: 'manage_permissions',
+    canonicalKey: 'permission.manage',
+    sensitivity: 'super_admin_only',
+    description: 'Snake_case permission management alias.',
+  },
+  'managePermissions': {
+    legacyKey: 'managePermissions',
+    canonicalKey: 'permission.manage',
+    sensitivity: 'super_admin_only',
+    description: 'CamelCase permission management alias.',
+  },
+
+  // 4. Harmless Operational Aliases (Safe Operational RBAC)
+  'courier.dispatch': {
+    legacyKey: 'courier.dispatch',
+    canonicalKey: 'courier.booking',
+    sensitivity: 'operational',
+    description: 'Legacy alias for courier parcel dispatch/booking.',
+  },
+  'order.dispatch': {
+    legacyKey: 'order.dispatch',
+    canonicalKey: 'courier.booking',
+    sensitivity: 'operational',
+    description: 'Legacy alias for order parcel dispatch/booking.',
+  },
+  'category.create': {
+    legacyKey: 'category.create',
+    canonicalKey: 'category.manage',
+    sensitivity: 'operational',
+    description: 'Legacy alias for category creation.',
+  },
+  'category.update': {
+    legacyKey: 'category.update',
+    canonicalKey: 'category.manage',
+    sensitivity: 'operational',
+    description: 'Legacy alias for category update.',
+  },
+  'slider.create': {
+    legacyKey: 'slider.create',
+    canonicalKey: 'slider.manage',
+    sensitivity: 'operational',
+    description: 'Legacy alias for slider creation.',
+  },
+  'slider.update': {
+    legacyKey: 'slider.update',
+    canonicalKey: 'slider.manage',
+    sensitivity: 'operational',
+    description: 'Legacy alias for slider update.',
+  },
+  'coupon.create': {
+    legacyKey: 'coupon.create',
+    canonicalKey: 'coupon.manage',
+    sensitivity: 'operational',
+    description: 'Legacy alias for coupon creation.',
+  },
+  'coupon.update': {
+    legacyKey: 'coupon.update',
+    canonicalKey: 'coupon.manage',
+    sensitivity: 'operational',
+    description: 'Legacy alias for coupon update.',
+  },
+};
+
+/**
+ * Resolves a permission string or alias to its canonical PermissionKey if recognized.
+ * If an alias exists in LEGACY_PERMISSION_MAPPINGS, it maps to the canonical key
+ * (e.g., 'product.buying_price' -> 'product.view_buying_price').
+ */
+export function getCanonicalPermissionKey(perm: string): PermissionKey | null {
+  const mapping = LEGACY_PERMISSION_MAPPINGS[perm];
+  if (mapping) {
+    return mapping.canonicalKey;
+  }
+  if (isValidPermissionKey(perm)) {
+    return perm;
+  }
+  return null;
 }
 
 /**
@@ -728,6 +1015,15 @@ export function resolveUserPermissions(
 
   if (hasLegacyFlags) {
     base = { ...base, ...mapLegacyPermissionsToGranular(parsed) };
+  }
+
+  // Check if legacy aliases exist in parsed
+  for (const [rawKey, val] of Object.entries(parsed)) {
+    if (!val) continue;
+    const mapping = LEGACY_PERMISSION_MAPPINGS[rawKey];
+    if (mapping) {
+      base[mapping.canonicalKey] = true;
+    }
   }
 
   // Overlay granular keys (e.g. "product.view": true)
@@ -883,6 +1179,9 @@ export function detectPrivilegeEscalationAttempt(payload: any): boolean {
 
       // Check if raw key itself is a registered granular permission
       if (isValidPermissionKey(rawKey)) return true;
+
+      // Check if raw key is a registered legacy permission alias
+      if (rawKey in LEGACY_PERMISSION_MAPPINGS) return true;
 
       // Recursively check nested objects
       if (val && typeof val === 'object') {
