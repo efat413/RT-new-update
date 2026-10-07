@@ -365,7 +365,7 @@ const AdminPanelContent: React.FC = () => {
   const [prodStock, setProdStock] = useState<number>(10);
   const [prodFeatured, setProdFeatured] = useState(false);
   const [prodRating, setProdRating] = useState<number>(5.0);
-  const [prodReviewsCount, setProdReviewsCount] = useState<number>(1);
+  const [prodReviewsCount, setProdReviewsCount] = useState<number>(0);
   const [prodVideoUrl, setProdVideoUrl] = useState('');
   const [productSearch, setProductSearch] = useState('');
 
@@ -393,7 +393,7 @@ const AdminPanelContent: React.FC = () => {
   // Quick Rating Adjustment Modal State
   const [ratingModalProduct, setRatingModalProduct] = useState<Product | null>(null);
   const [customRatingValue, setCustomRatingValue] = useState<number>(5.0);
-  const [customReviewsCount, setCustomReviewsCount] = useState<number>(1);
+  const [customReviewsCount, setCustomReviewsCount] = useState<number>(0);
   const [ratingSaveSuccess, setRatingSaveSuccess] = useState<string | null>(null);
 
   // Category CRUD states
@@ -1330,7 +1330,7 @@ const AdminPanelContent: React.FC = () => {
     setProdStock(15);
     setProdFeatured(false);
     setProdRating(5.0);
-    setProdReviewsCount(1);
+    setProdReviewsCount(0);
     setProdVideoUrl('');
     setProdSizes([]);
     setNewSizeInput('');
@@ -1405,7 +1405,7 @@ const AdminPanelContent: React.FC = () => {
     setProdStock(product.stock);
     setProdFeatured(product.featured);
     setProdRating(product.rating || 5.0);
-    setProdReviewsCount(product.reviewsCount || 1);
+    setProdReviewsCount(product.reviewsCount ?? 0);
     setProdVideoUrl(product.videoUrl || '');
     setProdSizes(product.sizes ? [...product.sizes] : []);
     setNewSizeInput('');
@@ -1598,6 +1598,11 @@ const AdminPanelContent: React.FC = () => {
     }
 
     try {
+      const finalReviewsCount =
+        prodReviewsCount === '' || prodReviewsCount === undefined
+          ? 0
+          : Math.max(0, Math.floor(Number(prodReviewsCount)));
+
       if (editingProduct) {
         const res = await updateProduct(editingProduct.id, {
           title: prodTitle.trim(),
@@ -1612,7 +1617,7 @@ const AdminPanelContent: React.FC = () => {
           stock: Number(prodStock),
           featured: prodFeatured,
           rating: Number(prodRating) || 5.0,
-          reviewsCount: Number(prodReviewsCount) || 0,
+          reviewsCount: finalReviewsCount,
           sizes: prodSizes.length > 0 ? prodSizes : undefined,
           colors: prodColors.length > 0 ? prodColors : undefined,
           videoUrl: prodVideoUrl.trim(),
@@ -1635,7 +1640,7 @@ const AdminPanelContent: React.FC = () => {
           stock: Number(prodStock),
           featured: prodFeatured,
           rating: Number(prodRating) || 5.0,
-          reviewsCount: Number(prodReviewsCount) || 1,
+          reviewsCount: finalReviewsCount,
           specs: ['Standard 1-year authentic warranty', 'Verified Bangladeshi import'],
           sizes: prodSizes.length > 0 ? prodSizes : undefined,
           colors: prodColors.length > 0 ? prodColors : undefined,
@@ -1659,14 +1664,22 @@ const AdminPanelContent: React.FC = () => {
   const openRatingAdjustmentModal = (product: Product) => {
     setRatingModalProduct(product);
     setCustomRatingValue(product.rating || 5.0);
-    setCustomReviewsCount(product.reviewsCount || 1);
+    setCustomReviewsCount(product.reviewsCount ?? 0);
   };
 
   const handleSaveRatingAdjustment = (e: React.FormEvent) => {
     e.preventDefault();
     if (!ratingModalProduct) return;
-    adjustProductRating(ratingModalProduct.id, customRatingValue, customReviewsCount);
-    setRatingSaveSuccess(`Rating for "${ratingModalProduct.title}" adjusted to ${customRatingValue}★ (${customReviewsCount} reviews)!`);
+    const sanitizedReviewsCount =
+      customReviewsCount === '' || customReviewsCount === undefined
+        ? 0
+        : Math.max(0, Math.floor(Number(customReviewsCount)));
+    adjustProductRating(ratingModalProduct.id, customRatingValue, sanitizedReviewsCount);
+    setRatingSaveSuccess(
+      sanitizedReviewsCount > 0
+        ? `Rating for "${ratingModalProduct.title}" adjusted to ${customRatingValue}★ (${sanitizedReviewsCount} reviews)!`
+        : `Rating for "${ratingModalProduct.title}" adjusted to ${customRatingValue}★ (0 reviews / No customer reviews)!`
+    );
     setTimeout(() => setRatingSaveSuccess(null), 3500);
     setRatingModalProduct(null);
   };
@@ -4745,7 +4758,7 @@ const AdminPanelContent: React.FC = () => {
                             {product.rating !== undefined ? product.rating.toFixed(1) : '5.0'}
                           </span>
                           <span className="text-slate-400 text-[11px]">
-                            ({product.reviewsCount || 1} revs)
+                            {(product.reviewsCount ?? 0) > 0 ? `(${product.reviewsCount} revs)` : '(No reviews)'}
                           </span>
                         </div>
                         {hasPermission('product.update') && (
@@ -8714,13 +8727,30 @@ const AdminPanelContent: React.FC = () => {
                   {/* Reviews Count Section */}
                   <div className="pt-2 border-t border-amber-200/70">
                     <label className="block text-xs font-bold text-amber-900 mb-1.5 flex items-center justify-between">
-                      <span>Total Customer Reviews Count</span>
+                      <div className="flex items-center gap-1.5">
+                        <span>Customer Reviews</span>
+                        <span className="text-[10px] font-semibold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded-md border border-amber-200">
+                          Optional
+                        </span>
+                      </div>
                       <span className="font-mono font-bold text-amber-900 text-xs">
-                        {prodReviewsCount} reviews
+                        {prodReviewsCount > 0 ? `${prodReviewsCount} reviews` : '0 reviews (No reviews)'}
                       </span>
                     </label>
 
                     <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setProdReviewsCount(0)}
+                        className={`px-2 py-1.5 rounded-xl border text-xs font-bold transition-colors ${
+                          prodReviewsCount === 0
+                            ? 'bg-amber-800 text-white border-amber-900 shadow-2xs'
+                            : 'bg-white hover:bg-amber-100 border-amber-300 text-amber-800'
+                        }`}
+                        title="Set to 0 reviews (No customer reviews)"
+                      >
+                        0 (None)
+                      </button>
                       <button
                         type="button"
                         onClick={() => setProdReviewsCount((prev) => Math.max(0, prev - 5))}
@@ -8742,9 +8772,10 @@ const AdminPanelContent: React.FC = () => {
                         type="number"
                         min="0"
                         value={prodReviewsCount}
-                        onChange={(e) =>
-                          setProdReviewsCount(Math.max(0, parseInt(e.target.value, 10) || 0))
-                        }
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setProdReviewsCount(val === '' ? 0 : Math.max(0, parseInt(val, 10) || 0));
+                        }}
                         className="flex-1 px-3 py-1.5 bg-white border border-amber-300 rounded-xl text-xs font-bold text-center text-slate-800 focus:ring-2 focus:ring-amber-500"
                       />
                       <button
@@ -8771,26 +8802,33 @@ const AdminPanelContent: React.FC = () => {
                     <span className="text-slate-500 text-[11px] font-medium">
                       Storefront preview:
                     </span>
-                    <div className="flex items-center gap-1.5">
-                      <div className="flex items-center text-amber-500">
-                        {[1, 2, 3, 4, 5].map((starIdx) => (
-                          <Star
-                            key={starIdx}
-                            className={`w-3.5 h-3.5 ${
-                              starIdx <= Math.round(prodRating)
-                                ? 'fill-amber-400 text-amber-500'
-                                : 'text-slate-200'
-                            }`}
-                          />
-                        ))}
+                    {prodReviewsCount > 0 ? (
+                      <div className="flex items-center gap-1.5">
+                        <div className="flex items-center text-amber-500">
+                          {[1, 2, 3, 4, 5].map((starIdx) => (
+                            <Star
+                              key={starIdx}
+                              className={`w-3.5 h-3.5 ${
+                                starIdx <= Math.round(prodRating)
+                                  ? 'fill-amber-400 text-amber-500'
+                                  : 'text-slate-200'
+                              }`}
+                            />
+                          ))}
+                        </div>
+                        <span className="font-bold text-slate-800 text-xs font-mono">
+                          {prodRating.toFixed(1)}
+                        </span>
+                        <span className="text-slate-400 text-[11px]">
+                          ({prodReviewsCount} {prodReviewsCount === 1 ? 'review' : 'reviews'})
+                        </span>
                       </div>
-                      <span className="font-bold text-slate-800 text-xs font-mono">
-                        {prodRating.toFixed(1)}
-                      </span>
-                      <span className="text-slate-400 text-[11px]">
-                        ({prodReviewsCount} {prodReviewsCount === 1 ? 'review' : 'reviews'})
-                      </span>
-                    </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5 text-slate-500 text-[11px] font-medium">
+                        <span className="inline-block w-1.5 h-1.5 rounded-full bg-slate-300" />
+                        <span>No customer reviews yet</span>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -9408,7 +9446,7 @@ const AdminPanelContent: React.FC = () => {
                     {ratingModalProduct.title}
                   </h4>
                   <p className="text-[11px] text-slate-500">
-                    Current: <strong className="text-amber-600">{ratingModalProduct.rating ? ratingModalProduct.rating.toFixed(1) : '5.0'}★</strong> ({ratingModalProduct.reviewsCount || 1} reviews)
+                    Current: <strong className="text-amber-600">{ratingModalProduct.rating ? ratingModalProduct.rating.toFixed(1) : '5.0'}★</strong> ({(ratingModalProduct.reviewsCount ?? 0) > 0 ? `${ratingModalProduct.reviewsCount} reviews` : 'No customer reviews'})
                   </p>
                 </div>
               </div>
@@ -9490,8 +9528,16 @@ const AdminPanelContent: React.FC = () => {
 
               {/* Reviews Count */}
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Total Reviews Count
+                <label className="block text-xs font-bold text-slate-700 mb-1 flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <span>Total Reviews Count</span>
+                    <span className="text-[10px] font-semibold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-md border border-slate-200">
+                      Optional
+                    </span>
+                  </div>
+                  <span className="text-[11px] text-slate-500 font-mono">
+                    {customReviewsCount > 0 ? `${customReviewsCount} reviews` : '0 (No reviews)'}
+                  </span>
                 </label>
                 <div className="flex gap-2">
                   <input
@@ -9499,11 +9545,25 @@ const AdminPanelContent: React.FC = () => {
                     type="number"
                     min="0"
                     value={customReviewsCount}
-                    onChange={(e) => setCustomReviewsCount(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setCustomReviewsCount(val === '' ? 0 : Math.max(0, parseInt(val, 10) || 0));
+                    }}
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-amber-500"
-                    required
                   />
                   <div className="flex gap-1 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setCustomReviewsCount(0)}
+                      className={`px-2 py-1 ${
+                        customReviewsCount === 0
+                          ? 'bg-slate-900 text-white'
+                          : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                      } font-bold text-xs rounded-lg transition-colors`}
+                      title="Set to 0 reviews"
+                    >
+                      0 (None)
+                    </button>
                     {[10, 50, 128, 250].map((rc) => (
                       <button
                         key={rc}

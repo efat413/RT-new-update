@@ -576,24 +576,37 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
                 onClick={() => setActiveTab('reviews')}
                 className="flex items-center gap-2 cursor-pointer group hover:opacity-80 transition-opacity"
               >
-                <div className="flex items-center text-amber-400">
-                  {[...Array(5)].map((_, i) => (
-                    <Star
-                      key={i}
-                      className={`w-3.5 h-3.5 ${
-                        i < Math.floor(product.rating)
-                          ? 'fill-amber-400 text-amber-400'
-                          : 'text-slate-300'
-                      }`}
-                    />
-                  ))}
-                </div>
-                <span className="text-xs font-bold text-slate-700">
-                  {typeof product.rating === 'number' ? product.rating.toFixed(1) : product.rating}
-                </span>
-                <span className="text-xs text-rose-600 underline font-semibold">
-                  ({totalReviewsCount} {totalReviewsCount === 1 ? 'review' : 'reviews'})
-                </span>
+                {totalReviewsCount > 0 ? (
+                  <>
+                    <div className="flex items-center text-amber-400">
+                      {[...Array(5)].map((_, i) => (
+                        <Star
+                          key={i}
+                          className={`w-3.5 h-3.5 ${
+                            i < Math.floor(product.rating)
+                              ? 'fill-amber-400 text-amber-400'
+                              : 'text-slate-300'
+                          }`}
+                        />
+                      ))}
+                    </div>
+                    <span className="text-xs font-bold text-slate-700">
+                      {typeof product.rating === 'number' ? product.rating.toFixed(1) : product.rating}
+                    </span>
+                    <span className="text-xs text-rose-600 underline font-semibold">
+                      ({totalReviewsCount} {totalReviewsCount === 1 ? 'review' : 'reviews'})
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center text-slate-200">
+                      {[...Array(5)].map((_, i) => (
+                        <Star key={i} className="w-3.5 h-3.5 text-slate-200" />
+                      ))}
+                    </div>
+                    <span className="text-xs font-medium text-slate-500">No reviews yet</span>
+                  </>
+                )}
               </div>
 
               <div className="flex items-center gap-1.5">

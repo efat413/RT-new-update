@@ -683,34 +683,57 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
               </div>
 
               {/* Star Rating & Reviews Summary */}
-              <div className="flex items-center gap-3">
-                <div className="flex items-center text-amber-400">
-                  {[...Array(5)].map((_, i) => (
-                    <Star
-                      key={i}
-                      className={`w-4 h-4 ${
-                        i < Math.floor(product.rating)
-                          ? 'fill-amber-400 text-amber-400'
-                          : 'text-slate-300'
-                      }`}
-                    />
-                  ))}
+              {totalReviewsCount > 0 ? (
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center text-amber-400">
+                    {[...Array(5)].map((_, i) => (
+                      <Star
+                        key={i}
+                        className={`w-4 h-4 ${
+                          i < Math.floor(product.rating)
+                            ? 'fill-amber-400 text-amber-400'
+                            : 'text-slate-300'
+                        }`}
+                      />
+                    ))}
+                  </div>
+                  <span className="text-sm font-bold text-slate-800">
+                    {typeof product.rating === 'number' ? product.rating.toFixed(1) : product.rating}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab('reviews');
+                      const el = document.getElementById('product-tabs-section');
+                      if (el) el.scrollIntoView({ behavior: 'smooth' });
+                    }}
+                    className="text-xs text-rose-600 hover:text-rose-700 font-semibold underline cursor-pointer"
+                  >
+                    ({totalReviewsCount} {totalReviewsCount === 1 ? 'verified review' : 'verified reviews'})
+                  </button>
                 </div>
-                <span className="text-sm font-bold text-slate-800">
-                  {typeof product.rating === 'number' ? product.rating.toFixed(1) : product.rating}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setActiveTab('reviews');
-                    const el = document.getElementById('product-tabs-section');
-                    if (el) el.scrollIntoView({ behavior: 'smooth' });
-                  }}
-                  className="text-xs text-rose-600 hover:text-rose-700 font-semibold underline cursor-pointer"
-                >
-                  ({totalReviewsCount} {totalReviewsCount === 1 ? 'verified review' : 'verified reviews'})
-                </button>
-              </div>
+              ) : (
+                <div className="flex items-center gap-2.5 text-xs text-slate-500">
+                  <div className="flex items-center text-slate-200">
+                    {[...Array(5)].map((_, i) => (
+                      <Star key={i} className="w-4 h-4 text-slate-200" />
+                    ))}
+                  </div>
+                  <span className="font-semibold text-slate-600">No customer reviews yet</span>
+                  <span className="text-slate-300">•</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab('reviews');
+                      const el = document.getElementById('product-tabs-section');
+                      if (el) el.scrollIntoView({ behavior: 'smooth' });
+                    }}
+                    className="text-xs text-rose-600 hover:text-rose-700 font-semibold underline cursor-pointer"
+                  >
+                    Be the first to review
+                  </button>
+                </div>
+              )}
 
               {/* Pricing Section */}
               <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200/90 flex items-baseline justify-between gap-4">

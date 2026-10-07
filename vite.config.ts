@@ -2702,7 +2702,9 @@ function localApiDevPlugin(): Plugin {
                 stock: Number(product.stock) || 0,
                 featured: Boolean(product.featured),
                 rating: Number(product.rating) || 5.0,
-                reviewsCount: Number(product.reviewsCount) || 0,
+                reviewsCount: (product.reviewsCount !== undefined && product.reviewsCount !== null && product.reviewsCount !== '')
+                  ? (Number.isFinite(Number(product.reviewsCount)) ? Math.max(0, Math.floor(Number(product.reviewsCount))) : 0)
+                  : 0,
                 specs: product.specs || [],
                 sizes: product.sizes || [],
                 colors: product.colors || [],
@@ -2857,6 +2859,14 @@ function localApiDevPlugin(): Plugin {
                 }
                 if ('videoUrl' in updates) {
                   updates.videoUrl = updates.videoUrl ? String(updates.videoUrl).trim() : undefined;
+                }
+                if (updates.reviewsCount !== undefined) {
+                  const parsedRev = updates.reviewsCount !== null && updates.reviewsCount !== '' ? Number(updates.reviewsCount) : 0;
+                  updates.reviewsCount = Number.isFinite(parsedRev) ? Math.max(0, Math.floor(parsedRev)) : 0;
+                }
+                if (updates.rating !== undefined) {
+                  const parsedRating = Number(updates.rating);
+                  updates.rating = Number.isFinite(parsedRating) ? Math.max(1, Math.min(5, Number(parsedRating.toFixed(1)))) : 5.0;
                 }
                 // Handle slug updates or stabilization
                 const oldSlug = devProducts[idx].slug;

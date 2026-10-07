@@ -712,7 +712,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           ? {
               ...p,
               rating: Number(avgRating.toFixed(1)),
-              reviewsCount: Math.max((p.reviewsCount || 0) + 1, productRevs.length),
+              reviewsCount: Math.max((p.reviewsCount ?? 0) + 1, productRevs.length),
             }
           : p
       )
@@ -738,7 +738,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           ? {
               ...p,
               rating: Number(avgRating.toFixed(1)),
-              reviewsCount: Math.max(0, Math.max((p.reviewsCount || 1) - 1, remainingForProduct.length)),
+              reviewsCount: Math.max(0, Math.max((p.reviewsCount ?? 0) - 1, remainingForProduct.length)),
             }
           : p
       )
