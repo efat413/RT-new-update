@@ -85,10 +85,29 @@ function localApiDevPlugin(): Plugin {
       dueAmount: customerDue,
     };
   });
-  let devProducts: any[] = INITIAL_PRODUCTS.map((p) => ({
-    ...p,
-    buyingPrice: p.buyingPrice ?? Math.round(Number(p.price) * 0.6),
-  }));
+  let devProducts: any[] = [
+    ...INITIAL_PRODUCTS.map((p) => ({
+      ...p,
+      buyingPrice: p.buyingPrice ?? Math.round(Number(p.price) * 0.6),
+    })),
+    {
+      id: 'prod-test-inactive-01',
+      slug: 'inactive-test-product',
+      title: 'Inactive Security Test Product',
+      price: 1500,
+      originalPrice: 2000,
+      buyingPrice: 900,
+      status: 'inactive',
+      categoryId: 'cat-mens-accessories',
+      description: 'Security regression test inactive product.',
+      imageUrl: 'https://images.unsplash.com/photo-1524805444758-089113d48a6d?auto=format&fit=crop&w=800&q=80',
+      stock: 10,
+      featured: false,
+      rating: 5.0,
+      reviewsCount: 0,
+      createdAt: '2026-03-01T10:00:00.000Z',
+    },
+  ];
   let devProductSlugHistory: Array<{ id: string; productId: string; slug: string; createdAt: string }> = [];
   let devCategories: any[] = [...INITIAL_CATEGORIES];
   let devSliders: any[] = [...INITIAL_SLIDES];
@@ -207,8 +226,31 @@ function localApiDevPlugin(): Plugin {
         canManageOrders: true,
         'order.view': true,
         'courier.booking': true,
+        'product.view': false,
+        'product.create': false,
+        'product.update': false,
+        'product.delete': false,
       },
       phone: '01700000002',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    },
+    {
+      id: 'test-admin-no-product',
+      name: 'Order-Only Admin',
+      email: 'orderadmin@local.test',
+      role: 'admin',
+      permissions: {
+        'order.view': true,
+        'order.manage': true,
+        'product.view': false,
+        'product.create': false,
+        'product.update': false,
+        'product.delete': false,
+        'product.view_buying_price': false,
+        'product.manage_buying_price': false,
+        'product.view_profit': false,
+      },
+      phone: '01700000099',
       createdAt: '2026-01-01T00:00:00.000Z',
     },
     {
@@ -2380,23 +2422,45 @@ function localApiDevPlugin(): Plugin {
         }
 
         // 1. PRODUCTS
-        if (url.pathname === '/api/products') {
+        if (url.pathname === '/api/products' || url.pathname === '/api/admin/products') {
           if (method === 'GET') {
+            const isAdminRoute = url.pathname === '/api/admin/products';
+            const includeInactiveParam = url.searchParams.get('includeInactive');
+            const allParam = url.searchParams.get('all');
+            const adminParam = url.searchParams.get('admin');
+            const isExplicitAdminRequest = isAdminRoute || includeInactiveParam === 'true' || allParam === 'true' || adminParam === 'true';
+
             const authResult = requireDevAuth(req);
             const auth = authResult.auth;
+
+            // If explicitly requesting protected administrative product access:
+            // Caller MUST be authenticated and MUST strictly have 'product.view' permission (or be Super Admin)!
+            // Being admin or sub_admin by role ALONE does NOT grant administrative product access.
+            if (isExplicitAdminRequest) {
+              if (authResult.error) {
+                return sendDevError(res, authResult.error);
+              }
+              const isSuper = auth!.role === 'super_admin';
+              const hasProductView = isSuper || hasDevPermission(auth!, 'product.view');
+              if (!hasProductView) {
+                return sendDevError(res, {
+                  status: 403,
+                  body: {
+                    success: false,
+                    error: 'Forbidden: You do not have the "product.view" permission required to perform this action.',
+                  },
+                });
+              }
+            }
+
             const isSuperAdmin = auth?.role === 'super_admin';
-            const isStaff = Boolean(auth && (auth.role === 'admin' || auth.role === 'sub_admin' || auth.role === 'staff' || isSuperAdmin));
+            const hasProductView = Boolean(auth && (isSuperAdmin || hasDevPermission(auth, 'product.view')));
             const canViewBuyingPrice = Boolean(auth && (isSuperAdmin || hasDevPermission(auth, 'product.view_buying_price')));
             const canViewProfit = Boolean(auth && (isSuperAdmin || hasDevPermission(auth, 'product.view_profit')));
-            const canManageProducts = Boolean(
-              auth &&
-              (isSuperAdmin ||
-                hasDevPermission(auth, 'product.create') ||
-                hasDevPermission(auth, 'product.update') ||
-                hasDevPermission(auth, 'product.view'))
-            );
-            const isPrivileged = isSuperAdmin || isStaff || canViewBuyingPrice || canViewProfit || canManageProducts;
-            const includeInactive = Boolean(isPrivileged && (url.searchParams.get('includeInactive') === 'true' || url.searchParams.get('all') === 'true'));
+
+            // Strict RBAC: Only Super Admin or users with explicit 'product.view' permission receive administrative product privileges
+            const isPrivileged = hasProductView;
+            const includeInactive = Boolean(isPrivileged && (isAdminRoute || includeInactiveParam === 'true' || allParam === 'true'));
 
             const cat = url.searchParams.get('category');
             const search = (url.searchParams.get('search') || '').trim().toLowerCase();
@@ -2588,24 +2652,36 @@ function localApiDevPlugin(): Plugin {
           }
         }
 
-        const prodMatch = url.pathname.match(/^\/api\/products\/([^/]+)$/);
+        const prodMatch = url.pathname.match(/^\/api\/(?:admin\/)?products\/([^/]+)$/);
         if (prodMatch) {
           const id = decodeURIComponent(prodMatch[1]);
+          const isAdminRoute = url.pathname.startsWith('/api/admin/products/');
+          const adminParam = url.searchParams.get('admin') === 'true';
+          const isExplicitAdminRequest = isAdminRoute || adminParam;
+
           const authResult = requireDevAuth(req);
           const auth = authResult.auth;
           const isSuperAdmin = auth?.role === 'super_admin';
+          const hasProductView = Boolean(auth && (isSuperAdmin || hasDevPermission(auth, 'product.view')));
           const canViewBuyingPrice = Boolean(auth && (isSuperAdmin || hasDevPermission(auth, 'product.view_buying_price')));
           const canViewProfit = Boolean(auth && (isSuperAdmin || hasDevPermission(auth, 'product.view_profit')));
-          const isPrivileged = Boolean(
-            auth &&
-            (isSuperAdmin ||
-              canViewBuyingPrice ||
-              canViewProfit ||
-              hasDevPermission(auth, 'product.create') ||
-              hasDevPermission(auth, 'product.update'))
-          );
 
           if (method === 'GET') {
+            if (isExplicitAdminRequest) {
+              if (authResult.error) {
+                return sendDevError(res, authResult.error);
+              }
+              if (!hasProductView) {
+                return sendDevError(res, {
+                  status: 403,
+                  body: {
+                    success: false,
+                    error: 'Forbidden: You do not have the "product.view" permission required to perform this action.',
+                  },
+                });
+              }
+            }
+
             let found = devProducts.find((p) => p.id === id || p.slug === id);
             if (!found) {
               const hist = devProductSlugHistory.find((h) => h.slug === id);
@@ -2613,16 +2689,40 @@ function localApiDevPlugin(): Plugin {
                 found = devProducts.find((p) => p.id === hist.productId);
               }
             }
-            const singleCacheControl = isPrivileged
+
+            if (!found) {
+              res.statusCode = 404;
+              return res.end(JSON.stringify({ success: false, error: 'Product not found' }));
+            }
+
+            // Inactive product protection:
+            const isInactive = found.status === 'inactive' || Boolean((found as any).isDeleted);
+            if (isInactive) {
+              if (!auth || auth.role === 'customer') {
+                res.statusCode = 404;
+                return res.end(JSON.stringify({ success: false, error: 'Product not found' }));
+              }
+              if (!hasProductView) {
+                return sendDevError(res, {
+                  status: 403,
+                  body: {
+                    success: false,
+                    error: 'Forbidden: You do not have the "product.view" permission required to view inactive products.',
+                  },
+                });
+              }
+            }
+
+            const singleCacheControl = hasProductView
               ? 'no-store, no-cache, must-revalidate, max-age=0'
               : 'public, max-age=15, s-maxage=45, stale-while-revalidate=30';
             res.setHeader('Cache-Control', singleCacheControl);
             res.setHeader('Vary', 'Origin, Cookie, Authorization, Accept-Encoding');
-            res.statusCode = found ? 200 : 404;
-            return res.end(JSON.stringify(found ? {
+            res.statusCode = 200;
+            return res.end(JSON.stringify({
               success: true,
               product: sanitizeDevProduct(found, { isSuperAdmin, canViewBuyingPrice, canViewProfit }),
-            } : { success: false, error: 'Not found' }));
+            }));
           }
           if (method === 'PUT' || method === 'PATCH') {
             const permErr = requireDevPermission(authResult, 'product.update');

@@ -2498,9 +2498,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
   // ==========================================
   // 1. PRODUCTS CRUD ROUTES
   // ==========================================
-  if (path === '/api/products') {
+  if (path === '/api/products' || path === '/api/admin/products') {
     if (method === 'GET') {
       try {
+        const isAdminRoute = path === '/api/admin/products';
         const category = url.searchParams.get('category') || undefined;
         const search = url.searchParams.get('search') || undefined;
         const featuredParam = url.searchParams.get('featured');
@@ -2508,17 +2509,38 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         const pageParam = url.searchParams.get('page');
         const limitParam = url.searchParams.get('limit');
         const sortBy = (url.searchParams.get('sortBy') || undefined) as any;
+        const includeInactiveParam = url.searchParams.get('includeInactive');
+        const allParam = url.searchParams.get('all');
+        const adminParam = url.searchParams.get('admin');
 
-        // Security check: Buying price & Unit profit strictly filtered on server!
+        const isExplicitAdminRequest = isAdminRoute || includeInactiveParam === 'true' || allParam === 'true' || adminParam === 'true';
+
+        // Security check: Authorize request using authoritative permission resolver
         const authRes = await requireAuth(request, env);
         const user = authRes.auth;
+
+        // If explicitly requesting protected administrative product access:
+        // Caller MUST be authenticated and MUST strictly have 'product.view' permission (or be Super Admin)!
+        // Being admin or sub_admin by role ALONE does NOT grant administrative product access.
+        if (isExplicitAdminRequest) {
+          if (authRes.errorResponse) {
+            return authRes.errorResponse;
+          }
+          const isSuperAdmin = user?.role === 'super_admin';
+          const hasProductView = Boolean(isSuperAdmin || (user && hasPermission(user, 'product.view')));
+          if (!hasProductView) {
+            return jsonResponse(
+              {
+                success: false,
+                error: 'Forbidden: You do not have the "product.view" permission required to perform this action.',
+              },
+              403
+            );
+          }
+        }
+
         const isSuperAdmin = Boolean(!authRes.errorResponse && user?.role === 'super_admin');
-        const isStaff = Boolean(
-          !authRes.errorResponse &&
-          user &&
-          (user.role === 'admin' || user.role === 'sub_admin' || user.role === 'super_admin')
-        );
-        // Root cause remediation: Ensure Super Admin and permission aliases are fully recognized
+        const hasProductView = Boolean(!authRes.errorResponse && user && (isSuperAdmin || hasPermission(user, 'product.view')));
         const canViewBuyingPrice = Boolean(
           !authRes.errorResponse &&
           user &&
@@ -2529,13 +2551,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           user &&
           (isSuperAdmin || hasPermission(user, 'product.view_profit') || hasPermission(user, 'report.profit'))
         );
-        const canManageProducts = Boolean(
-          !authRes.errorResponse &&
-          user &&
-          (isSuperAdmin || hasPermission(user, 'product.create') || hasPermission(user, 'product.update') || hasPermission(user, 'product.view'))
-        );
-        const isPrivileged = isSuperAdmin || isStaff || canViewBuyingPrice || canViewProfit || canManageProducts;
-        const includeInactive = Boolean(isPrivileged && (url.searchParams.get('includeInactive') === 'true' || url.searchParams.get('all') === 'true'));
+
+        // Granular RBAC: Administrative product-read access requires product.view permission or Super Admin.
+        // Role alone (admin / sub_admin) without product.view NEVER grants administrative catalog access.
+        const isPrivileged = hasProductView;
+        const includeInactive = Boolean(isPrivileged && (isAdminRoute || includeInactiveParam === 'true' || allParam === 'true'));
 
         // Performance & DoS Protection: Safe pagination defaults & hard maximum limits
         const DEFAULT_PUBLIC_PAGE = 1;
@@ -2724,44 +2744,73 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     }
   }
 
-  const productIdMatch = path.match(/^\/api\/products\/([^/]+)$/);
+  const productIdMatch = path.match(/^\/api\/(?:admin\/)?products\/([^/]+)$/);
   if (productIdMatch) {
     const prodId = decodeURIComponent(productIdMatch[1]);
+    const isAdminRoute = path.startsWith('/api/admin/products/');
+    const adminParam = url.searchParams.get('admin') === 'true';
+    const isExplicitAdminRequest = isAdminRoute || adminParam;
 
     if (method === 'GET') {
       try {
-        // Security check: ONLY Super Admin or authorized users receive Buying Price & Unit Profit!
         const authRes = await requireAuth(request, env);
-        const isSuperAdmin = Boolean(!authRes.errorResponse && authRes.auth?.role === 'super_admin');
+        const user = authRes.auth;
+        const isSuperAdmin = Boolean(!authRes.errorResponse && user?.role === 'super_admin');
+        const hasProductView = Boolean(!authRes.errorResponse && user && (isSuperAdmin || hasPermission(user, 'product.view')));
         const canViewBuyingPrice = Boolean(
           !authRes.errorResponse &&
-          authRes.auth &&
-          (isSuperAdmin || hasPermission(authRes.auth, 'product.view_buying_price') || hasPermission(authRes.auth, 'product.buying_price'))
+          user &&
+          (isSuperAdmin || hasPermission(user, 'product.view_buying_price') || hasPermission(user, 'product.buying_price'))
         );
         const canViewProfit = Boolean(
           !authRes.errorResponse &&
-          authRes.auth &&
-          (isSuperAdmin || hasPermission(authRes.auth, 'product.view_profit') || hasPermission(authRes.auth, 'report.profit'))
+          user &&
+          (isSuperAdmin || hasPermission(user, 'product.view_profit') || hasPermission(user, 'report.profit'))
         );
-        const canManageProducts = Boolean(
-          !authRes.errorResponse &&
-          authRes.auth &&
-          (isSuperAdmin || hasPermission(authRes.auth, 'product.create') || hasPermission(authRes.auth, 'product.update'))
-        );
-        const isPrivileged = isSuperAdmin || canViewBuyingPrice || canViewProfit || canManageProducts;
 
-        const product = await getProductById(env.DB, prodId, { includeBuyingPrice: isSuperAdmin || canViewBuyingPrice || isPrivileged });
+        // If explicitly requesting admin product read:
+        // Must be authenticated and have product.view permission or be Super Admin
+        if (isExplicitAdminRequest) {
+          if (authRes.errorResponse) {
+            return authRes.errorResponse;
+          }
+          if (!hasProductView) {
+            return jsonResponse(
+              {
+                success: false,
+                error: 'Forbidden: You do not have the "product.view" permission required to perform this action.',
+              },
+              403
+            );
+          }
+        }
+
+        const shouldIncludeBuyingPrice = isSuperAdmin || canViewBuyingPrice;
+        const product = await getProductById(env.DB, prodId, { includeBuyingPrice: shouldIncludeBuyingPrice });
         if (!product) return jsonResponse({ success: false, error: 'Product not found' }, 404);
 
-        // Public single-product endpoint: Inactive/deleted products must not be publicly accessible
+        // Inactive / deleted products protection:
         const isInactive = product.status !== 'active' || Boolean((product as any).isDeleted);
-        if (isInactive && !isPrivileged) {
-          return jsonResponse({ success: false, error: 'Product not found' }, 404);
+        if (isInactive) {
+          // Public customers and unauthenticated users must never discover or view inactive products
+          if (!user || user.role === 'customer') {
+            return jsonResponse({ success: false, error: 'Product not found' }, 404);
+          }
+          // Authenticated staff / admin accounts must strictly have product.view permission
+          if (!hasProductView) {
+            return jsonResponse(
+              {
+                success: false,
+                error: 'Forbidden: You do not have the "product.view" permission required to view inactive products.',
+              },
+              403
+            );
+          }
         }
 
         const safeProduct = sanitizeProductForRole(product, { isSuperAdmin, canViewBuyingPrice, canViewProfit });
 
-        const cacheControl = isPrivileged
+        const cacheControl = hasProductView
           ? 'no-store, no-cache, must-revalidate, max-age=0'
           : 'public, max-age=15, s-maxage=45, stale-while-revalidate=30';
 

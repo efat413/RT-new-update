@@ -111,8 +111,11 @@ export async function getTestCustomerToken(
     return await loginAndGetToken(email, password, baseUrl);
   } catch {
     try {
-      return await loginAndGetToken(email, 'password123', baseUrl);
+      return await loginAndGetToken(email, 'admin', baseUrl);
     } catch {
+      try {
+        return await loginAndGetToken(email, 'password123', baseUrl);
+      } catch {
       // Attempt registration
       const regRes = await fetch(`${baseUrl}/api/auth/register`, {
         method: 'POST',
@@ -132,4 +135,5 @@ export async function getTestCustomerToken(
       return await loginAndGetToken(email, password, baseUrl);
     }
   }
+}
 }
