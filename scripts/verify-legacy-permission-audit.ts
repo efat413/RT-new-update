@@ -31,7 +31,7 @@ import {
   type PermissionKey,
 } from '../src/server/permissions';
 import { hasUserPermission } from '../src/utils/permissions';
-import { getTestAdminToken } from './test-auth-helper';
+import { getTestAdminToken, loginAndGetToken } from './test-auth-helper';
 
 const BASE_URL = 'http://localhost:3000';
 
@@ -316,18 +316,20 @@ async function runLegacyAuditSuite() {
   assert(!!normalAdmin, `Found normal admin (${normalAdmin?.email})`);
   assert(!!subAdmin, `Found sub-admin (${subAdmin?.email})`);
 
-  async function getLoginToken(email: string, password = 'Password123!'): Promise<string> {
-    const res = await fetch(`${BASE_URL}/api/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
-    });
-    const d: any = await res.json();
-    return d.token || '';
-  }
+  // Ensure known passwords for API testing
+  await fetch(`${BASE_URL}/api/users/${normalAdmin.id}/reset-password`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${superToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ newPassword: 'Password123!' }),
+  });
+  await fetch(`${BASE_URL}/api/users/${subAdmin.id}/reset-password`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${superToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ newPassword: 'Password123!' }),
+  });
 
-  const adminToken = await getLoginToken(normalAdmin.email);
-  const subAdminToken = await getLoginToken(subAdmin.email);
+  const adminToken = await loginAndGetToken(normalAdmin.email, 'Password123!', BASE_URL);
+  const subAdminToken = await loginAndGetToken(subAdmin.email, 'Password123!', BASE_URL);
   assert(!!adminToken, 'Obtained normal admin token');
   assert(!!subAdminToken, 'Obtained sub-admin token');
 
