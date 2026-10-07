@@ -193,8 +193,8 @@ export const UserAccountModal: React.FC<UserAccountModalProps> = ({ isOpen, onCl
       return;
     }
 
-    if (!trimmedNew || trimmedNew.length < 6) {
-      setPasswordChangeMessage({ text: 'New password must be at least 6 characters long.', isError: true });
+    if (!trimmedNew || trimmedNew.length < 10) {
+      setPasswordChangeMessage({ text: 'New password must be at least 10 characters long.', isError: true });
       return;
     }
 
@@ -587,7 +587,8 @@ export const UserAccountModal: React.FC<UserAccountModalProps> = ({ isOpen, onCl
                             type={showNewPassword ? 'text' : 'password'}
                             value={newPassword}
                             onChange={(e) => setNewPassword(e.target.value)}
-                            placeholder="At least 6 characters"
+                            placeholder="At least 10 characters"
+                            minLength={10}
                             className="w-full pl-9 pr-9 py-2 bg-white border border-slate-300 rounded-xl text-xs font-medium text-slate-800 focus:ring-2 focus:ring-rose-500"
                           />
                           <button
@@ -612,6 +613,7 @@ export const UserAccountModal: React.FC<UserAccountModalProps> = ({ isOpen, onCl
                             value={confirmNewPassword}
                             onChange={(e) => setConfirmNewPassword(e.target.value)}
                             placeholder="Re-enter new password"
+                            minLength={10}
                             className="w-full pl-9 pr-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-medium text-slate-800 focus:ring-2 focus:ring-rose-500"
                           />
                         </div>

@@ -143,10 +143,10 @@ async function runTests() {
     'Router cryptographically verifies current password against stored hash'
   );
 
-  // 3. Verify new password is validated against policy (>= 6 characters)
+  // 3. Verify new password is validated against policy (>= 10 characters)
   assert(
-    routerCode.includes('New password must be at least 6 characters long.'),
-    'Router enforces minimum password length policy (>= 6 characters)'
+    routerCode.includes('New password must be at least 10 characters long.'),
+    'Router enforces minimum password length policy (>= 10 characters)'
   );
 
   // 4. Verify new password is hashed with PBKDF2 before storage

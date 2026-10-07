@@ -1753,9 +1753,9 @@ function localApiDevPlugin(): Plugin {
               res.statusCode = 400;
               return res.end(JSON.stringify({ success: false, error: 'Valid email address is required.' }));
             }
-            if (!password || password.length < 6) {
+            if (!password || password.length < 10) {
               res.statusCode = 400;
-              return res.end(JSON.stringify({ success: false, error: 'Password must be at least 6 characters long.' }));
+              return res.end(JSON.stringify({ success: false, error: 'Password must be at least 10 characters long.' }));
             }
 
             const existing = devUsers.find((u) => u.email.toLowerCase() === email);
@@ -1807,9 +1807,9 @@ function localApiDevPlugin(): Plugin {
             const newPassword = (body.newPassword || '').trim();
             const currentPassword = (body.currentPassword || body.oldPassword || '').trim();
 
-            if (!newPassword || newPassword.length < 6) {
+            if (!newPassword || newPassword.length < 10) {
               res.statusCode = 400;
-              return res.end(JSON.stringify({ success: false, error: 'New password must be at least 6 characters long.' }));
+              return res.end(JSON.stringify({ success: false, error: 'New password must be at least 10 characters long.' }));
             }
 
             const targetUser = authResult.auth!.user;
@@ -2002,13 +2002,13 @@ function localApiDevPlugin(): Plugin {
                 error: 'Password reset token is required.',
               }));
             }
-            if (!newPassword || newPassword.length < 6) {
+            if (!newPassword || newPassword.length < 10) {
               res.statusCode = 400;
               return res.end(JSON.stringify({
                 success: false,
                 status: 'INVALID_PASSWORD',
-                message: 'New password must be at least 6 characters long.',
-                error: 'New password must be at least 6 characters long.',
+                message: 'New password must be at least 10 characters long.',
+                error: 'New password must be at least 10 characters long.',
               }));
             }
 
@@ -3405,6 +3405,12 @@ function localApiDevPlugin(): Plugin {
                 return sendDevError(res, { status: 403, body: { success: false, error: 'Forbidden: Only Super Administrator can configure account roles or permissions.' } });
               }
               const { password: rawPassword, ...restUser } = u;
+              if (rawPassword) {
+                const plainPw = String(rawPassword).trim();
+                if (plainPw.length < 10) {
+                  return sendDevError(res, { status: 400, body: { success: false, error: 'Password must be at least 10 characters long.' } });
+                }
+              }
               const newU = { id: u.id || `user-${Date.now()}`, ...restUser, createdAt: new Date().toISOString() };
               if (rawPassword && String(rawPassword).trim() && newU.email) {
                 const hashed = await hashPassword(String(rawPassword).trim());
@@ -3512,8 +3518,8 @@ function localApiDevPlugin(): Plugin {
 
               if (isChangingPassword) {
                 const plainPw = String(updates.password).trim();
-                if (plainPw.length < 6) {
-                  return sendDevError(res, { status: 400, body: { success: false, error: 'New password must be at least 6 characters long.' } });
+                if (plainPw.length < 10) {
+                  return sendDevError(res, { status: 400, body: { success: false, error: 'New password must be at least 10 characters long.' } });
                 }
                 const newHashed = await hashPassword(plainPw);
                 delete updates.password; // NEVER store plaintext!
@@ -3655,9 +3661,9 @@ function localApiDevPlugin(): Plugin {
 
           return readBody(async (body) => {
             const newPassword = (body.newPassword || body.password || '').trim();
-            if (!newPassword || newPassword.length < 6) {
+            if (!newPassword || newPassword.length < 10) {
               res.statusCode = 400;
-              return res.end(JSON.stringify({ success: false, error: 'New password must be at least 6 characters long.' }));
+              return res.end(JSON.stringify({ success: false, error: 'New password must be at least 10 characters long.' }));
             }
 
             const newHashed = await hashPassword(newPassword);

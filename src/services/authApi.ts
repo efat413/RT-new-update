@@ -385,7 +385,7 @@ export const authApi = {
         } else if (status === 'TOKEN_EXPIRED') {
           msg = 'This password reset link has expired (valid for 60 minutes). Please request a new one.';
         } else if (status === 'INVALID_PASSWORD') {
-          msg = 'New password must be at least 6 characters long.';
+          msg = 'New password must be at least 10 characters long.';
         }
         return {
           success: false,

@@ -2224,7 +2224,7 @@ const AdminPanelContent: React.FC = () => {
   const handleGenerateRandomPassword = () => {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%';
     let result = '';
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 12; i++) {
       result += chars.charAt(Math.floor(Math.random() * chars.length));
     }
     setNewPasswordValue(result);
@@ -2233,6 +2233,12 @@ const AdminPanelContent: React.FC = () => {
   const handleResetPasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!resettingUser || !newPasswordValue.trim()) return;
+
+    if (newPasswordValue.trim().length < 10) {
+      setAccountFeedback('New password must be at least 10 characters long.');
+      setTimeout(() => setAccountFeedback(null), 4000);
+      return;
+    }
 
     const res = await resetCustomerPassword(resettingUser.email, newPasswordValue.trim());
     if (res.success) {
@@ -2412,8 +2418,8 @@ const AdminPanelContent: React.FC = () => {
     e.preventDefault();
     setSuperAdminPwError('');
 
-    if (!superAdminNewPw || superAdminNewPw.trim().length < 6) {
-      setSuperAdminPwError('New password must be at least 6 characters long.');
+    if (!superAdminNewPw || superAdminNewPw.trim().length < 10) {
+      setSuperAdminPwError('New password must be at least 10 characters long.');
       return;
     }
 
@@ -10678,11 +10684,11 @@ const AdminPanelContent: React.FC = () => {
                     placeholder="Enter or generate new password..."
                     className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500"
                     required
-                    minLength={6}
+                    minLength={10}
                   />
                 </div>
                 <p className="text-[10px] text-slate-400">
-                  Minimum 6 characters. You can click "Generate Random Password" to auto-create a strong password.
+                  Minimum 10 characters. You can click "Generate Random Password" to auto-create a strong password.
                 </p>
               </div>
 
@@ -10701,7 +10707,7 @@ const AdminPanelContent: React.FC = () => {
                 <button
                   type="submit"
                   id="confirm-reset-password-btn"
-                  disabled={!newPasswordValue.trim() || newPasswordValue.length < 6}
+                  disabled={!newPasswordValue.trim() || newPasswordValue.trim().length < 10}
                   className="flex-1 py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-black text-white font-bold text-xs shadow-md hover:shadow-lg active:scale-95 transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <Check className="w-4 h-4" />
@@ -10810,9 +10816,9 @@ const AdminPanelContent: React.FC = () => {
                     type={showSuperAdminPwInputs ? 'text' : 'password'}
                     value={superAdminNewPw}
                     onChange={(e) => setSuperAdminNewPw(e.target.value)}
-                    placeholder="Minimum 6 characters"
+                    placeholder="Minimum 10 characters"
                     required
-                    minLength={6}
+                    minLength={10}
                     className="w-full px-3.5 py-2.5 pr-10 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-hidden"
                   />
                   <button
@@ -10824,7 +10830,7 @@ const AdminPanelContent: React.FC = () => {
                   </button>
                 </div>
                 <span className="text-[10px] text-slate-400 block">
-                  Must be at least 6 characters. This updates your master login password across all admin sessions.
+                  Must be at least 10 characters. This updates your master login password across all admin sessions.
                 </span>
               </div>
 

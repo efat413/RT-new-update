@@ -55,8 +55,8 @@ export const ResetPasswordPage: React.FC = () => {
     const trimmedNew = newPassword.trim();
     const trimmedConfirm = confirmPassword.trim();
 
-    if (!trimmedNew || trimmedNew.length < 6) {
-      setErrorMessage('New password must be at least 6 characters long.');
+    if (!trimmedNew || trimmedNew.length < 10) {
+      setErrorMessage('New password must be at least 10 characters long.');
       return;
     }
 
@@ -184,9 +184,9 @@ export const ResetPasswordPage: React.FC = () => {
                         type={showPassword ? 'text' : 'password'}
                         value={newPassword}
                         onChange={(e) => setNewPassword(e.target.value)}
-                        placeholder="At least 6 characters"
+                        placeholder="At least 10 characters"
                         required
-                        minLength={6}
+                        minLength={10}
                         disabled={isLoading || tokenMissing}
                         className="w-full pl-10 pr-10 py-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 disabled:bg-slate-100 disabled:text-slate-400"
                       />
@@ -215,7 +215,7 @@ export const ResetPasswordPage: React.FC = () => {
                         onChange={(e) => setConfirmPassword(e.target.value)}
                         placeholder="Re-enter your new password"
                         required
-                        minLength={6}
+                        minLength={10}
                         disabled={isLoading || tokenMissing}
                         className="w-full pl-10 pr-10 py-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 disabled:bg-slate-100 disabled:text-slate-400"
                       />

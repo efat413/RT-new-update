@@ -264,8 +264,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, message: 'Please provide a valid email address.' };
     }
 
-    if (!trimmedPassword || trimmedPassword.length < 6) {
-      return { success: false, message: 'Password must be at least 6 characters.' };
+    if (!trimmedPassword || trimmedPassword.length < 10) {
+      return { success: false, message: 'Password must be at least 10 characters long.' };
     }
 
     try {
@@ -359,8 +359,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     currentPassword?: string
   ): Promise<{ success: boolean; message: string }> => {
     const trimmedNew = newPassword.trim();
-    if (!trimmedNew || trimmedNew.length < 6) {
-      return { success: false, message: 'New password must be at least 6 characters long.' };
+    if (!trimmedNew || trimmedNew.length < 10) {
+      return { success: false, message: 'New password must be at least 10 characters long.' };
     }
 
     if (!currentPassword || !currentPassword.trim()) {

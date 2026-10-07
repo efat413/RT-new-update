@@ -1700,8 +1700,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       if (!email || !email.includes('@')) {
         return jsonResponse({ success: false, error: 'Valid email address is required.' }, 400);
       }
-      if (!password || password.length < 6) {
-        return jsonResponse({ success: false, error: 'Password must be at least 6 characters long.' }, 400);
+      if (!password || password.length < 10) {
+        return jsonResponse({ success: false, error: 'Password must be at least 10 characters long.' }, 400);
       }
 
       // Check D1 for existing user
@@ -1920,13 +1920,13 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         );
       }
 
-      if (!newPassword || newPassword.length < 6) {
+      if (!newPassword || newPassword.length < 10) {
         return jsonResponse(
           {
             success: false,
             status: 'INVALID_PASSWORD',
-            message: 'New password must be at least 6 characters long.',
-            error: 'New password must be at least 6 characters long.',
+            message: 'New password must be at least 10 characters long.',
+            error: 'New password must be at least 10 characters long.',
           },
           400
         );
@@ -2051,9 +2051,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     const newPassword = (body?.newPassword || '').trim();
     const currentPassword = (body?.currentPassword || body?.oldPassword || '').trim();
 
-    if (!newPassword || newPassword.length < 6) {
+    if (!newPassword || newPassword.length < 10) {
       return jsonResponse(
-        { success: false, error: 'New password must be at least 6 characters long.' },
+        { success: false, error: 'New password must be at least 10 characters long.' },
         400
       );
     }
@@ -3951,6 +3951,18 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           );
         }
 
+        // Validate password policy if supplied during admin user creation
+        if (userData.password) {
+          const plainPw = String(userData.password).trim();
+          if (plainPw.length < 10) {
+            return jsonResponse(
+              { success: false, error: 'Password must be at least 10 characters long.' },
+              400
+            );
+          }
+          userData.password = plainPw;
+        }
+
         const created = await insertUser(env.DB, userData);
         return jsonResponse({ success: true, user: created }, 201);
       } catch (err: any) {
@@ -4100,9 +4112,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         // Validate new password policy if password is being updated
         if (updates.password) {
           const plainPw = String(updates.password).trim();
-          if (plainPw.length < 6) {
+          if (plainPw.length < 10) {
             return jsonResponse(
-              { success: false, error: 'New password must be at least 6 characters long.' },
+              { success: false, error: 'New password must be at least 10 characters long.' },
               400
             );
           }
@@ -4313,9 +4325,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     try {
       const newPassword = (body?.newPassword || body?.password || '').trim();
 
-      if (!newPassword || newPassword.length < 6) {
+      if (!newPassword || newPassword.length < 10) {
         return jsonResponse(
-          { success: false, error: 'New password must be at least 6 characters long.' },
+          { success: false, error: 'New password must be at least 10 characters long.' },
           400
         );
       }
