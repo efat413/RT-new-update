@@ -8,7 +8,7 @@ async function runTests() {
   console.log('Test 1: PBKDF2 Hashing and Verification');
   const password = 'SuperSecurePassword2026!';
   const hash = await hashPassword(password);
-  console.assert(hash.startsWith('pbkdf2:100000:'), 'Hash must follow pbkdf2 standard');
+  console.assert(hash.startsWith('pbkdf2:'), 'Hash must follow pbkdf2 standard');
   const isValid = await verifyPassword(password, hash);
   console.assert(isValid === true, 'Valid password must verify');
   const isWrong = await verifyPassword('WrongPassword', hash);

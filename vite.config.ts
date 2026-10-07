@@ -36,7 +36,7 @@ import {
   type PermissionKey,
 } from './src/server/permissions';
 import { callSteadfastApi, normalizeSteadfastStatus } from './src/server/courier';
-import { bufferToHex, verifyPassword, hashPassword } from './src/server/auth';
+import { bufferToHex, verifyPassword, hashPassword, needsPasswordRehash } from './src/server/auth';
 import { verifyCourierWebhookAuth, computeHmacSha256Hex, computeWebhookFingerprint } from './src/server/webhookAuth';
 import { validateWebhookDestination, safeFetchWebhook } from './src/server/ssrf';
 import {
@@ -1671,6 +1671,15 @@ function localApiDevPlugin(): Plugin {
             // Security Hardening: Reset account-specific failed attempts upon successful login,
             // but do NOT clear the global IP rate limit (ipRateKey) to prevent attacker bypassing IP limits.
             devRateLimits.delete(rateKey);
+
+            // Automatic Password Hash Migration:
+            // Re-hash legacy (e.g. 100,000 iterations) or plaintext hashes to the modern 600,000 iterations standard
+            if (storedHash && needsPasswordRehash(storedHash)) {
+              const upgradedHash = await hashPassword(password);
+              if (foundUser.email) devUserPasswordHashes.set(foundUser.email.toLowerCase(), upgradedHash);
+              if (foundUser.id) devUserPasswordHashes.set(foundUser.id.toLowerCase(), upgradedHash);
+              devUserPasswordHashes.set(lookupKey, upgradedHash);
+            }
 
             // Account status enforcement: Inactive or suspended accounts cannot authenticate
             if (foundUser.status === 'inactive' || foundUser.status === 'suspended' || foundUser.is_active === 0) {

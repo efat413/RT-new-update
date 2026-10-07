@@ -80,7 +80,14 @@ export async function resolveAuthSecret(env?: { ADMIN_SECRET?: string; JWT_SECRE
   return getAuthSecret(env);
 }
 
-const PBKDF2_ITERATIONS = 100000;
+/**
+ * Cryptographic PBKDF2 iteration configurations:
+ * - OWASP Password Storage Guidelines recommend 600,000 iterations for PBKDF2-HMAC-SHA256.
+ * - Legacy accounts were previously hashed with 100,000 iterations.
+ * - Automatic transparent re-hashing upgrades 100,000-iteration hashes to 600,000 upon successful login.
+ */
+export const PBKDF2_RECOMMENDED_ITERATIONS = 600000;
+export const PBKDF2_LEGACY_ITERATIONS = 100000;
 
 export function bufferToHex(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
@@ -113,10 +120,14 @@ function base64UrlDecode(str: string): string {
 }
 
 /**
- * Hashes a plaintext password using PBKDF2-HMAC-SHA256 with a random salt.
- * Returns formatted string: pbkdf2:100000:<saltHex>:<hashHex>
+ * Hashes a plaintext password using PBKDF2-HMAC-SHA256 with a random 128-bit salt
+ * and modern recommended iteration count (600,000 iterations per OWASP standard).
+ * Returns formatted string: pbkdf2:<iterations>:<saltHex>:<hashHex>
  */
-export async function hashPassword(password: string): Promise<string> {
+export async function hashPassword(
+  password: string,
+  iterations: number = PBKDF2_RECOMMENDED_ITERATIONS
+): Promise<string> {
   const salt = new Uint8Array(16);
   crypto.getRandomValues(salt);
   const saltHex = bufferToHex(salt.buffer);
@@ -134,7 +145,7 @@ export async function hashPassword(password: string): Promise<string> {
     {
       name: 'PBKDF2',
       salt: salt,
-      iterations: PBKDF2_ITERATIONS,
+      iterations,
       hash: 'SHA-256',
     },
     keyMaterial,
@@ -142,20 +153,26 @@ export async function hashPassword(password: string): Promise<string> {
   );
 
   const hashHex = bufferToHex(derivedBits);
-  return `pbkdf2:${PBKDF2_ITERATIONS}:${saltHex}:${hashHex}`;
+  return `pbkdf2:${iterations}:${saltHex}:${hashHex}`;
 }
 
 /**
- * Verifies a plaintext password against a stored hash (or handles legacy upgrade).
+ * Verifies a plaintext password against a stored hash.
+ * 
+ * Backward Compatibility Strategy:
+ * Dynamically inspects the iteration count embedded in the stored hash
+ * (e.g., 100,000 for older accounts or 600,000 for upgraded/new accounts).
+ * Verifies the credentials securely with constant-time comparison.
  */
 export async function verifyPassword(password: string, storedHashOrPassword: string): Promise<boolean> {
   if (!storedHashOrPassword) return false;
 
-  // Handle standard PBKDF2 format
+  // Handle standard PBKDF2 format: pbkdf2:<iterations>:<saltHex>:<hashHex>
   if (storedHashOrPassword.startsWith('pbkdf2:')) {
     const parts = storedHashOrPassword.split(':');
     if (parts.length !== 4) return false;
     const iterations = parseInt(parts[1], 10);
+    if (isNaN(iterations) || iterations < 1) return false;
     const saltHex = parts[2];
     const expectedHashHex = parts[3];
 
@@ -193,6 +210,25 @@ export async function verifyPassword(password: string, storedHashOrPassword: str
   // Plaintext password comparison completely removed for security hardening
   // All production credentials must strictly use PBKDF2 format: pbkdf2:<iterations>:<saltHex>:<hashHex>
   return false;
+}
+
+/**
+ * Checks if a stored password hash needs automatic re-hashing to the modern standard.
+ * Returns true if:
+ * 1. The stored hash is in legacy plaintext format or unknown format.
+ * 2. The stored hash uses fewer PBKDF2 iterations than the recommended standard (600,000).
+ * 
+ * Migration Strategy:
+ * When an existing user logs in with valid credentials, this check detects legacy (e.g. 100,000)
+ * hashes and seamlessly re-hashes them with 600,000 iterations without requiring user action.
+ */
+export function needsPasswordRehash(storedHashOrPassword: string): boolean {
+  if (!storedHashOrPassword) return false;
+  if (!storedHashOrPassword.startsWith('pbkdf2:')) return true;
+  const parts = storedHashOrPassword.split(':');
+  if (parts.length !== 4) return true;
+  const iterations = parseInt(parts[1], 10);
+  return isNaN(iterations) || iterations < PBKDF2_RECOMMENDED_ITERATIONS;
 }
 
 /**

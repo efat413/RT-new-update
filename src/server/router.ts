@@ -97,6 +97,8 @@ import {
 import {
   verifyPassword,
   hashPassword,
+  needsPasswordRehash,
+  PBKDF2_RECOMMENDED_ITERATIONS,
   createAuthToken,
   verifyAuthToken,
   getAuthSecret,
@@ -1558,8 +1560,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       }
 
       // Timing Attack Protection: Use fixed dummy PBKDF2 hash so non-existent account verification
-      // takes the identical computational time (100,000 PBKDF2 iterations) as wrong-password verification.
-      const DUMMY_PBKDF2_HASH = 'pbkdf2:100000:0123456789abcdef0123456789abcdef:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+      // takes the identical computational time (600,000 PBKDF2 iterations) as wrong-password verification.
+      const DUMMY_PBKDF2_HASH = `pbkdf2:${PBKDF2_RECOMMENDED_ITERATIONS}:0123456789abcdef0123456789abcdef:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef`;
 
       if (!userRow) {
         await verifyPassword(password, DUMMY_PBKDF2_HASH);
@@ -1599,8 +1601,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       // The IP rate limit must persist and expire naturally according to its TTL window (900s / 15 minutes).
       await clearFailedAttempts(rateKey, env.DB);
 
-      // If user had plaintext password in D1, upgrade to PBKDF2 hash immediately and refresh userRow
-      if (userRow.password && !userRow.password.startsWith('pbkdf2:')) {
+      // Automatic Password Hash Migration Strategy:
+      // If user has a plaintext password or an older PBKDF2 hash with fewer iterations (< 600,000),
+      // transparently re-hash their password with the modern 600,000 iterations standard and update D1.
+      // This strengthens existing accounts on the fly without breaking sessions or requiring password resets.
+      if (userRow.password && needsPasswordRehash(userRow.password)) {
         await updateUserPasswordInD1(env.DB, userRow.id, password);
         userRow = (await getUserByEmailOrUsername(env.DB, userRow.id)) || userRow;
       }
