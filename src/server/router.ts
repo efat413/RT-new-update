@@ -983,12 +983,21 @@ function hasPermission(
     return false; // Permanently Super Admin-only!
   }
 
-  // Cross-alias check for sensitive financial permissions
-  if (keyStr === 'product.buying_price' || keyStr === 'product.view_buying_price') {
-    return Boolean(auth.permissions?.['product.view_buying_price'] || auth.permissions?.['product.buying_price']);
-  }
-  if (keyStr === 'report.profit' || keyStr === 'product.view_profit') {
-    return Boolean(auth.permissions?.['report.profit'] || auth.permissions?.['product.view_profit']);
+  // Strict Financial Security: Any financial alias or cost/profit query is permanently Super Admin-only
+  const normalizedKey = keyStr.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (
+    normalizedKey.includes('buyingprice') ||
+    normalizedKey.includes('viewbuyingprice') ||
+    normalizedKey.includes('managebuyingprice') ||
+    normalizedKey.includes('unitprofit') ||
+    normalizedKey.includes('viewprofit') ||
+    normalizedKey.includes('reportprofit') ||
+    normalizedKey.includes('reportfinancial') ||
+    normalizedKey.includes('costprice') ||
+    normalizedKey.includes('purchaseprice') ||
+    normalizedKey.includes('productcost')
+  ) {
+    return false; // Permanently Super Admin-only!
   }
 
   // Granular PermissionKey check

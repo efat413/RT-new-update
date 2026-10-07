@@ -71,6 +71,23 @@ export function hasUserPermission(
       return false;
     }
 
+    // Strict Financial Security: Any financial alias or cost/profit query is permanently Super Admin-only
+    const normalizedKey = permStr.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (
+      normalizedKey.includes('buyingprice') ||
+      normalizedKey.includes('viewbuyingprice') ||
+      normalizedKey.includes('managebuyingprice') ||
+      normalizedKey.includes('unitprofit') ||
+      normalizedKey.includes('viewprofit') ||
+      normalizedKey.includes('reportprofit') ||
+      normalizedKey.includes('reportfinancial') ||
+      normalizedKey.includes('costprice') ||
+      normalizedKey.includes('purchaseprice') ||
+      normalizedKey.includes('productcost')
+    ) {
+      return false;
+    }
+
     if (!user.permissions) {
       return false;
     }

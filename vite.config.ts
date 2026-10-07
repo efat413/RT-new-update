@@ -288,7 +288,7 @@ function localApiDevPlugin(): Plugin {
       permissions: {
         'product.view': true,
         'product.update': true,
-        'product.view_buying_price': true,
+        'product.view_buying_price': false,
         'product.manage_buying_price': false,
       },
       phone: '01700000005',
@@ -302,8 +302,8 @@ function localApiDevPlugin(): Plugin {
       permissions: {
         'product.view': true,
         'product.update': true,
-        'product.view_buying_price': true,
-        'product.manage_buying_price': true,
+        'product.view_buying_price': false,
+        'product.manage_buying_price': false,
       },
       phone: '01700000006',
       createdAt: '2026-01-01T00:00:00.000Z',
@@ -722,12 +722,21 @@ function localApiDevPlugin(): Plugin {
     const permStr = String(permission);
     if (isSuperAdminOnlyPermission(permStr as any)) return false;
 
-    // Cross-alias check for sensitive financial permissions
-    if (permStr === 'product.buying_price' || permStr === 'product.view_buying_price') {
-      return Boolean(auth.granularPermissions?.['product.view_buying_price'] || auth.granularPermissions?.['product.buying_price']);
-    }
-    if (permStr === 'report.profit' || permStr === 'product.view_profit') {
-      return Boolean(auth.granularPermissions?.['report.profit'] || auth.granularPermissions?.['product.view_profit']);
+    // Strict Financial Security: Any financial alias or cost/profit query is permanently Super Admin-only
+    const normalizedKey = permStr.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (
+      normalizedKey.includes('buyingprice') ||
+      normalizedKey.includes('viewbuyingprice') ||
+      normalizedKey.includes('managebuyingprice') ||
+      normalizedKey.includes('unitprofit') ||
+      normalizedKey.includes('viewprofit') ||
+      normalizedKey.includes('reportprofit') ||
+      normalizedKey.includes('reportfinancial') ||
+      normalizedKey.includes('costprice') ||
+      normalizedKey.includes('purchaseprice') ||
+      normalizedKey.includes('productcost')
+    ) {
+      return false; // Permanently Super Admin-only!
     }
 
     // Granular PermissionKey check
