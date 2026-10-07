@@ -322,7 +322,7 @@ async function runTests() {
     'Attempt to change password with incorrect password rejected with 400'
   );
 
-  // 6. Attempt privilege escalation: Try to promote self to super_admin -> Role change stripped/denied
+  // 6. Attempt privilege escalation: Try to promote self to super_admin -> Role change rejected with 403 or stripped/denied
   const escalateRes = await fetch(`${baseUrl}/api/users/${userId}`, {
     method: 'PUT',
     headers: {
@@ -338,8 +338,8 @@ async function runTests() {
   });
   const escalateData = await escalateRes.json();
   assert(
-    escalateData.user?.role === 'customer',
-    'Self-promotion attempt to super_admin was strictly prevented (role remains customer)'
+    escalateRes.status === 403 || escalateData.user?.role === 'customer',
+    'Self-promotion attempt to super_admin was strictly prevented (role remains customer or returns 403)'
   );
 
   // 7. Attempt to modify another user's account -> Must FAIL (403 Forbidden)
