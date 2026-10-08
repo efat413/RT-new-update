@@ -367,6 +367,8 @@ export type {
   PermissionMetadata,
 } from './server/permissions';
 
+export const MIN_PASSWORD_LENGTH = 8;
+
 export type UserRole = 'super_admin' | 'admin' | 'sub_admin' | 'customer';
 
 export interface AdminPermissions {

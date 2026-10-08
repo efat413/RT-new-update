@@ -18,6 +18,7 @@ import {
   CourierWebhookLog,
   CourierBooking,
   Coupon,
+  MIN_PASSWORD_LENGTH,
 } from '../types';
 import { AdminContext, AdminContextType } from './AdminContextDefinition';
 import { useStorefront } from './StorefrontContext';
@@ -1328,8 +1329,8 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const resetCustomerPassword = useCallback(async (emailOrId: string, newPassword: string) => {
     const trimmedPw = newPassword.trim();
-    if (!trimmedPw || trimmedPw.length < 10) {
-      return { success: false, message: 'New password must be at least 10 characters long.' };
+    if (!trimmedPw || trimmedPw.length < MIN_PASSWORD_LENGTH) {
+      return { success: false, message: 'New password must be at least 8 characters long.' };
     }
     const normalized = emailOrId.toLowerCase().trim();
     const target = users.find((u) => u.id === emailOrId || u.email.toLowerCase().trim() === normalized);

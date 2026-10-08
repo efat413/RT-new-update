@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { UserAccount, UserRole, AdminPermissions } from '../types';
+import { UserAccount, UserRole, AdminPermissions, MIN_PASSWORD_LENGTH } from '../types';
 import { authApi, onAuthUnauthorized } from '../services/authApi';
 import { usersApi } from '../services/storeApi';
 import { hasUserPermission } from '../utils/permissions';
@@ -264,8 +264,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, message: 'Please provide a valid email address.' };
     }
 
-    if (!trimmedPassword || trimmedPassword.length < 10) {
-      return { success: false, message: 'Password must be at least 10 characters long.' };
+    if (!trimmedPassword || trimmedPassword.length < MIN_PASSWORD_LENGTH) {
+      return { success: false, message: 'Password must be at least 8 characters long.' };
     }
 
     try {
@@ -359,8 +359,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     currentPassword?: string
   ): Promise<{ success: boolean; message: string }> => {
     const trimmedNew = newPassword.trim();
-    if (!trimmedNew || trimmedNew.length < 10) {
-      return { success: false, message: 'New password must be at least 10 characters long.' };
+    if (!trimmedNew || trimmedNew.length < MIN_PASSWORD_LENGTH) {
+      return { success: false, message: 'New password must be at least 8 characters long.' };
     }
 
     if (!currentPassword || !currentPassword.trim()) {

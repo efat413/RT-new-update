@@ -353,6 +353,7 @@ function localApiDevPlugin(): Plugin {
     return nodeCrypto.createHash('sha256').update(hash).digest('hex').slice(0, 32);
   };
 
+  const MIN_PASSWORD_LENGTH = 8;
   const ADMIN_SESSION_IDLE_TIMEOUT_SECONDS = 30 * 60; // 30 minutes
   const ADMIN_SESSION_ABSOLUTE_TIMEOUT_SECONDS = 12 * 3600; // 12 hours
   const CUSTOMER_SESSION_EXPIRATION_SECONDS = 7 * 86400; // 7 days
@@ -1799,9 +1800,9 @@ function localApiDevPlugin(): Plugin {
               res.statusCode = 400;
               return res.end(JSON.stringify({ success: false, error: 'Valid email address is required.' }));
             }
-            if (!password || password.length < 10) {
+            if (!password || password.length < MIN_PASSWORD_LENGTH) {
               res.statusCode = 400;
-              return res.end(JSON.stringify({ success: false, error: 'Password must be at least 10 characters long.' }));
+              return res.end(JSON.stringify({ success: false, error: 'Password must be at least 8 characters long.' }));
             }
 
             const existing = devUsers.find((u) => u.email.toLowerCase() === email);
@@ -1853,9 +1854,9 @@ function localApiDevPlugin(): Plugin {
             const newPassword = (body.newPassword || '').trim();
             const currentPassword = (body.currentPassword || body.oldPassword || '').trim();
 
-            if (!newPassword || newPassword.length < 10) {
+            if (!newPassword || newPassword.length < MIN_PASSWORD_LENGTH) {
               res.statusCode = 400;
-              return res.end(JSON.stringify({ success: false, error: 'New password must be at least 10 characters long.' }));
+              return res.end(JSON.stringify({ success: false, error: 'New password must be at least 8 characters long.' }));
             }
 
             const targetUser = authResult.auth!.user;
@@ -2048,13 +2049,13 @@ function localApiDevPlugin(): Plugin {
                 error: 'Password reset token is required.',
               }));
             }
-            if (!newPassword || newPassword.length < 10) {
+            if (!newPassword || newPassword.length < MIN_PASSWORD_LENGTH) {
               res.statusCode = 400;
               return res.end(JSON.stringify({
                 success: false,
                 status: 'INVALID_PASSWORD',
-                message: 'New password must be at least 10 characters long.',
-                error: 'New password must be at least 10 characters long.',
+                message: 'New password must be at least 8 characters long.',
+                error: 'New password must be at least 8 characters long.',
               }));
             }
 
@@ -3463,8 +3464,8 @@ function localApiDevPlugin(): Plugin {
               const { password: rawPassword, ...restUser } = u;
               if (rawPassword) {
                 const plainPw = String(rawPassword).trim();
-                if (plainPw.length < 10) {
-                  return sendDevError(res, { status: 400, body: { success: false, error: 'Password must be at least 10 characters long.' } });
+                if (plainPw.length < MIN_PASSWORD_LENGTH) {
+                  return sendDevError(res, { status: 400, body: { success: false, error: 'Password must be at least 8 characters long.' } });
                 }
               }
               const newU = { id: u.id || `user-${Date.now()}`, ...restUser, createdAt: new Date().toISOString() };
@@ -3574,8 +3575,8 @@ function localApiDevPlugin(): Plugin {
 
               if (isChangingPassword) {
                 const plainPw = String(updates.password).trim();
-                if (plainPw.length < 10) {
-                  return sendDevError(res, { status: 400, body: { success: false, error: 'New password must be at least 10 characters long.' } });
+                if (plainPw.length < MIN_PASSWORD_LENGTH) {
+                  return sendDevError(res, { status: 400, body: { success: false, error: 'New password must be at least 8 characters long.' } });
                 }
                 const newHashed = await hashPassword(plainPw);
                 delete updates.password; // NEVER store plaintext!
@@ -3717,9 +3718,9 @@ function localApiDevPlugin(): Plugin {
 
           return readBody(async (body) => {
             const newPassword = (body.newPassword || body.password || '').trim();
-            if (!newPassword || newPassword.length < 10) {
+            if (!newPassword || newPassword.length < MIN_PASSWORD_LENGTH) {
               res.statusCode = 400;
-              return res.end(JSON.stringify({ success: false, error: 'New password must be at least 10 characters long.' }));
+              return res.end(JSON.stringify({ success: false, error: 'New password must be at least 8 characters long.' }));
             }
 
             const newHashed = await hashPassword(newPassword);

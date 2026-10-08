@@ -86,6 +86,7 @@ export async function resolveAuthSecret(env?: { ADMIN_SECRET?: string; JWT_SECRE
  * - Legacy accounts were previously hashed with 100,000 iterations.
  * - Automatic transparent re-hashing upgrades 100,000-iteration hashes to 600,000 upon successful login.
  */
+export const MIN_PASSWORD_LENGTH = 8;
 export const PBKDF2_RECOMMENDED_ITERATIONS = 600000;
 export const PBKDF2_LEGACY_ITERATIONS = 100000;
 

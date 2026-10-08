@@ -143,10 +143,10 @@ async function runTests() {
     'Router cryptographically verifies current password against stored hash'
   );
 
-  // 3. Verify new password is validated against policy (>= 10 characters)
+  // 3. Verify new password is validated against policy (>= 8 characters)
   assert(
-    routerCode.includes('New password must be at least 10 characters long.'),
-    'Router enforces minimum password length policy (>= 10 characters)'
+    routerCode.includes('New password must be at least 8 characters long.'),
+    'Router enforces minimum password length policy (>= 8 characters)'
   );
 
   // 4. Verify new password is hashed with PBKDF2 before storage
@@ -230,7 +230,7 @@ async function runTests() {
   const testPassword = 'OriginalPassword123!';
   const regRes = await fetch(`${baseUrl}/api/auth/register`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': `10.88.${Math.floor(Math.random() * 200)}.${Math.floor(Math.random() * 200)}` },
     body: JSON.stringify({
       name: 'Security Test User',
       email: testEmail,

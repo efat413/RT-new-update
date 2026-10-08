@@ -3,124 +3,230 @@ import assert from 'assert';
 const BASE_URL = 'http://127.0.0.1:3000';
 
 async function runVerification() {
-  console.log('--- STARTING PASSWORD SECURITY VERIFICATION SUITE ---');
+  console.log('--- STARTING PASSWORD SECURITY VERIFICATION SUITE (MINIMUM 8 CHARACTERS) ---');
 
   // Test 1: Customer Registration Validation
   console.log('\n[1] Testing Registration Validation:');
-  const regShortRes = await fetch(`${BASE_URL}/api/auth/register`, {
+
+  let ipIndex = 1;
+  const nextIp = () => `10.200.0.${ipIndex++}`;
+
+  // 1A: 7 characters -> must be rejected (400)
+  const reg7Res = await fetch(`${BASE_URL}/api/auth/register`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': nextIp() },
     body: JSON.stringify({
-      name: 'Short Pw User',
-      email: `shortpw-${Date.now()}@example.com`,
-      password: '12345678', // 8 chars (less than 10)
+      name: '7 Char Pw User',
+      email: `reg7-${Date.now()}@example.com`,
+      password: '1234567', // 7 chars (< 8)
     }),
   });
-  const regShortData = await regShortRes.json();
-  console.log('Short registration response:', regShortRes.status, regShortData);
-  assert.strictEqual(regShortRes.status, 400, 'Registration with < 10 chars must return 400');
-  assert.strictEqual(regShortData.error, 'Password must be at least 10 characters long.');
-  console.log('✅ Registration correctly rejected password shorter than 10 characters');
+  const reg7Data = await reg7Res.json();
+  console.log('7-char registration response:', reg7Res.status, reg7Data);
+  assert.strictEqual(reg7Res.status, 400, 'Registration with 7 chars (< 8) must return 400');
+  assert.strictEqual(reg7Data.error, 'Password must be at least 8 characters long.');
+  console.log('✅ Registration correctly rejected 7 characters password');
 
-  const validTestEmail = `validpw-${Date.now()}@example.com`;
-  const validTestPassword = 'SecurePassword2026!';
+  // 1B: 8 characters -> must be accepted (201)
+  const reg8Email = `reg8-${Date.now()}@example.com`;
+  const reg8Password = '12345678'; // exactly 8 chars
+  const reg8Res = await fetch(`${BASE_URL}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': nextIp() },
+    body: JSON.stringify({
+      name: '8 Char Pw User',
+      email: reg8Email,
+      password: reg8Password,
+    }),
+  });
+  const reg8Data = await reg8Res.json();
+  console.log('8-char registration response:', reg8Res.status, reg8Data.success);
+  assert.strictEqual(reg8Res.status, 201, 'Registration with 8 chars (>= 8) must return 201');
+  assert.strictEqual(reg8Data.success, true);
+  console.log('✅ Registration accepted 8 characters password');
+
+  // 1C: 9 characters -> must be accepted (201)
+  const reg9Email = `reg9-${Date.now()}@example.com`;
+  const reg9Password = '123456789'; // 9 chars
+  const reg9Res = await fetch(`${BASE_URL}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': nextIp() },
+    body: JSON.stringify({
+      name: '9 Char Pw User',
+      email: reg9Email,
+      password: reg9Password,
+    }),
+  });
+  const reg9Data = await reg9Res.json();
+  assert.strictEqual(reg9Res.status, 201, 'Registration with 9 chars must return 201');
+  assert.strictEqual(reg9Data.success, true);
+  console.log('✅ Registration accepted 9 characters password');
+
+  // 1D: 10+ characters -> must be accepted (201)
+  const validTestEmail = `reg10plus-${Date.now()}@example.com`;
+  const validTestPassword = 'SecurePassword2026!'; // 18 chars
   const regValidRes = await fetch(`${BASE_URL}/api/auth/register`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': nextIp() },
     body: JSON.stringify({
-      name: 'Valid Pw User',
+      name: 'Valid 10+ Pw User',
       email: validTestEmail,
       password: validTestPassword,
     }),
   });
   const regValidData = await regValidRes.json();
-  console.log('Valid registration response:', regValidRes.status, regValidData.success);
-  assert.strictEqual(regValidRes.status, 201, 'Registration with >= 10 chars must succeed with 201');
+  assert.strictEqual(regValidRes.status, 201, 'Registration with 10+ chars must return 201');
   assert.strictEqual(regValidData.success, true);
-  console.log('✅ Registration succeeded with >= 10 characters');
+  console.log('✅ Registration accepted 10+ characters password');
 
-  // Test 2: Login with the newly registered user
-  console.log('\n[2] Testing Login with newly registered user:');
-  const loginNewRes = await fetch(`${BASE_URL}/api/auth/login`, {
+  // Test 2: Login with the registered users
+  console.log('\n[2] Testing Login:');
+  const login8Res = await fetch(`${BASE_URL}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      usernameOrEmail: validTestEmail,
-      password: validTestPassword,
+      usernameOrEmail: reg8Email,
+      password: reg8Password,
     }),
   });
-  const loginNewData = await loginNewRes.json();
-  assert.strictEqual(loginNewRes.status, 200, 'Login must succeed with 200');
-  assert.strictEqual(loginNewData.success, true);
-  const newUserToken = loginNewData.token;
-  console.log('✅ New account logged in successfully');
+  const login8Data = await login8Res.json();
+  assert.strictEqual(login8Res.status, 200, 'Login with 8 char password must succeed');
+  assert.strictEqual(login8Data.success, true);
+  const user8Token = login8Data.token;
+  console.log('✅ 8-char password user logged in successfully');
 
   // Test 3: Password Change for logged-in user
   console.log('\n[3] Testing Password Change for logged-in user:');
-  const changeShortRes = await fetch(`${BASE_URL}/api/auth/change-password`, {
+
+  // 3A: 7 characters -> rejected (400)
+  const change7Res = await fetch(`${BASE_URL}/api/auth/change-password`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${newUserToken}`,
+      Authorization: `Bearer ${user8Token}`,
     },
     body: JSON.stringify({
-      currentPassword: validTestPassword,
-      newPassword: 'short99', // 7 chars
+      currentPassword: reg8Password,
+      newPassword: 'short99', // 7 chars (< 8)
     }),
   });
-  const changeShortData = await changeShortRes.json();
-  console.log('Short password change response:', changeShortRes.status, changeShortData);
-  assert.strictEqual(changeShortRes.status, 400, 'Password change with < 10 chars must return 400');
-  assert.strictEqual(changeShortData.error, 'New password must be at least 10 characters long.');
-  console.log('✅ Password change correctly rejected password shorter than 10 characters');
+  const change7Data = await change7Res.json();
+  console.log('7-char password change response:', change7Res.status, change7Data);
+  assert.strictEqual(change7Res.status, 400, 'Password change with 7 chars (< 8) must return 400');
+  assert.strictEqual(change7Data.error, 'New password must be at least 8 characters long.');
+  console.log('✅ Password change correctly rejected 7 characters password');
 
-  const updatedPassword = 'NewSuperStrongPassword2026!';
-  const changeValidRes = await fetch(`${BASE_URL}/api/auth/change-password`, {
+  // 3B: 8 characters -> accepted (200)
+  const change8Res = await fetch(`${BASE_URL}/api/auth/change-password`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${newUserToken}`,
+      Authorization: `Bearer ${user8Token}`,
     },
     body: JSON.stringify({
-      currentPassword: validTestPassword,
-      newPassword: updatedPassword,
+      currentPassword: reg8Password,
+      newPassword: 'newpass8', // 8 chars
     }),
   });
-  const changeValidData = await changeValidRes.json();
-  assert.strictEqual(changeValidRes.status, 200, 'Password change with >= 10 chars must return 200');
-  assert.strictEqual(changeValidData.success, true);
-  console.log('✅ Password change succeeded with >= 10 characters');
+  const change8Data = await change8Res.json();
+  assert.strictEqual(change8Res.status, 200, 'Password change with 8 chars must return 200');
+  assert.strictEqual(change8Data.success, true);
+  console.log('✅ Password change accepted 8 characters password');
 
-  // Verify login with updated password
-  const loginUpdatedRes = await fetch(`${BASE_URL}/api/auth/login`, {
+  // Verify login with new 8-char password
+  const loginChanged8Res = await fetch(`${BASE_URL}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      usernameOrEmail: validTestEmail,
-      password: updatedPassword,
+      usernameOrEmail: reg8Email,
+      password: 'newpass8',
     }),
   });
-  const loginUpdatedData = await loginUpdatedRes.json();
-  assert.strictEqual(loginUpdatedRes.status, 200);
-  assert.strictEqual(loginUpdatedData.success, true);
-  console.log('✅ Login with updated password succeeded');
+  const loginChanged8Data = await loginChanged8Res.json();
+  assert.strictEqual(loginChanged8Res.status, 200);
+  assert.strictEqual(loginChanged8Data.success, true);
+  const updatedUserToken = loginChanged8Data.token;
+  console.log('✅ Login with updated 8-char password succeeded');
+
+  // 3C: 9 characters -> accepted (200)
+  const change9Res = await fetch(`${BASE_URL}/api/auth/change-password`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${updatedUserToken}`,
+    },
+    body: JSON.stringify({
+      currentPassword: 'newpass8',
+      newPassword: 'newpass09', // 9 chars
+    }),
+  });
+  const change9Data = await change9Res.json();
+  assert.strictEqual(change9Res.status, 200, 'Password change with 9 chars must return 200');
+  assert.strictEqual(change9Data.success, true);
+  console.log('✅ Password change accepted 9 characters password');
+
+  // Log in with new 9-char password to obtain fresh token (session invalidation check)
+  const loginChanged9Res = await fetch(`${BASE_URL}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      usernameOrEmail: reg8Email,
+      password: 'newpass09',
+    }),
+  });
+  const loginChanged9Data = await loginChanged9Res.json();
+  assert.strictEqual(loginChanged9Res.status, 200);
+  const userToken9 = loginChanged9Data.token;
+
+  // 3D: 10+ characters -> accepted (200)
+  const updatedPassword = 'NewSuperStrongPassword2026!'; // 27 chars
+  const change10PlusRes = await fetch(`${BASE_URL}/api/auth/change-password`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${userToken9}`,
+    },
+    body: JSON.stringify({
+      currentPassword: 'newpass09',
+      newPassword: updatedPassword,
+    }),
+  });
+  const change10PlusData = await change10PlusRes.json();
+  assert.strictEqual(change10PlusRes.status, 200, 'Password change with 10+ chars must return 200');
+  assert.strictEqual(change10PlusData.success, true);
+  console.log('✅ Password change accepted 10+ characters password');
 
   // Test 4: Password Reset API Validation
   console.log('\n[4] Testing Password Reset API Validation:');
-  const resetShortRes = await fetch(`${BASE_URL}/api/auth/reset-password`, {
+
+  // 4A: 7 characters -> rejected (400)
+  const reset7Res = await fetch(`${BASE_URL}/api/auth/reset-password`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       token: 'some-dummy-token-for-test',
-      newPassword: 'short', // 5 chars
+      newPassword: '1234567', // 7 chars
     }),
   });
-  const resetShortData = await resetShortRes.json();
-  console.log('Short reset password response:', resetShortRes.status, resetShortData);
-  assert.strictEqual(resetShortRes.status, 400);
-  assert.strictEqual(resetShortData.status, 'INVALID_PASSWORD');
-  assert.strictEqual(resetShortData.message, 'New password must be at least 10 characters long.');
-  console.log('✅ Password reset correctly rejected new password shorter than 10 characters');
+  const reset7Data = await reset7Res.json();
+  console.log('7-char reset password response:', reset7Res.status, reset7Data);
+  assert.strictEqual(reset7Res.status, 400);
+  assert.strictEqual(reset7Data.status, 'INVALID_PASSWORD');
+  assert.strictEqual(reset7Data.message, 'New password must be at least 8 characters long.');
+  console.log('✅ Password reset correctly rejected 7 characters password');
+
+  // 4B: 8 characters -> validation passes (token error occurs next, NOT INVALID_PASSWORD)
+  const reset8Res = await fetch(`${BASE_URL}/api/auth/reset-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      token: 'dummy-token-000000000000000000000000000000000000000000000000000000000000',
+      newPassword: 'resetpw8', // 8 chars
+    }),
+  });
+  const reset8Data = await reset8Res.json();
+  assert.notStrictEqual(reset8Data.status, 'INVALID_PASSWORD', '8 chars must not fail password length validation');
+  console.log('✅ Password reset accepted 8 characters password (passed password policy check)');
 
   // Test 5: Admin Login and Admin Account Operations
   console.log('\n[5] Testing Super Admin Login and Operations:');
@@ -135,86 +241,160 @@ async function runVerification() {
   const adminLoginData = await adminLoginRes.json();
   assert.strictEqual(adminLoginRes.status, 200, 'Admin login must succeed');
   const adminToken = adminLoginData.token;
-  console.log('✅ Admin login succeeded (preserving existing admin credentials)');
+  console.log('✅ Admin login succeeded');
 
-  // Test 6: Admin creating a user account with short password
+  // Test 6: Admin creating a user account with passwords: 7, 8, 9, 10+ chars
   console.log('\n[6] Testing Admin Account Creation with Password:');
-  const adminCreateShortRes = await fetch(`${BASE_URL}/api/users`, {
+
+  // 6A: 7 characters -> rejected (400)
+  const adminCreate7Res = await fetch(`${BASE_URL}/api/users`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${adminToken}`,
     },
     body: JSON.stringify({
-      name: 'Staff With Short Password',
-      email: `staff-short-${Date.now()}@example.com`,
-      password: 'short-pw', // 8 chars
+      name: 'Staff With 7 Char Password',
+      email: `staff-7-${Date.now()}@example.com`,
+      password: '1234567', // 7 chars
       role: 'sub_admin',
     }),
   });
-  const adminCreateShortData = await adminCreateShortRes.json();
-  console.log('Admin create short pw response:', adminCreateShortRes.status, adminCreateShortData);
-  assert.strictEqual(adminCreateShortRes.status, 400, 'Admin account creation with short password must return 400');
-  assert.strictEqual(adminCreateShortData.error, 'Password must be at least 10 characters long.');
-  console.log('✅ Admin user creation correctly rejected password shorter than 10 characters');
+  const adminCreate7Data = await adminCreate7Res.json();
+  console.log('Admin create 7-char pw response:', adminCreate7Res.status, adminCreate7Data);
+  assert.strictEqual(adminCreate7Res.status, 400, 'Admin user creation with 7 chars must return 400');
+  assert.strictEqual(adminCreate7Data.error, 'Password must be at least 8 characters long.');
+  console.log('✅ Admin user creation correctly rejected 7 characters password');
 
-  // Test 7: Admin creating user account with valid >= 10 char password
-  const staffEmail = `staff-valid-${Date.now()}@example.com`;
-  const staffPassword = 'StaffMasterPassword2026!';
-  const adminCreateValidRes = await fetch(`${BASE_URL}/api/users`, {
+  // 6B: 8 characters -> accepted (201)
+  const staff8Email = `staff-8-${Date.now()}@example.com`;
+  const adminCreate8Res = await fetch(`${BASE_URL}/api/users`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${adminToken}`,
     },
     body: JSON.stringify({
-      name: 'Staff With Valid Password',
-      email: staffEmail,
-      password: staffPassword,
+      name: 'Staff With 8 Char Password',
+      email: staff8Email,
+      password: 'staffpw8', // 8 chars
       role: 'sub_admin',
     }),
   });
-  const adminCreateValidData = await adminCreateValidRes.json();
-  assert.strictEqual(adminCreateValidRes.status, 201, 'Admin account creation with valid password must return 201');
-  assert.strictEqual(adminCreateValidData.success, true);
-  const createdStaffId = adminCreateValidData.user.id;
-  console.log('✅ Admin user creation succeeded with >= 10 characters password');
+  const adminCreate8Data = await adminCreate8Res.json();
+  assert.strictEqual(adminCreate8Res.status, 201, 'Admin user creation with 8 chars must return 201');
+  assert.strictEqual(adminCreate8Data.success, true);
+  const createdStaff8Id = adminCreate8Data.user.id;
+  console.log('✅ Admin user creation accepted 8 characters password');
 
-  // Test 8: Admin resetting user password
-  console.log('\n[8] Testing Admin Resetting User Password:');
-  const adminResetShortRes = await fetch(`${BASE_URL}/api/users/${encodeURIComponent(createdStaffId)}/reset-password`, {
+  // 6C: 9 characters -> accepted (201)
+  const adminCreate9Res = await fetch(`${BASE_URL}/api/users`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${adminToken}`,
     },
     body: JSON.stringify({
-      newPassword: 'short', // 5 chars
+      name: 'Staff With 9 Char Password',
+      email: `staff-9-${Date.now()}@example.com`,
+      password: 'staffpw09', // 9 chars
+      role: 'sub_admin',
     }),
   });
-  const adminResetShortData = await adminResetShortRes.json();
-  console.log('Admin reset short pw response:', adminResetShortRes.status, adminResetShortData);
-  assert.strictEqual(adminResetShortRes.status, 400);
-  assert.strictEqual(adminResetShortData.error, 'New password must be at least 10 characters long.');
-  console.log('✅ Admin user password reset correctly rejected password shorter than 10 characters');
+  const adminCreate9Data = await adminCreate9Res.json();
+  assert.strictEqual(adminCreate9Res.status, 201, 'Admin user creation with 9 chars must return 201');
+  assert.strictEqual(adminCreate9Data.success, true);
+  console.log('✅ Admin user creation accepted 9 characters password');
 
-  const staffResetPassword = 'StaffResetSecurePassword2026!';
-  const adminResetValidRes = await fetch(`${BASE_URL}/api/users/${encodeURIComponent(createdStaffId)}/reset-password`, {
+  // 6D: 10+ characters -> accepted (201)
+  const staffPassword10Plus = 'StaffMasterPassword2026!'; // 24 chars
+  const adminCreate10Res = await fetch(`${BASE_URL}/api/users`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${adminToken}`,
     },
     body: JSON.stringify({
-      newPassword: staffResetPassword,
+      name: 'Staff With 10+ Char Password',
+      email: `staff-10plus-${Date.now()}@example.com`,
+      password: staffPassword10Plus,
+      role: 'sub_admin',
     }),
   });
-  const adminResetValidData = await adminResetValidRes.json();
-  assert.strictEqual(adminResetValidRes.status, 200);
-  assert.strictEqual(adminResetValidData.success, true);
-  console.log('✅ Admin user password reset succeeded with >= 10 characters password');
+  const adminCreate10Data = await adminCreate10Res.json();
+  assert.strictEqual(adminCreate10Res.status, 201, 'Admin user creation with 10+ chars must return 201');
+  assert.strictEqual(adminCreate10Data.success, true);
+  console.log('✅ Admin user creation accepted 10+ characters password');
 
-  console.log('\n--- ALL PASSWORD SECURITY VERIFICATIONS PASSED SUCCESSFULLY ---');
+  // Test 7: Admin resetting user password
+  console.log('\n[7] Testing Admin Resetting User Password:');
+
+  // 7A: 7 characters -> rejected (400)
+  const adminReset7Res = await fetch(`${BASE_URL}/api/users/${encodeURIComponent(createdStaff8Id)}/reset-password`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${adminToken}`,
+    },
+    body: JSON.stringify({
+      newPassword: 'short99', // 7 chars
+    }),
+  });
+  const adminReset7Data = await adminReset7Res.json();
+  console.log('Admin reset 7-char pw response:', adminReset7Res.status, adminReset7Data);
+  assert.strictEqual(adminReset7Res.status, 400);
+  assert.strictEqual(adminReset7Data.error, 'New password must be at least 8 characters long.');
+  console.log('✅ Admin user password reset correctly rejected 7 characters password');
+
+  // 7B: 8 characters -> accepted (200)
+  const adminReset8Res = await fetch(`${BASE_URL}/api/users/${encodeURIComponent(createdStaff8Id)}/reset-password`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${adminToken}`,
+    },
+    body: JSON.stringify({
+      newPassword: 'newreset8', // 8 chars
+    }),
+  });
+  const adminReset8Data = await adminReset8Res.json();
+  assert.strictEqual(adminReset8Res.status, 200);
+  assert.strictEqual(adminReset8Data.success, true);
+  console.log('✅ Admin user password reset accepted 8 characters password');
+
+  // 7C: 9 characters -> accepted (200)
+  const adminReset9Res = await fetch(`${BASE_URL}/api/users/${encodeURIComponent(createdStaff8Id)}/reset-password`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${adminToken}`,
+    },
+    body: JSON.stringify({
+      newPassword: 'newreset09', // 9 chars
+    }),
+  });
+  const adminReset9Data = await adminReset9Res.json();
+  assert.strictEqual(adminReset9Res.status, 200);
+  assert.strictEqual(adminReset9Data.success, true);
+  console.log('✅ Admin user password reset accepted 9 characters password');
+
+  // 7D: 10+ characters -> accepted (200)
+  const adminReset10PlusRes = await fetch(`${BASE_URL}/api/users/${encodeURIComponent(createdStaff8Id)}/reset-password`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${adminToken}`,
+    },
+    body: JSON.stringify({
+      newPassword: 'SuperStaffResetPassword2026!', // 28 chars
+    }),
+  });
+  const adminReset10PlusData = await adminReset10PlusRes.json();
+  assert.strictEqual(adminReset10PlusRes.status, 200);
+  assert.strictEqual(adminReset10PlusData.success, true);
+  console.log('✅ Admin user password reset accepted 10+ characters password');
+
+  console.log('\n--- ALL PASSWORD SECURITY VERIFICATIONS PASSED SUCCESSFULLY (MINIMUM 8 CHARACTERS) ---');
 }
 
 runVerification().catch((err) => {

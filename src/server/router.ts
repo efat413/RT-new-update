@@ -98,6 +98,7 @@ import {
   verifyPassword,
   hashPassword,
   needsPasswordRehash,
+  MIN_PASSWORD_LENGTH,
   PBKDF2_RECOMMENDED_ITERATIONS,
   createAuthToken,
   verifyAuthToken,
@@ -1758,8 +1759,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       if (!email || !email.includes('@')) {
         return jsonResponse({ success: false, error: 'Valid email address is required.' }, 400);
       }
-      if (!password || password.length < 10) {
-        return jsonResponse({ success: false, error: 'Password must be at least 10 characters long.' }, 400);
+      if (!password || password.length < MIN_PASSWORD_LENGTH) {
+        return jsonResponse({ success: false, error: 'Password must be at least 8 characters long.' }, 400);
       }
 
       // Check D1 for existing user
@@ -1980,13 +1981,13 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         );
       }
 
-      if (!newPassword || newPassword.length < 10) {
+      if (!newPassword || newPassword.length < MIN_PASSWORD_LENGTH) {
         return jsonResponse(
           {
             success: false,
             status: 'INVALID_PASSWORD',
-            message: 'New password must be at least 10 characters long.',
-            error: 'New password must be at least 10 characters long.',
+            message: 'New password must be at least 8 characters long.',
+            error: 'New password must be at least 8 characters long.',
           },
           400
         );
@@ -2111,9 +2112,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     const newPassword = (body?.newPassword || '').trim();
     const currentPassword = (body?.currentPassword || body?.oldPassword || '').trim();
 
-    if (!newPassword || newPassword.length < 10) {
+    if (!newPassword || newPassword.length < MIN_PASSWORD_LENGTH) {
       return jsonResponse(
-        { success: false, error: 'New password must be at least 10 characters long.' },
+        { success: false, error: 'New password must be at least 8 characters long.' },
         400
       );
     }
@@ -4014,9 +4015,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         // Validate password policy if supplied during admin user creation
         if (userData.password) {
           const plainPw = String(userData.password).trim();
-          if (plainPw.length < 10) {
+          if (plainPw.length < MIN_PASSWORD_LENGTH) {
             return jsonResponse(
-              { success: false, error: 'Password must be at least 10 characters long.' },
+              { success: false, error: 'Password must be at least 8 characters long.' },
               400
             );
           }
@@ -4172,9 +4173,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         // Validate new password policy if password is being updated
         if (updates.password) {
           const plainPw = String(updates.password).trim();
-          if (plainPw.length < 10) {
+          if (plainPw.length < MIN_PASSWORD_LENGTH) {
             return jsonResponse(
-              { success: false, error: 'New password must be at least 10 characters long.' },
+              { success: false, error: 'New password must be at least 8 characters long.' },
               400
             );
           }
@@ -4385,9 +4386,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     try {
       const newPassword = (body?.newPassword || body?.password || '').trim();
 
-      if (!newPassword || newPassword.length < 10) {
+      if (!newPassword || newPassword.length < MIN_PASSWORD_LENGTH) {
         return jsonResponse(
-          { success: false, error: 'New password must be at least 10 characters long.' },
+          { success: false, error: 'New password must be at least 8 characters long.' },
           400
         );
       }
