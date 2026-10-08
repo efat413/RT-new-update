@@ -147,6 +147,23 @@ export interface DbblPaymentDetails {
   depositSlipUrl?: string;
 }
 
+export type ReviewSource =
+  | 'Customer Submitted'
+  | 'Facebook'
+  | 'Messenger'
+  | 'WhatsApp'
+  | 'Instagram'
+  | 'Manual';
+
+export const REVIEW_SOURCES: ReviewSource[] = [
+  'Customer Submitted',
+  'Facebook',
+  'Messenger',
+  'WhatsApp',
+  'Instagram',
+  'Manual',
+];
+
 export interface ProductReview {
   id: string;
   productId: string;
@@ -160,6 +177,12 @@ export interface ProductReview {
   status?: 'approved' | 'pending' | 'rejected' | string;
   approvedAt?: string | null;
   approvedBy?: string | null;
+  source?: ReviewSource | string;
+  customerImage?: string | null;
+  screenshotAttachment?: string | null;
+  // Verification helpers
+  orderNumber?: string;
+  customerPhone?: string;
 }
 
 export interface Coupon {

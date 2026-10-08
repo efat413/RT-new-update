@@ -3321,24 +3321,61 @@ function localApiDevPlugin(): Plugin {
               const authorName = String(r.authorName || r.author || authResult.auth!.user?.name || 'Store Admin').trim();
               const comment = String(r.comment || '').trim();
               const rating = Math.min(5, Math.max(1, Math.round(Number(r.rating) || 5)));
-              const verifiedPurchase = Boolean(r.verifiedPurchase);
 
               if (!productId || !authorName || !comment) {
                 res.statusCode = 400;
                 return res.end(JSON.stringify({ success: false, error: 'Product, author name, and comment are required.' }));
               }
 
-              const adminStatus = r.status === 'pending' ? 'pending' : (r.status === 'rejected' ? 'rejected' : 'approved');
+              // Security rule: Admin-created reviews: status = approved
+              const adminStatus = 'approved';
+
+              // Security rule: Server controls approved_at and approved_by
+              const approvedAt = new Date().toISOString();
+              const approvedBy = authResult.auth!.user?.email || authResult.auth!.user?.id || 'admin';
+
+              // Security rule: verifiedPurchase = false UNLESS server independently verifies purchase
+              let serverVerifiedPurchase = false;
+              const orderNumber = String(r.orderNumber || r.order_number || '').trim();
+              const phone = String(r.phone || r.customerPhone || '').replace(/\D/g, '');
+              const userEmail = String(r.userEmail || r.email || '').trim().toLowerCase();
+              const userId = String(r.userId || '').trim();
+
+              if (orderNumber || phone || userEmail || userId) {
+                const matchOrder = devOrders.find((ord) => {
+                  if (ord.shippingStatus === 'Cancelled') return false;
+                  const hasProd = (ord.items || []).some((it: any) => it.product?.id === productId || it.id === productId || it.productId === productId);
+                  if (!hasProd) return false;
+                  if (userId && (ord.userId === userId || ord.user_id === userId)) return true;
+                  if (userEmail && (ord.userEmail || ord.customer?.email || '').toLowerCase() === userEmail) return true;
+                  if (orderNumber && phone.length === 11 && ord.orderNumber === orderNumber && (ord.customer?.phone || '').includes(phone)) return true;
+                  return false;
+                });
+                serverVerifiedPurchase = Boolean(matchOrder);
+              }
+
+              const VALID_SOURCES = ['Customer Submitted', 'Facebook', 'Messenger', 'WhatsApp', 'Instagram', 'Manual'];
+              let source = String(r.source || 'Manual').trim();
+              if (!VALID_SOURCES.includes(source)) {
+                source = 'Manual';
+              }
+
+              const customerImage = r.customerImage ? String(r.customerImage).trim() : null;
+              const screenshotAttachment = r.screenshotAttachment ? String(r.screenshotAttachment).trim() : null;
+
               const newR = {
                 id: r.id || `rev-${Date.now()}`,
                 productId,
                 authorName,
                 rating,
                 comment,
-                verifiedPurchase,
+                verifiedPurchase: serverVerifiedPurchase,
                 status: adminStatus,
-                approvedAt: adminStatus === 'approved' ? new Date().toISOString() : null,
-                approvedBy: adminStatus === 'approved' ? (authResult.auth!.user?.email || authResult.auth!.user?.id || 'admin') : null,
+                approvedAt,
+                approvedBy,
+                source,
+                customerImage,
+                screenshotAttachment,
                 createdAt: r.createdAt || new Date().toISOString(),
               };
               devReviews.unshift(newR);

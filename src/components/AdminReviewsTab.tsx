@@ -25,10 +25,19 @@ import {
   Sparkles,
   Inbox,
   ExternalLink,
+  Facebook,
+  Instagram,
+  MessageCircle,
+  Send,
+  Eye,
+  Camera,
+  Link as LinkIcon,
+  ShoppingBag,
 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { reviewsApi } from '../services/storeApi';
-import { ProductReview, Product } from '../types';
+import { ProductReview, Product, ReviewSource, REVIEW_SOURCES } from '../types';
+import { ImageUploadField } from './ImageUploadField';
 
 export interface AdminReviewsTabProps {
   onPendingCountChange?: (count: number) => void;
@@ -117,6 +126,60 @@ function matchesDateFilter(dateStr: string | undefined, filter: string): boolean
   return true;
 }
 
+/**
+ * Helper to render channel/source badge with appropriate colors and icons
+ */
+const ReviewSourceBadge: React.FC<{ source?: string | null }> = ({ source }) => {
+  if (!source) return null;
+  const s = source.trim();
+
+  if (s === 'Facebook') {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+        <Facebook className="w-3 h-3 text-blue-600" />
+        <span>Facebook</span>
+      </span>
+    );
+  }
+  if (s === 'Messenger') {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-50 text-sky-700 border border-sky-200">
+        <Send className="w-3 h-3 text-sky-600" />
+        <span>Messenger</span>
+      </span>
+    );
+  }
+  if (s === 'WhatsApp') {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+        <MessageCircle className="w-3 h-3 text-emerald-600" />
+        <span>WhatsApp</span>
+      </span>
+    );
+  }
+  if (s === 'Instagram') {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-fuchsia-50 text-fuchsia-700 border border-fuchsia-200">
+        <Instagram className="w-3 h-3 text-fuchsia-600" />
+        <span>Instagram</span>
+      </span>
+    );
+  }
+  if (s === 'Customer Submitted') {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+        <User className="w-3 h-3 text-indigo-600" />
+        <span>Customer Submitted</span>
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
+      <span>{s}</span>
+    </span>
+  );
+};
+
 export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({ onPendingCountChange }) => {
   const { products, currentUser, hasPermission, showNotification } = useStore();
 
@@ -140,13 +203,19 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({ onPendingCount
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [selectedReview, setSelectedReview] = useState<ProductReview | null>(null);
 
-  // Form states for Create Admin Review
+  // Screenshot Lightbox Preview State
+  const [previewScreenshotUrl, setPreviewScreenshotUrl] = useState<string | null>(null);
+
+  // Form states for Add Review (Admin Manual Creation)
   const [createProductId, setCreateProductId] = useState<string>('');
   const [createAuthor, setCreateAuthor] = useState('');
   const [createRating, setCreateRating] = useState(5);
   const [createComment, setCreateComment] = useState('');
-  const [createVerified, setCreateVerified] = useState(true);
-  const [createStatus, setCreateStatus] = useState<'approved' | 'pending'>('approved');
+  const [createSource, setCreateSource] = useState<ReviewSource>('Manual');
+  const [createCustomerImage, setCreateCustomerImage] = useState('');
+  const [createScreenshotAttachment, setCreateScreenshotAttachment] = useState('');
+  const [createOrderNumber, setCreateOrderNumber] = useState('');
+  const [createCustomerPhone, setCreateCustomerPhone] = useState('');
   const [isSubmittingCreate, setIsSubmittingCreate] = useState(false);
 
   // Form states for Edit Review
@@ -154,6 +223,9 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({ onPendingCount
   const [editRating, setEditRating] = useState(5);
   const [editComment, setEditComment] = useState('');
   const [editStatus, setEditStatus] = useState<string>('approved');
+  const [editSource, setEditSource] = useState<string>('Manual');
+  const [editCustomerImage, setEditCustomerImage] = useState('');
+  const [editScreenshotAttachment, setEditScreenshotAttachment] = useState('');
   const [isSubmittingEdit, setIsSubmittingEdit] = useState(false);
 
   // Processing & Deletion state
@@ -341,6 +413,9 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({ onPendingCount
     setEditRating(review.rating || 5);
     setEditComment(review.comment || '');
     setEditStatus(review.status || 'approved');
+    setEditSource(review.source || 'Manual');
+    setEditCustomerImage(review.customerImage || '');
+    setEditScreenshotAttachment(review.screenshotAttachment || '');
     setIsEditModalOpen(true);
   };
 
@@ -349,7 +424,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({ onPendingCount
     if (!selectedReview || !canEdit) return;
 
     if (!editAuthor.trim()) {
-      showNotification('error', 'Validation Error', 'Customer / Author name is required.');
+      showNotification('error', 'Validation Error', 'Customer name is required.');
       return;
     }
     if (!editComment.trim()) {
@@ -364,6 +439,9 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({ onPendingCount
         rating: editRating,
         comment: editComment.trim(),
         status: editStatus,
+        source: editSource,
+        customerImage: editCustomerImage.trim() || null,
+        screenshotAttachment: editScreenshotAttachment.trim() || null,
       });
       setReviews((prev) => prev.map((r) => (r.id === selectedReview.id ? updated : r)));
       setIsEditModalOpen(false);
@@ -404,7 +482,12 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({ onPendingCount
   };
 
   // -------------------------------------------------------------
-  // ACTION: Add Admin Review (Optional Staff Creation)
+  // ACTION: Add Review (Admin Manual Creation with Security Guards)
+  // Form: Product, Customer Name, Rating, Comment
+  // Optional: Review Source, Customer Image, Screenshot Attachment
+  // Admin-created reviews: status = approved
+  // IMPORTANT: verifiedPurchase = false unless server independently verifies purchase.
+  // approved_by, approved_at, verifiedPurchase are strictly server-controlled.
   // -------------------------------------------------------------
   const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -416,6 +499,10 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({ onPendingCount
       showNotification('error', 'Validation Error', 'Please select a product for the review.');
       return;
     }
+    if (!createAuthor.trim()) {
+      showNotification('error', 'Validation Error', 'Customer Name is required.');
+      return;
+    }
     if (!createComment.trim()) {
       showNotification('error', 'Validation Error', 'Review comment is required.');
       return;
@@ -423,21 +510,34 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({ onPendingCount
 
     setIsSubmittingCreate(true);
     try {
+      // Note: We do NOT send status, approved_at, approved_by, or verifiedPurchase.
+      // The server strictly enforces status = 'approved', server timestamps, and verifiedPurchase = false (unless order match).
       const created = await reviewsApi.createAdmin({
         productId: createProductId,
-        authorName: createAuthor.trim() || currentUser?.name || 'Store Staff',
+        authorName: createAuthor.trim(),
         rating: createRating,
         comment: createComment.trim(),
-        verifiedPurchase: createVerified,
-        status: createStatus,
+        source: createSource,
+        customerImage: createCustomerImage.trim() || undefined,
+        screenshotAttachment: createScreenshotAttachment.trim() || undefined,
+        orderNumber: createOrderNumber.trim() || undefined,
+        customerPhone: createCustomerPhone.trim() || undefined,
       });
+
       setReviews((prev) => [created, ...prev]);
       setIsCreateModalOpen(false);
+
       // Reset form
       setCreateAuthor('');
       setCreateComment('');
       setCreateRating(5);
-      showNotification('success', 'Review Created', 'Admin review published successfully.');
+      setCreateSource('Manual');
+      setCreateCustomerImage('');
+      setCreateScreenshotAttachment('');
+      setCreateOrderNumber('');
+      setCreateCustomerPhone('');
+
+      showNotification('success', 'Review Created', 'Admin review published successfully as Approved.');
     } catch (err: any) {
       showNotification('error', 'Creation Failed', err?.message || 'Failed to create review.');
     } finally {
@@ -474,7 +574,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({ onPendingCount
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
       {/* ============================================================ */}
-      {/* 1. TOP HEADER: TITLE, SUMMARY, AND ACTION BUTTONS           */}
+      {/* 1. TOP HEADER: TITLE, SUMMARY, AND "ADD REVIEW" BUTTON       */}
       {/* ============================================================ */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs">
         <div>
@@ -510,9 +610,11 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({ onPendingCount
             <span>Refresh</span>
           </button>
 
+          {/* ADD REVIEW BUTTON (Requires reviews.create) */}
           {canCreate && (
             <button
               type="button"
+              id="admin-add-review-btn"
               onClick={() => {
                 if (products.length > 0 && !createProductId) {
                   setCreateProductId(products[0].id);
@@ -536,6 +638,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({ onPendingCount
           {/* TAB 1: PENDING */}
           <button
             type="button"
+            id="admin-reviews-tab-pending"
             onClick={() => setActiveTab('pending')}
             className={`p-3 sm:p-4 rounded-xl text-left transition-all cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-2 border ${
               activeTab === 'pending'
@@ -577,6 +680,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({ onPendingCount
           {/* TAB 2: APPROVED */}
           <button
             type="button"
+            id="admin-reviews-tab-approved"
             onClick={() => setActiveTab('approved')}
             className={`p-3 sm:p-4 rounded-xl text-left transition-all cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-2 border ${
               activeTab === 'approved'
@@ -613,6 +717,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({ onPendingCount
           {/* TAB 3: ALL */}
           <button
             type="button"
+            id="admin-reviews-tab-all"
             onClick={() => setActiveTab('all')}
             className={`p-3 sm:p-4 rounded-xl text-left transition-all cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-2 border ${
               activeTab === 'all'
@@ -898,27 +1003,42 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({ onPendingCount
                     : 'border-slate-200 hover:border-slate-300'
                 }`}
               >
-                {/* Review Header: Customer, Rating, Status, Date */}
+                {/* Review Header: Customer, Source, Rating, Status, Date */}
                 <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 pb-3 border-b border-slate-100">
-                  {/* Customer Identity */}
+                  {/* Customer Identity & Source */}
                   <div className="flex items-start gap-3 min-w-0">
-                    <div
-                      className={`w-10 h-10 rounded-full flex items-center justify-center font-bold font-display text-sm shrink-0 shadow-2xs ${
-                        statusClean === 'pending'
-                          ? 'bg-amber-100 text-amber-800 ring-2 ring-amber-300/60'
-                          : rev.verifiedPurchase
-                          ? 'bg-emerald-100 text-emerald-800 ring-2 ring-emerald-300/60'
-                          : 'bg-slate-100 text-slate-700 ring-2 ring-slate-200'
-                      }`}
-                    >
-                      {authorInitial}
-                    </div>
+                    {/* Customer Avatar photo (if provided) or Initial circle */}
+                    {rev.customerImage ? (
+                      <img
+                        src={rev.customerImage}
+                        alt={rev.authorName || rev.author || 'Customer'}
+                        className="w-10 h-10 rounded-full object-cover shrink-0 shadow-2xs ring-2 ring-slate-200 border border-slate-100"
+                        onError={(e) => {
+                          (e.currentTarget as HTMLElement).style.display = 'none';
+                        }}
+                      />
+                    ) : (
+                      <div
+                        className={`w-10 h-10 rounded-full flex items-center justify-center font-bold font-display text-sm shrink-0 shadow-2xs ${
+                          statusClean === 'pending'
+                            ? 'bg-amber-100 text-amber-800 ring-2 ring-amber-300/60'
+                            : rev.verifiedPurchase
+                            ? 'bg-emerald-100 text-emerald-800 ring-2 ring-emerald-300/60'
+                            : 'bg-slate-100 text-slate-700 ring-2 ring-slate-200'
+                        }`}
+                      >
+                        {authorInitial}
+                      </div>
+                    )}
 
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-bold text-sm text-slate-900 truncate">
                           {rev.authorName || rev.author || 'Anonymous Shopper'}
                         </span>
+
+                        {/* Optional Review Source Badge (Facebook, Messenger, WhatsApp, Instagram, etc.) */}
+                        {rev.source && <ReviewSourceBadge source={rev.source} />}
 
                         {/* Verified Purchase Badge */}
                         {rev.verifiedPurchase ? (
@@ -996,7 +1116,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({ onPendingCount
                   </div>
                 </div>
 
-                {/* Review Body: Product information & Comment text */}
+                {/* Review Body: Product information, Comment text, and Screenshot attachment */}
                 <div className="py-3 space-y-2.5">
                   {/* Product Association Card */}
                   <div className="flex items-center gap-2.5 bg-slate-50 p-2.5 rounded-xl border border-slate-100">
@@ -1057,6 +1177,44 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({ onPendingCount
                       </button>
                     )}
                   </div>
+
+                  {/* Screenshot Attachment (if available) */}
+                  {rev.screenshotAttachment && (
+                    <div className="flex items-center gap-3 p-2 bg-slate-50 rounded-xl border border-slate-200/80">
+                      <button
+                        type="button"
+                        onClick={() => setPreviewScreenshotUrl(rev.screenshotAttachment || null)}
+                        className="relative group shrink-0 overflow-hidden rounded-lg border border-slate-300 hover:ring-2 hover:ring-amber-500 transition-all cursor-pointer"
+                        title="Click to view full screenshot"
+                      >
+                        <img
+                          src={rev.screenshotAttachment}
+                          alt="Screenshot Proof"
+                          className="w-14 h-14 object-cover"
+                          loading="lazy"
+                        />
+                        <div className="absolute inset-0 bg-slate-950/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white">
+                          <Eye className="w-4 h-4" />
+                        </div>
+                      </button>
+                      <div className="text-xs">
+                        <div className="font-bold text-slate-800 flex items-center gap-1.5">
+                          <Camera className="w-3.5 h-3.5 text-amber-600" />
+                          <span>Screenshot Attachment</span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          Visual proof attachment from customer chat or order receipt.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setPreviewScreenshotUrl(rev.screenshotAttachment || null)}
+                          className="text-[11px] font-bold text-amber-700 hover:text-amber-800 hover:underline mt-0.5 flex items-center gap-1 cursor-pointer"
+                        >
+                          <Eye className="w-3 h-3" /> View full image
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Approval Audit Trail (if available) */}
                   {rev.approvedAt && (
@@ -1152,11 +1310,230 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({ onPendingCount
       )}
 
       {/* ============================================================ */}
-      {/* 5. MODALS: EDIT REVIEW MODAL                                */}
+      {/* 5. MODALS: ADD REVIEW (ADMIN MANUAL CREATION)                */}
+      {/* Permission required: reviews.create                         */}
+      {/* Form: Product, Customer Name, Rating, Comment               */}
+      {/* Optional: Review Source, Customer Image, Screenshot Att.     */}
+      {/* Admin-created reviews: status = approved                    */}
+      {/* IMPORTANT: verifiedPurchase = false (server controls)       */}
+      {/* ============================================================ */}
+      {isCreateModalOpen && canCreate && (
+        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl max-w-xl w-full p-6 sm:p-7 shadow-2xl border border-slate-200 space-y-5 animate-in zoom-in-95 duration-150 max-h-[92vh] overflow-y-auto">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-amber-500/10 text-amber-600 rounded-xl">
+                  <Plus className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-display font-bold text-base text-slate-900">Add Customer Review</h3>
+                  <p className="text-xs text-slate-500">
+                    Author and publish a customer review administratively
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCreateModalOpen(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Server Authority Notice */}
+            <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200/80 text-xs text-slate-600 space-y-1">
+              <div className="flex items-center gap-1.5 font-bold text-slate-800">
+                <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                <span>Server-Controlled Review Creation</span>
+              </div>
+              <p className="text-[11px] text-slate-500 leading-relaxed">
+                Admin-created reviews publish with <strong>Status: Approved</strong>. The server automatically assigns your moderator signature (<code className="font-mono text-slate-700">{currentUser?.email || 'admin'}</code>) and timestamp. <strong>Verified Purchase is false by default</strong> and cannot be toggled manually; it is only granted if the server independently verifies an order match.
+              </p>
+            </div>
+
+            <form onSubmit={handleCreateSubmit} className="space-y-4">
+              {/* 1. PRODUCT (Required) */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Product <span className="text-rose-500">*</span>
+                </label>
+                <select
+                  value={createProductId}
+                  onChange={(e) => setCreateProductId(e.target.value)}
+                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500/40 focus:bg-white text-slate-900 font-medium cursor-pointer"
+                  required
+                >
+                  <option value="" disabled>-- Select Product --</option>
+                  {products.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.title} (৳{p.price})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* 2. CUSTOMER NAME (Required) */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Customer Name <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Tanvir Hasan or Farhana Akter"
+                  value={createAuthor}
+                  onChange={(e) => setCreateAuthor(e.target.value)}
+                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500/40 focus:bg-white text-slate-900 font-medium"
+                  required
+                />
+              </div>
+
+              {/* 3. RATING (Required, 1-5 stars) */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Rating <span className="text-rose-500">*</span>:{' '}
+                  <strong className="text-amber-600">{createRating} / 5 Stars</strong>
+                </label>
+                <div className="flex items-center gap-1.5 p-2 bg-slate-50 rounded-xl border border-slate-200">
+                  {[1, 2, 3, 4, 5].map((star) => (
+                    <button
+                      type="button"
+                      key={star}
+                      onClick={() => setCreateRating(star)}
+                      className="p-1 hover:scale-110 transition-transform cursor-pointer"
+                      title={`${star} Star${star > 1 ? 's' : ''}`}
+                    >
+                      <Star
+                        className={`w-6 h-6 ${
+                          star <= createRating
+                            ? 'text-amber-400 fill-amber-400'
+                            : 'text-slate-300'
+                        }`}
+                      />
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* 4. COMMENT (Required) */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Comment <span className="text-rose-500">*</span>
+                </label>
+                <textarea
+                  rows={3}
+                  placeholder="Write the customer's product review feedback..."
+                  value={createComment}
+                  onChange={(e) => setCreateComment(e.target.value)}
+                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500/40 focus:bg-white text-slate-900 font-normal leading-relaxed"
+                  required
+                />
+              </div>
+
+              {/* 5. OPTIONAL: REVIEW SOURCE */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1 flex items-center justify-between">
+                  <span>Review Source <span className="text-slate-400 font-normal">(Optional)</span></span>
+                  <span className="text-[10px] text-slate-400 font-normal">Attribution channel</span>
+                </label>
+                <select
+                  value={createSource}
+                  onChange={(e) => setCreateSource(e.target.value as ReviewSource)}
+                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500/40 focus:bg-white text-slate-900 font-medium cursor-pointer"
+                >
+                  {REVIEW_SOURCES.map((src) => (
+                    <option key={src} value={src}>
+                      {src}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* 6. OPTIONAL: CUSTOMER IMAGE */}
+              <div className="pt-1">
+                <ImageUploadField
+                  label="Customer Image (Optional)"
+                  sublabel="Upload customer avatar or paste image URL"
+                  value={createCustomerImage}
+                  onChange={setCreateCustomerImage}
+                  placeholder="https://... customer avatar photo URL"
+                  previewHeightClass="h-24"
+                  idPrefix="create-review-customer-image"
+                />
+              </div>
+
+              {/* 7. OPTIONAL: SCREENSHOT ATTACHMENT */}
+              <div className="pt-1">
+                <ImageUploadField
+                  label="Screenshot Attachment (Optional)"
+                  sublabel="Attach WhatsApp/Facebook chat screenshot or proof receipt"
+                  value={createScreenshotAttachment}
+                  onChange={setCreateScreenshotAttachment}
+                  placeholder="https://... chat screenshot or slip URL"
+                  previewHeightClass="h-28"
+                  idPrefix="create-review-screenshot"
+                />
+              </div>
+
+              {/* 8. OPTIONAL: ORDER NUMBER / PHONE (FOR INDEPENDENT VERIFICATION) */}
+              <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200/80 space-y-2">
+                <div className="text-[11px] font-bold text-slate-700 flex items-center gap-1.5">
+                  <ShoppingBag className="w-3.5 h-3.5 text-amber-600" />
+                  <span>Verify against customer order (Optional)</span>
+                </div>
+                <p className="text-[10px] text-slate-500">
+                  If this customer ordered through the website, enter their Order # and Phone below. The server will independently verify if they purchased this product.
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <input
+                    type="text"
+                    placeholder="Order # (e.g. ORD-1002)"
+                    value={createOrderNumber}
+                    onChange={(e) => setCreateOrderNumber(e.target.value)}
+                    className="px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-lg focus:outline-none text-slate-800"
+                  />
+                  <input
+                    type="tel"
+                    placeholder="Customer Phone (01XXXXXXXXX)"
+                    value={createCustomerPhone}
+                    onChange={(e) => setCreateCustomerPhone(e.target.value)}
+                    className="px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-lg focus:outline-none text-slate-800"
+                  />
+                </div>
+              </div>
+
+              {/* Modal Buttons */}
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setIsCreateModalOpen(false)}
+                  disabled={isSubmittingCreate}
+                  className="px-4 py-2 text-xs font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  id="submit-create-review-btn"
+                  disabled={isSubmittingCreate}
+                  className="px-5 py-2 text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 rounded-xl flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  {isSubmittingCreate && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                  <span>Publish Review</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================ */}
+      {/* 6. MODALS: EDIT REVIEW MODAL                                */}
       {/* ============================================================ */}
       {isEditModalOpen && selectedReview && canEdit && (
         <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto animate-in fade-in duration-150">
-          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-5 animate-in zoom-in-95 duration-150">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-5 animate-in zoom-in-95 duration-150 max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div className="flex items-center gap-2.5">
                 <div className="p-2 bg-amber-50 text-amber-600 rounded-xl">
@@ -1188,7 +1565,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({ onPendingCount
               {/* Author / Customer Name */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Customer / Author Name
+                  Customer Name
                 </label>
                 <input
                   type="text"
@@ -1239,6 +1616,24 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({ onPendingCount
                 />
               </div>
 
+              {/* Review Source */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Review Source
+                </label>
+                <select
+                  value={editSource}
+                  onChange={(e) => setEditSource(e.target.value)}
+                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500/40 focus:bg-white text-slate-900 font-medium cursor-pointer"
+                >
+                  {REVIEW_SOURCES.map((src) => (
+                    <option key={src} value={src}>
+                      {src}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               {/* Moderation Status */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
@@ -1253,6 +1648,32 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({ onPendingCount
                   <option value="approved">✅ Approved (Live on storefront)</option>
                   <option value="rejected">❌ Rejected (Hidden from storefront)</option>
                 </select>
+              </div>
+
+              {/* Customer Image */}
+              <div className="pt-1">
+                <ImageUploadField
+                  label="Customer Image"
+                  sublabel="Avatar photo URL or upload"
+                  value={editCustomerImage}
+                  onChange={setEditCustomerImage}
+                  placeholder="https://... avatar URL"
+                  previewHeightClass="h-20"
+                  idPrefix="edit-review-customer-image"
+                />
+              </div>
+
+              {/* Screenshot Attachment */}
+              <div className="pt-1">
+                <ImageUploadField
+                  label="Screenshot Attachment"
+                  sublabel="Chat or receipt proof screenshot"
+                  value={editScreenshotAttachment}
+                  onChange={setEditScreenshotAttachment}
+                  placeholder="https://... screenshot URL"
+                  previewHeightClass="h-24"
+                  idPrefix="edit-review-screenshot"
+                />
               </div>
 
               {/* Modal Action Buttons */}
@@ -1280,7 +1701,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({ onPendingCount
       )}
 
       {/* ============================================================ */}
-      {/* 6. MODALS: DELETE REVIEW CONFIRMATION MODAL                 */}
+      {/* 7. MODALS: DELETE REVIEW CONFIRMATION MODAL                 */}
       {/* ============================================================ */}
       {isDeleteModalOpen && selectedReview && canDelete && (
         <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150">
@@ -1336,157 +1757,28 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({ onPendingCount
       )}
 
       {/* ============================================================ */}
-      {/* 7. MODALS: CREATE ADMIN REVIEW MODAL                        */}
+      {/* 8. MODALS: SCREENSHOT LIGHTBOX PREVIEW                       */}
       {/* ============================================================ */}
-      {isCreateModalOpen && canCreate && (
-        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto animate-in fade-in duration-150">
-          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-5 animate-in zoom-in-95 duration-150">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 bg-amber-50 text-amber-600 rounded-xl">
-                  <Plus className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="font-display font-bold text-base text-slate-900">Add Admin Review</h3>
-                  <p className="text-xs text-slate-500">Author and publish a customer review administratively</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsCreateModalOpen(false)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
+      {previewScreenshotUrl && (
+        <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="relative max-w-3xl max-h-[90vh] bg-slate-900 rounded-3xl p-2 border border-slate-800 shadow-2xl flex flex-col items-center">
+            <button
+              type="button"
+              onClick={() => setPreviewScreenshotUrl(null)}
+              className="absolute top-4 right-4 p-2 rounded-full bg-slate-800 text-white hover:bg-slate-700 transition-colors cursor-pointer z-10"
+              title="Close preview"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <img
+              src={previewScreenshotUrl}
+              alt="Screenshot Full View"
+              className="max-h-[80vh] w-auto rounded-2xl object-contain shadow-lg"
+            />
+            <div className="py-2 text-xs text-slate-400 flex items-center gap-2">
+              <Camera className="w-3.5 h-3.5" />
+              <span>Customer Review Visual Proof Attachment</span>
             </div>
-
-            <form onSubmit={handleCreateSubmit} className="space-y-4">
-              {/* Product Selection */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Select Product *
-                </label>
-                <select
-                  value={createProductId}
-                  onChange={(e) => setCreateProductId(e.target.value)}
-                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500/40 focus:bg-white text-slate-900 font-medium cursor-pointer"
-                  required
-                >
-                  <option value="" disabled>-- Select a product --</option>
-                  {products.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.title}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Author Name */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Customer / Reviewer Name
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. Tanvir Hasan"
-                  value={createAuthor}
-                  onChange={(e) => setCreateAuthor(e.target.value)}
-                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500/40 focus:bg-white text-slate-900 font-medium"
-                />
-              </div>
-
-              {/* Star Rating Picker */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Rating: <strong className="text-amber-600">{createRating} / 5 Stars</strong>
-                </label>
-                <div className="flex items-center gap-1.5 p-2 bg-slate-50 rounded-xl border border-slate-200">
-                  {[1, 2, 3, 4, 5].map((star) => (
-                    <button
-                      type="button"
-                      key={star}
-                      onClick={() => setCreateRating(star)}
-                      className="p-1 hover:scale-110 transition-transform cursor-pointer"
-                    >
-                      <Star
-                        className={`w-6 h-6 ${
-                          star <= createRating
-                            ? 'text-amber-400 fill-amber-400'
-                            : 'text-slate-300'
-                        }`}
-                      />
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Comment */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Review Comment *
-                </label>
-                <textarea
-                  rows={3}
-                  placeholder="Write the customer's feedback or testimonial..."
-                  value={createComment}
-                  onChange={(e) => setCreateComment(e.target.value)}
-                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500/40 focus:bg-white text-slate-900 font-normal"
-                  required
-                />
-              </div>
-
-              {/* Verified Purchase and Status toggles */}
-              <div className="grid grid-cols-2 gap-3 pt-1">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    Verified Purchase Badge
-                  </label>
-                  <label className="flex items-center gap-2 p-2 bg-slate-50 rounded-xl border border-slate-200 cursor-pointer text-xs">
-                    <input
-                      type="checkbox"
-                      checked={createVerified}
-                      onChange={(e) => setCreateVerified(e.target.checked)}
-                      className="rounded text-amber-600 focus:ring-amber-500"
-                    />
-                    <span className="font-medium text-slate-700">Display as Verified</span>
-                  </label>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    Publish Status
-                  </label>
-                  <select
-                    value={createStatus}
-                    onChange={(e) => setCreateStatus(e.target.value as any)}
-                    className="w-full px-2.5 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500/40 text-slate-900 font-medium cursor-pointer"
-                  >
-                    <option value="approved">Approved (Live)</option>
-                    <option value="pending">Pending Moderation</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Modal Buttons */}
-              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setIsCreateModalOpen(false)}
-                  disabled={isSubmittingCreate}
-                  className="px-4 py-2 text-xs font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSubmittingCreate}
-                  className="px-5 py-2 text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 rounded-xl flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer disabled:opacity-50"
-                >
-                  {isSubmittingCreate && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
-                  <span>Publish Review</span>
-                </button>
-              </div>
-            </form>
           </div>
         </div>
       )}

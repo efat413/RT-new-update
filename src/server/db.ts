@@ -2394,6 +2394,9 @@ export function rowToReview(row: ReviewRow): ProductReview {
     status: (row as any).status || 'approved',
     approvedAt: (row as any).approved_at || ((row as any).status === 'approved' ? row.created_at : null),
     approvedBy: (row as any).approved_by || null,
+    source: (row as any).source || 'Customer Submitted',
+    customerImage: (row as any).customer_image || null,
+    screenshotAttachment: (row as any).screenshot_attachment || null,
     createdAt: row.created_at,
   };
 }
@@ -2440,24 +2443,37 @@ export async function insertReview(db: D1Database, input: any): Promise<ProductR
   const status = input.status === 'approved' ? 'approved' : 'pending';
   const approvedAt = status === 'approved' ? (input.approvedAt || new Date().toISOString()) : null;
   const approvedBy = status === 'approved' ? (input.approvedBy || null) : null;
+  const source = input.source || 'Customer Submitted';
+  const customerImage = input.customerImage || null;
+  const screenshotAttachment = input.screenshotAttachment || null;
   const createdAt = input.createdAt || new Date().toISOString();
 
   try {
     await db
       .prepare(`
-        INSERT INTO reviews (id, product_id, author_name, rating, comment, verified_purchase, status, approved_at, approved_by, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO reviews (id, product_id, author_name, rating, comment, verified_purchase, status, approved_at, approved_by, source, customer_image, screenshot_attachment, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      .bind(id, productId, authorName, rating, comment, verifiedPurchase, status, approvedAt, approvedBy, createdAt)
+      .bind(id, productId, authorName, rating, comment, verifiedPurchase, status, approvedAt, approvedBy, source, customerImage, screenshotAttachment, createdAt)
       .run();
   } catch {
-    await db
-      .prepare(`
-        INSERT INTO reviews (id, product_id, author_name, rating, comment, verified_purchase, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `)
-      .bind(id, productId, authorName, rating, comment, verifiedPurchase, createdAt)
-      .run();
+    try {
+      await db
+        .prepare(`
+          INSERT INTO reviews (id, product_id, author_name, rating, comment, verified_purchase, status, approved_at, approved_by, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .bind(id, productId, authorName, rating, comment, verifiedPurchase, status, approvedAt, approvedBy, createdAt)
+        .run();
+    } catch {
+      await db
+        .prepare(`
+          INSERT INTO reviews (id, product_id, author_name, rating, comment, verified_purchase, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `)
+        .bind(id, productId, authorName, rating, comment, verifiedPurchase, createdAt)
+        .run();
+    }
   }
 
   const row = await db.prepare('SELECT * FROM reviews WHERE id = ?').bind(id).first<ReviewRow>();
@@ -2466,6 +2482,9 @@ export async function insertReview(db: D1Database, input: any): Promise<ProductR
   rev.status = status;
   rev.approvedAt = approvedAt;
   rev.approvedBy = approvedBy;
+  rev.source = source;
+  rev.customerImage = customerImage;
+  rev.screenshotAttachment = screenshotAttachment;
   return rev;
 }
 
@@ -2589,7 +2608,15 @@ export async function updateReviewStatusInD1(
 export async function updateReviewInD1(
   db: D1Database,
   id: string,
-  updates: { rating?: number; comment?: string; authorName?: string; status?: string }
+  updates: {
+    rating?: number;
+    comment?: string;
+    authorName?: string;
+    status?: string;
+    source?: string;
+    customerImage?: string | null;
+    screenshotAttachment?: string | null;
+  }
 ): Promise<ProductReview | null> {
   const fields: string[] = [];
   const bindings: any[] = [];
@@ -2609,12 +2636,24 @@ export async function updateReviewInD1(
     fields.push('status = ?');
     bindings.push(String(updates.status).trim());
   }
+  if (updates.source !== undefined) {
+    fields.push('source = ?');
+    bindings.push(String(updates.source).trim());
+  }
+  if (updates.customerImage !== undefined) {
+    fields.push('customer_image = ?');
+    bindings.push(updates.customerImage ? String(updates.customerImage).trim() : null);
+  }
+  if (updates.screenshotAttachment !== undefined) {
+    fields.push('screenshot_attachment = ?');
+    bindings.push(updates.screenshotAttachment ? String(updates.screenshotAttachment).trim() : null);
+  }
   if (fields.length > 0) {
     bindings.push(id);
     try {
       await db.prepare(`UPDATE reviews SET ${fields.join(', ')} WHERE id = ?`).bind(...bindings).run();
     } catch {
-      const fallbackFields = fields.filter((f) => !f.startsWith('status'));
+      const fallbackFields = fields.filter((f) => !f.startsWith('status') && !f.startsWith('source') && !f.startsWith('customer_image') && !f.startsWith('screenshot_attachment'));
       if (fallbackFields.length > 0) {
         const fallbackBindings = bindings.slice(0, fallbackFields.length);
         fallbackBindings.push(id);
@@ -2622,7 +2661,7 @@ export async function updateReviewInD1(
       }
     }
   }
-  const row = await db.prepare(`SELECT ${REVIEW_COLUMNS} FROM reviews WHERE id = ?`).bind(id).first<ReviewRow>();
+  const row = await db.prepare('SELECT * FROM reviews WHERE id = ?').bind(id).first<ReviewRow>();
   if (!row) return null;
   const rev = rowToReview(row);
   if (updates.status) rev.status = updates.status;

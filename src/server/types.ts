@@ -210,6 +210,9 @@ export interface ReviewRow {
   status?: string;
   approved_at?: string | null;
   approved_by?: string | null;
+  source?: string | null;
+  customer_image?: string | null;
+  screenshot_attachment?: string | null;
   created_at: string;
 }
 

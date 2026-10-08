@@ -3839,23 +3839,65 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const authorName = String(reviewData.authorName || reviewData.author || auth!.dbUser?.name || 'Store Admin').trim();
       const comment = String(reviewData.comment || '').trim();
       const rating = Math.min(5, Math.max(1, Math.round(Number(reviewData.rating) || 5)));
-      const verifiedPurchase = Boolean(reviewData.verifiedPurchase);
 
       if (!productId || !authorName || !comment) {
         return jsonResponse({ success: false, error: 'Product, author name, and comment are required.' }, 400);
       }
 
+      // Security rule: Admin-created reviews: status = approved
+      const adminStatus = 'approved';
+
+      // Security rule: Server controls approved_at and approved_by. Do not allow client override.
+      const nowIso = new Date().toISOString();
+      const approvedBy = auth!.dbUser?.email || auth!.dbUser?.id || auth!.tokenUser?.email || 'admin';
+      const approvedAt = nowIso;
+
+      // Security rule: verifiedPurchase = false UNLESS server independently verifies purchase!
+      // Do not allow admin to manually set verifiedPurchase. Server strictly controls this field.
+      let serverVerifiedPurchase = false;
+      const orderNumber = String(reviewData.orderNumber || reviewData.order_number || '').trim();
+      const phone = String(reviewData.phone || reviewData.customerPhone || '').replace(/\D/g, '');
+      const userEmail = String(reviewData.userEmail || reviewData.email || '').trim().toLowerCase();
+      const userId = String(reviewData.userId || '').trim();
+
+      if (orderNumber || phone || userEmail || userId) {
+        try {
+          serverVerifiedPurchase = await verifyCustomerPurchaseInD1(env.DB, {
+            authenticatedUserId: userId || null,
+            authenticatedEmail: userEmail || null,
+            guestOrderNumber: orderNumber || null,
+            guestPhone: phone || null,
+            productId,
+          });
+        } catch {
+          serverVerifiedPurchase = false;
+        }
+      }
+
+      // Optional: Review Source (Customer Submitted, Facebook, Messenger, WhatsApp, Instagram, Manual)
+      const VALID_SOURCES = ['Customer Submitted', 'Facebook', 'Messenger', 'WhatsApp', 'Instagram', 'Manual'];
+      let source = String(reviewData.source || 'Manual').trim();
+      if (!VALID_SOURCES.includes(source)) {
+        source = 'Manual';
+      }
+
+      // Optional: Customer Image and Screenshot Attachment
+      const customerImage = reviewData.customerImage ? String(reviewData.customerImage).trim() : null;
+      const screenshotAttachment = reviewData.screenshotAttachment ? String(reviewData.screenshotAttachment).trim() : null;
+
       try {
-        const adminStatus = reviewData.status === 'pending' ? 'pending' : (reviewData.status === 'rejected' ? 'rejected' : 'approved');
         const created = await insertReview(env.DB, {
           productId,
           authorName,
           comment,
           rating,
-          verifiedPurchase,
+          verifiedPurchase: serverVerifiedPurchase,
           status: adminStatus,
-          approvedAt: adminStatus === 'approved' ? new Date().toISOString() : null,
-          approvedBy: adminStatus === 'approved' ? (auth!.dbUser?.email || auth!.dbUser?.id || auth!.tokenUser?.email) : null,
+          approvedAt,
+          approvedBy,
+          source,
+          customerImage,
+          screenshotAttachment,
         });
         return jsonResponse({ success: true, review: created }, 201);
       } catch (err: any) {
