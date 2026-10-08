@@ -725,6 +725,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     const prodId = target.productId;
     const updatedReviews = reviews.filter((r) => r.id !== reviewId);
     setReviews(updatedReviews);
+    reviewsApi.delete(reviewId).catch(console.error);
 
     const remainingForProduct = updatedReviews.filter((r) => r.productId === prodId);
     const avgRating =

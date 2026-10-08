@@ -2391,6 +2391,7 @@ export function rowToReview(row: ReviewRow): ProductReview {
     rating: Number(row.rating) || 5,
     comment: row.comment,
     verifiedPurchase: Boolean(row.verified_purchase),
+    status: (row as any).status || 'approved',
     createdAt: row.created_at,
   };
 }
@@ -2521,6 +2522,65 @@ export async function verifyCustomerPurchaseInD1(
 export async function deleteReviewFromD1(db: D1Database, id: string): Promise<boolean> {
   const res = await db.prepare('DELETE FROM reviews WHERE id = ?').bind(id).run();
   return res.success;
+}
+
+export async function updateReviewStatusInD1(
+  db: D1Database,
+  id: string,
+  status: string
+): Promise<ProductReview | null> {
+  const cleanStatus = status === 'rejected' ? 'rejected' : status === 'pending' ? 'pending' : 'approved';
+  try {
+    await db.prepare('UPDATE reviews SET status = ? WHERE id = ?').bind(cleanStatus, id).run();
+  } catch {}
+  const row = await db.prepare(`SELECT ${REVIEW_COLUMNS} FROM reviews WHERE id = ?`).bind(id).first<ReviewRow>();
+  if (!row) return null;
+  const rev = rowToReview(row);
+  rev.status = cleanStatus;
+  return rev;
+}
+
+export async function updateReviewInD1(
+  db: D1Database,
+  id: string,
+  updates: { rating?: number; comment?: string; authorName?: string; status?: string }
+): Promise<ProductReview | null> {
+  const fields: string[] = [];
+  const bindings: any[] = [];
+  if (updates.rating !== undefined) {
+    fields.push('rating = ?');
+    bindings.push(Math.min(5, Math.max(1, Math.round(Number(updates.rating) || 5))));
+  }
+  if (updates.comment !== undefined) {
+    fields.push('comment = ?');
+    bindings.push(String(updates.comment).trim());
+  }
+  if (updates.authorName !== undefined) {
+    fields.push('author_name = ?');
+    bindings.push(String(updates.authorName).trim());
+  }
+  if (updates.status !== undefined) {
+    fields.push('status = ?');
+    bindings.push(String(updates.status).trim());
+  }
+  if (fields.length > 0) {
+    bindings.push(id);
+    try {
+      await db.prepare(`UPDATE reviews SET ${fields.join(', ')} WHERE id = ?`).bind(...bindings).run();
+    } catch {
+      const fallbackFields = fields.filter((f) => !f.startsWith('status'));
+      if (fallbackFields.length > 0) {
+        const fallbackBindings = bindings.slice(0, fallbackFields.length);
+        fallbackBindings.push(id);
+        await db.prepare(`UPDATE reviews SET ${fallbackFields.join(', ')} WHERE id = ?`).bind(...fallbackBindings).run();
+      }
+    }
+  }
+  const row = await db.prepare(`SELECT ${REVIEW_COLUMNS} FROM reviews WHERE id = ?`).bind(id).first<ReviewRow>();
+  if (!row) return null;
+  const rev = rowToReview(row);
+  if (updates.status) rev.status = updates.status;
+  return rev;
 }
 
 // ==============================================================

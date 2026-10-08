@@ -3284,7 +3284,173 @@ function localApiDevPlugin(): Plugin {
           }
         }
 
-        // 6. REVIEWS
+        // 6. REVIEWS CRUD & MODERATION (GRANULAR RBAC)
+        if (url.pathname === '/api/admin/reviews') {
+          if (method === 'GET') {
+            const authResult = requireDevAuth(req);
+            if (authResult.error) return sendDevError(res, authResult.error);
+            if (!hasDevPermission(authResult.auth!, 'reviews.view')) {
+              return sendDevError(res, {
+                status: 403,
+                body: { success: false, error: 'Forbidden: You do not have the "reviews.view" permission required to perform this action.' },
+              });
+            }
+
+            const productId = url.searchParams.get('productId') || undefined;
+            const status = url.searchParams.get('status') || undefined;
+            let list = [...devReviews];
+            if (productId) list = list.filter((r) => r.productId === productId);
+            if (status) list = list.filter((r) => (r.status || 'approved').toLowerCase() === status.toLowerCase());
+            res.statusCode = 200;
+            return res.end(JSON.stringify({ success: true, count: list.length, reviews: list }));
+          }
+
+          if (method === 'POST') {
+            const authResult = requireDevAuth(req);
+            if (authResult.error) return sendDevError(res, authResult.error);
+            if (!hasDevPermission(authResult.auth!, 'reviews.create')) {
+              return sendDevError(res, {
+                status: 403,
+                body: { success: false, error: 'Forbidden: You do not have the "reviews.create" permission required to perform this action.' },
+              });
+            }
+
+            return readBody((body) => {
+              const r = body.review || body;
+              const productId = String(r.productId || '').trim();
+              const authorName = String(r.authorName || r.author || authResult.auth!.user?.name || 'Store Admin').trim();
+              const comment = String(r.comment || '').trim();
+              const rating = Math.min(5, Math.max(1, Math.round(Number(r.rating) || 5)));
+              const verifiedPurchase = Boolean(r.verifiedPurchase);
+
+              if (!productId || !authorName || !comment) {
+                res.statusCode = 400;
+                return res.end(JSON.stringify({ success: false, error: 'Product, author name, and comment are required.' }));
+              }
+
+              const newR = {
+                id: r.id || `rev-${Date.now()}`,
+                productId,
+                authorName,
+                rating,
+                comment,
+                verifiedPurchase,
+                status: r.status || 'approved',
+                createdAt: r.createdAt || new Date().toISOString(),
+              };
+              devReviews.unshift(newR);
+              res.statusCode = 201;
+              return res.end(JSON.stringify({ success: true, review: newR }));
+            });
+          }
+        }
+
+        // Review Approval Endpoint (/api/admin/reviews/:id/approve or /api/reviews/:id/approve)
+        const devApproveMatch = url.pathname.match(/^\/api\/(?:admin\/)?reviews\/([^/]+)\/approve\/?$/);
+        if (devApproveMatch && (method === 'POST' || method === 'PATCH' || method === 'PUT')) {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          if (!hasDevPermission(authResult.auth!, 'reviews.approve')) {
+            return sendDevError(res, {
+              status: 403,
+              body: { success: false, error: 'Forbidden: You do not have the "reviews.approve" permission required to perform this action.' },
+            });
+          }
+
+          const targetId = decodeURIComponent(devApproveMatch[1]);
+          const target = devReviews.find((r) => r.id === targetId);
+          if (!target) {
+            res.statusCode = 404;
+            return res.end(JSON.stringify({ success: false, error: 'Review not found.' }));
+          }
+
+          target.status = 'approved';
+          res.statusCode = 200;
+          return res.end(JSON.stringify({ success: true, message: 'Review approved successfully.', review: target }));
+        }
+
+        // Review Status Moderation Endpoint (/api/admin/reviews/:id/status or /api/reviews/:id/status)
+        const devStatusMatch = url.pathname.match(/^\/api\/(?:admin\/)?reviews\/([^/]+)\/status\/?$/);
+        if (devStatusMatch && (method === 'PATCH' || method === 'PUT')) {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          if (!hasDevPermission(authResult.auth!, 'reviews.approve')) {
+            return sendDevError(res, {
+              status: 403,
+              body: { success: false, error: 'Forbidden: You do not have the "reviews.approve" permission required to perform this action.' },
+            });
+          }
+
+          const targetId = decodeURIComponent(devStatusMatch[1]);
+          const target = devReviews.find((r) => r.id === targetId);
+          if (!target) {
+            res.statusCode = 404;
+            return res.end(JSON.stringify({ success: false, error: 'Review not found.' }));
+          }
+
+          return readBody((body) => {
+            const newStatus = String(body?.status || 'approved').toLowerCase();
+            if (!['approved', 'pending', 'rejected'].includes(newStatus)) {
+              res.statusCode = 400;
+              return res.end(JSON.stringify({ success: false, error: 'Invalid status. Expected "approved", "pending", or "rejected".' }));
+            }
+            target.status = newStatus;
+            res.statusCode = 200;
+            return res.end(JSON.stringify({ success: true, message: `Review status updated to ${newStatus}.`, review: target }));
+          });
+        }
+
+        // Single Review Update/Edit (/api/admin/reviews/:id or /api/reviews/:id)
+        const devSingleReviewMatch = url.pathname.match(/^\/api\/(?:admin\/)?reviews\/([^/]+)\/?$/);
+        if (devSingleReviewMatch && (method === 'PUT' || method === 'PATCH')) {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          if (!hasDevPermission(authResult.auth!, 'reviews.edit')) {
+            return sendDevError(res, {
+              status: 403,
+              body: { success: false, error: 'Forbidden: You do not have the "reviews.edit" permission required to perform this action.' },
+            });
+          }
+
+          const targetId = decodeURIComponent(devSingleReviewMatch[1]);
+          const target = devReviews.find((r) => r.id === targetId);
+          if (!target) {
+            res.statusCode = 404;
+            return res.end(JSON.stringify({ success: false, error: 'Review not found.' }));
+          }
+
+          return readBody((body) => {
+            const r = body?.review || body;
+            if (r.rating !== undefined) target.rating = Math.min(5, Math.max(1, Math.round(Number(r.rating) || 5)));
+            if (r.comment !== undefined) target.comment = String(r.comment).trim();
+            if (r.authorName !== undefined || r.author !== undefined) target.authorName = String(r.authorName || r.author).trim();
+            if (r.status !== undefined) target.status = String(r.status).trim();
+
+            res.statusCode = 200;
+            return res.end(JSON.stringify({ success: true, message: 'Review updated successfully.', review: target }));
+          });
+        }
+
+        // Single Review Deletion (/api/admin/reviews/:id or /api/reviews/:id)
+        if (devSingleReviewMatch && method === 'DELETE') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          if (!hasDevPermission(authResult.auth!, 'reviews.delete')) {
+            return sendDevError(res, {
+              status: 403,
+              body: { success: false, error: 'Forbidden: You do not have the "reviews.delete" permission required to perform this action.' },
+            });
+          }
+
+          const targetId = decodeURIComponent(devSingleReviewMatch[1]);
+          const targetIdx = devReviews.findIndex((r) => r.id === targetId);
+          if (targetIdx >= 0) {
+            devReviews.splice(targetIdx, 1);
+          }
+          res.statusCode = 200;
+          return res.end(JSON.stringify({ success: true, message: 'Review deleted successfully.' }));
+        }
+
         if (url.pathname === '/api/reviews') {
           if (method === 'GET') {
             const productId = url.searchParams.get('productId') || undefined;

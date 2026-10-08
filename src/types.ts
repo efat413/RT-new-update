@@ -157,6 +157,7 @@ export interface ProductReview {
   createdAt: string;
   date?: string;
   verifiedPurchase?: boolean;
+  status?: 'approved' | 'pending' | 'rejected' | string;
 }
 
 export interface Coupon {
@@ -377,6 +378,12 @@ export interface AdminPermissions {
   canManageCategories?: boolean;
   canManageAccounts?: boolean;
   canManageSettings?: boolean;
+  canManageReviews?: boolean;
+  'reviews.view'?: boolean;
+  'reviews.approve'?: boolean;
+  'reviews.delete'?: boolean;
+  'reviews.create'?: boolean;
+  'reviews.edit'?: boolean;
   [key: string]: any;
 }
 

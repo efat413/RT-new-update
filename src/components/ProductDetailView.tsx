@@ -208,10 +208,9 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
   }, [product?.id, currentUser]);
 
   const canDeleteReview = Boolean(
-    isAdminLoggedIn ||
     currentUser?.role === 'super_admin' ||
-    currentUser?.role === 'admin' ||
-    (currentUser?.role === 'sub_admin' && hasPermission('canManageProducts'))
+    hasPermission('reviews.delete') ||
+    hasPermission('review.delete')
   );
 
   const handleBackToHome = () => {

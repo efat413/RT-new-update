@@ -61,6 +61,13 @@ export const PERMISSION_KEYS = [
 
   // Audit Log Permission
   'audit_log.view',
+
+  // Review Permissions
+  'reviews.view',
+  'reviews.approve',
+  'reviews.delete',
+  'reviews.create',
+  'reviews.edit',
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
@@ -81,7 +88,8 @@ export interface PermissionMetadata {
     | 'User / Admin'
     | 'Store'
     | 'Audit'
-    | 'Financial / Sensitive Data';
+    | 'Financial / Sensitive Data'
+    | 'Reviews';
   displayName: string;
   description: string;
   superAdminOnly: boolean;
@@ -451,6 +459,53 @@ export const PERMISSIONS_METADATA: Record<PermissionKey, PermissionMetadata> = {
     sensitive: false,
     dangerous: false,
   },
+
+  // Reviews
+  'reviews.view': {
+    key: 'reviews.view',
+    group: 'Reviews',
+    displayName: 'View Reviews',
+    description: 'Browse, search, and inspect customer product reviews in administration.',
+    superAdminOnly: false,
+    sensitive: false,
+    dangerous: false,
+  },
+  'reviews.approve': {
+    key: 'reviews.approve',
+    group: 'Reviews',
+    displayName: 'Approve & Moderate Reviews',
+    description: 'Moderate customer reviews, approve pending submissions, or reject inappropriate content.',
+    superAdminOnly: false,
+    sensitive: false,
+    dangerous: false,
+  },
+  'reviews.delete': {
+    key: 'reviews.delete',
+    group: 'Reviews',
+    displayName: 'Delete Reviews',
+    description: 'Permanently delete customer reviews from the product catalog.',
+    superAdminOnly: false,
+    sensitive: true,
+    dangerous: true,
+  },
+  'reviews.create': {
+    key: 'reviews.create',
+    group: 'Reviews',
+    displayName: 'Create Admin Reviews',
+    description: 'Administratively submit and publish customer reviews.',
+    superAdminOnly: false,
+    sensitive: false,
+    dangerous: false,
+  },
+  'reviews.edit': {
+    key: 'reviews.edit',
+    group: 'Reviews',
+    displayName: 'Edit Reviews',
+    description: 'Edit customer review ratings, comments, and author attributes.',
+    superAdminOnly: false,
+    sensitive: false,
+    dangerous: false,
+  },
 };
 
 /**
@@ -502,6 +557,12 @@ export const DEFAULT_ADMIN_1_PERMISSIONS: Readonly<Record<PermissionKey, boolean
 
   'settings.manage': false,
   'audit_log.view': true,
+
+  'reviews.view': true,
+  'reviews.approve': true,
+  'reviews.delete': false,
+  'reviews.create': true,
+  'reviews.edit': true,
 };
 
 export const DEFAULT_ADMIN_PERMISSIONS: Readonly<Record<PermissionKey, boolean>> = DEFAULT_ADMIN_1_PERMISSIONS;
@@ -555,6 +616,12 @@ export const DEFAULT_ADMIN_2_PERMISSIONS: Readonly<Record<PermissionKey, boolean
 
   'settings.manage': false,
   'audit_log.view': false,
+
+  'reviews.view': true,
+  'reviews.approve': false,
+  'reviews.delete': false,
+  'reviews.create': false,
+  'reviews.edit': false,
 };
 
 /**
@@ -606,6 +673,12 @@ export const DEFAULT_SUB_ADMIN_PERMISSIONS: Readonly<Record<PermissionKey, boole
 
   'settings.manage': false,
   'audit_log.view': false,
+
+  'reviews.view': false,
+  'reviews.approve': false,
+  'reviews.delete': false,
+  'reviews.create': false,
+  'reviews.edit': false,
 };
 
 /**
@@ -891,6 +964,37 @@ export const LEGACY_PERMISSION_MAPPINGS: Record<string, LegacyPermissionMapping>
     sensitivity: 'operational',
     description: 'Legacy alias for coupon update.',
   },
+  // Review aliases (singular to plural canonical mapping)
+  'review.view': {
+    legacyKey: 'review.view',
+    canonicalKey: 'reviews.view',
+    sensitivity: 'operational',
+    description: 'Alias for reviews.view.',
+  },
+  'review.approve': {
+    legacyKey: 'review.approve',
+    canonicalKey: 'reviews.approve',
+    sensitivity: 'operational',
+    description: 'Alias for reviews.approve.',
+  },
+  'review.delete': {
+    legacyKey: 'review.delete',
+    canonicalKey: 'reviews.delete',
+    sensitivity: 'sensitive',
+    description: 'Alias for reviews.delete.',
+  },
+  'review.create': {
+    legacyKey: 'review.create',
+    canonicalKey: 'reviews.create',
+    sensitivity: 'operational',
+    description: 'Alias for reviews.create.',
+  },
+  'review.edit': {
+    legacyKey: 'review.edit',
+    canonicalKey: 'reviews.edit',
+    sensitivity: 'operational',
+    description: 'Alias for reviews.edit.',
+  },
 };
 
 /**
@@ -953,6 +1057,14 @@ export function mapLegacyPermissionsToGranular(legacy: Record<string, any>): Rec
     mapped['coupon.manage'] = true;
     mapped['courier.configure'] = true;
     // settings.manage remains false: Super Admin-only!
+  }
+
+  if (legacy.canManageReviews) {
+    mapped['reviews.view'] = true;
+    mapped['reviews.approve'] = true;
+    mapped['reviews.delete'] = true;
+    mapped['reviews.create'] = true;
+    mapped['reviews.edit'] = true;
   }
 
   return mapped;

@@ -636,6 +636,18 @@ export const reviewsApi = {
     throw new Error(res.error || 'Failed to fetch reviews. Please try again.');
   },
 
+  async getAllAdmin(params?: { productId?: string; status?: string }): Promise<ProductReview[]> {
+    const url = new URL(`${API_BASE}/admin/reviews`, window.location.origin);
+    if (params?.productId) url.searchParams.set('productId', params.productId);
+    if (params?.status) url.searchParams.set('status', params.status);
+
+    const res = await apiRequest<{ success: boolean; reviews: ProductReview[] }>(url.toString());
+    if (res.success && res.data && Array.isArray(res.data.reviews)) {
+      return res.data.reviews;
+    }
+    throw new Error(res.error || 'Failed to fetch admin reviews. Please check permissions.');
+  },
+
   async create(review: Partial<ProductReview>): Promise<ProductReview> {
     const res = await apiRequest<{ success: boolean; review: ProductReview }>(`${API_BASE}/reviews`, {
       method: 'POST',
@@ -647,8 +659,51 @@ export const reviewsApi = {
     return res.data.review;
   },
 
+  async createAdmin(review: Partial<ProductReview>): Promise<ProductReview> {
+    const res = await apiRequest<{ success: boolean; review: ProductReview }>(`${API_BASE}/admin/reviews`, {
+      method: 'POST',
+      body: JSON.stringify(review),
+    });
+    if (!res.success || !res.data?.review) {
+      throw new Error(res.error || 'Failed to create review as admin.');
+    }
+    return res.data.review;
+  },
+
+  async approve(id: string): Promise<ProductReview> {
+    const res = await apiRequest<{ success: boolean; review: ProductReview }>(`${API_BASE}/admin/reviews/${encodeURIComponent(id)}/approve`, {
+      method: 'POST',
+    });
+    if (!res.success || !res.data?.review) {
+      throw new Error(res.error || 'Failed to approve review.');
+    }
+    return res.data.review;
+  },
+
+  async updateStatus(id: string, status: string): Promise<ProductReview> {
+    const res = await apiRequest<{ success: boolean; review: ProductReview }>(`${API_BASE}/admin/reviews/${encodeURIComponent(id)}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    });
+    if (!res.success || !res.data?.review) {
+      throw new Error(res.error || 'Failed to update review status.');
+    }
+    return res.data.review;
+  },
+
+  async update(id: string, updates: Partial<ProductReview>): Promise<ProductReview> {
+    const res = await apiRequest<{ success: boolean; review: ProductReview }>(`${API_BASE}/admin/reviews/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    });
+    if (!res.success || !res.data?.review) {
+      throw new Error(res.error || 'Failed to update review.');
+    }
+    return res.data.review;
+  },
+
   async delete(id: string): Promise<boolean> {
-    const res = await apiRequest<{ success: boolean }>(`${API_BASE}/reviews/${encodeURIComponent(id)}`, {
+    const res = await apiRequest<{ success: boolean }>(`${API_BASE}/admin/reviews/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     });
     if (!res.success) {

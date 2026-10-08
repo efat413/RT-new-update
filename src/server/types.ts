@@ -207,6 +207,7 @@ export interface ReviewRow {
   rating: number;
   comment: string;
   verified_purchase: number;
+  status?: string;
   created_at: string;
 }
 

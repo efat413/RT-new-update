@@ -25,6 +25,7 @@ import {
   FileText,
   Save,
   Info,
+  Star,
 } from 'lucide-react';
 import { useStore } from '../../context/StoreContext';
 import { STORAGE_KEYS } from '../../context/storageKeys';
@@ -188,6 +189,20 @@ const PERMISSION_GROUPS: PermissionGroupDefinition[] = [
     color: 'text-slate-600 bg-slate-100 border-slate-300',
     keys: [
       'audit_log.view',
+    ],
+  },
+  {
+    id: 'reviews',
+    name: 'Customer Reviews Management',
+    icon: Star,
+    description: 'Browse, create, edit, moderate/approve, and delete customer reviews',
+    color: 'text-amber-600 bg-amber-50 border-amber-200',
+    keys: [
+      'reviews.view',
+      'reviews.approve',
+      'reviews.delete',
+      'reviews.create',
+      'reviews.edit',
     ],
   },
 ];

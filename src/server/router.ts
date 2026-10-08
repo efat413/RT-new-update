@@ -41,6 +41,8 @@ import {
   getAllReviews,
   insertReview,
   deleteReviewFromD1,
+  updateReviewStatusInD1,
+  updateReviewInD1,
   verifyCustomerPurchaseInD1,
   // Users
   getAllUsers,
@@ -803,6 +805,7 @@ import {
   SUPER_ADMIN_ONLY_PERMISSIONS,
   isValidPermissionKey,
   isSuperAdminOnlyPermission,
+  getCanonicalPermissionKey,
   resolveUserPermissions,
   generateLegacyPermissionFlags,
   getSuperAdminEmails,
@@ -1058,6 +1061,31 @@ function hasPermission(
   }
   if (keyStr === 'product.update') {
     return Boolean(auth.permissions && auth.permissions['product.update']);
+  }
+
+  // Explicit checks for review permissions (supporting plural and singular aliases)
+  if (keyStr === 'reviews.view' || keyStr === 'review.view') {
+    return Boolean(auth.permissions && (auth.permissions['reviews.view'] || (auth.permissions as any)['review.view']));
+  }
+  if (keyStr === 'reviews.approve' || keyStr === 'review.approve') {
+    return Boolean(auth.permissions && (auth.permissions['reviews.approve'] || (auth.permissions as any)['review.approve']));
+  }
+  if (keyStr === 'reviews.delete' || keyStr === 'review.delete') {
+    return Boolean(auth.permissions && (auth.permissions['reviews.delete'] || (auth.permissions as any)['review.delete']));
+  }
+  if (keyStr === 'reviews.create' || keyStr === 'review.create') {
+    return Boolean(auth.permissions && (auth.permissions['reviews.create'] || (auth.permissions as any)['review.create']));
+  }
+  if (keyStr === 'reviews.edit' || keyStr === 'review.edit') {
+    return Boolean(auth.permissions && (auth.permissions['reviews.edit'] || (auth.permissions as any)['review.edit']));
+  }
+
+  // Canonical alias resolution
+  const canonical = getCanonicalPermissionKey(keyStr);
+  if (canonical && isValidPermissionKey(canonical)) {
+    if (auth.permissions && auth.permissions[canonical]) {
+      return true;
+    }
   }
 
   // Granular PermissionKey check
@@ -3774,8 +3802,162 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
   }
 
   // ==========================================
-  // 6. REVIEWS CRUD ROUTES
+  // 6. REVIEWS CRUD & MODERATION ROUTES (Granular RBAC)
   // ==========================================
+  if (path === '/api/admin/reviews') {
+    if (method === 'GET') {
+      const { auth, errorResponse } = await requireAuth(request, env);
+      if (errorResponse) return errorResponse;
+      const permErr = requirePermission(auth!, 'reviews.view');
+      if (permErr) return permErr;
+
+      try {
+        const productId = url.searchParams.get('productId') || undefined;
+        const status = url.searchParams.get('status') || undefined;
+        let reviews = await getAllReviews(env.DB, productId);
+        if (status) {
+          reviews = reviews.filter((r) => (r.status || 'approved').toLowerCase() === status.toLowerCase());
+        }
+        return jsonResponse({ success: true, count: reviews.length, reviews }, 200);
+      } catch (err: any) {
+        logServerError({ route: path, method, error: err, action: 'reviews.admin.list' });
+        return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+      }
+    }
+
+    if (method === 'POST') {
+      const { auth, errorResponse } = await requireAuth(request, env);
+      if (errorResponse) return errorResponse;
+      const permErr = requirePermission(auth!, 'reviews.create');
+      if (permErr) return permErr;
+
+      const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+      if (jsonErr) return jsonErr;
+
+      const reviewData = body?.review || body;
+      const productId = String(reviewData.productId || '').trim();
+      const authorName = String(reviewData.authorName || reviewData.author || auth!.dbUser?.name || 'Store Admin').trim();
+      const comment = String(reviewData.comment || '').trim();
+      const rating = Math.min(5, Math.max(1, Math.round(Number(reviewData.rating) || 5)));
+      const verifiedPurchase = Boolean(reviewData.verifiedPurchase);
+
+      if (!productId || !authorName || !comment) {
+        return jsonResponse({ success: false, error: 'Product, author name, and comment are required.' }, 400);
+      }
+
+      try {
+        const created = await insertReview(env.DB, {
+          productId,
+          authorName,
+          comment,
+          rating,
+          verifiedPurchase,
+        });
+        return jsonResponse({ success: true, review: created }, 201);
+      } catch (err: any) {
+        logServerError({ route: path, method, error: err, action: 'reviews.admin.create' });
+        return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+      }
+    }
+  }
+
+  // Admin Approve Route (/api/admin/reviews/:id/approve or /api/reviews/:id/approve)
+  const reviewApproveMatch = path.match(/^\/api\/(?:admin\/)?reviews\/([^/]+)\/approve\/?$/);
+  if (reviewApproveMatch && (method === 'POST' || method === 'PATCH' || method === 'PUT')) {
+    const revId = decodeURIComponent(reviewApproveMatch[1]);
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const permErr = requirePermission(auth!, 'reviews.approve');
+    if (permErr) return permErr;
+
+    try {
+      const updated = await updateReviewStatusInD1(env.DB, revId, 'approved');
+      if (!updated) {
+        return jsonResponse({ success: false, error: 'Review not found.' }, 404);
+      }
+      return jsonResponse({ success: true, message: 'Review approved successfully.', review: updated });
+    } catch (err: any) {
+      logServerError({ route: path, method, error: err, action: 'reviews.admin.approve' });
+      return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+    }
+  }
+
+  // Admin Status Moderation Route (/api/admin/reviews/:id/status or /api/reviews/:id/status)
+  const reviewStatusMatch = path.match(/^\/api\/(?:admin\/)?reviews\/([^/]+)\/status\/?$/);
+  if (reviewStatusMatch && (method === 'PATCH' || method === 'PUT')) {
+    const revId = decodeURIComponent(reviewStatusMatch[1]);
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const permErr = requirePermission(auth!, 'reviews.approve');
+    if (permErr) return permErr;
+
+    const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+    if (jsonErr) return jsonErr;
+
+    const newStatus = String(body?.status || 'approved').toLowerCase();
+    if (!['approved', 'pending', 'rejected'].includes(newStatus)) {
+      return jsonResponse({ success: false, error: 'Invalid status. Expected "approved", "pending", or "rejected".' }, 400);
+    }
+
+    try {
+      const updated = await updateReviewStatusInD1(env.DB, revId, newStatus);
+      if (!updated) {
+        return jsonResponse({ success: false, error: 'Review not found.' }, 404);
+      }
+      return jsonResponse({ success: true, message: `Review status updated to ${newStatus}.`, review: updated });
+    } catch (err: any) {
+      logServerError({ route: path, method, error: err, action: 'reviews.admin.status' });
+      return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+    }
+  }
+
+  // Single Review Update/Edit (/api/admin/reviews/:id or /api/reviews/:id)
+  const singleReviewMatch = path.match(/^\/api\/(?:admin\/)?reviews\/([^/]+)\/?$/);
+  if (singleReviewMatch && (method === 'PUT' || method === 'PATCH')) {
+    const revId = decodeURIComponent(singleReviewMatch[1]);
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const permErr = requirePermission(auth!, 'reviews.edit');
+    if (permErr) return permErr;
+
+    const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+    if (jsonErr) return jsonErr;
+
+    const reviewData = body?.review || body;
+    try {
+      const updated = await updateReviewInD1(env.DB, revId, {
+        rating: reviewData.rating,
+        comment: reviewData.comment,
+        authorName: reviewData.authorName || reviewData.author,
+        status: reviewData.status,
+      });
+      if (!updated) {
+        return jsonResponse({ success: false, error: 'Review not found.' }, 404);
+      }
+      return jsonResponse({ success: true, message: 'Review updated successfully.', review: updated });
+    } catch (err: any) {
+      logServerError({ route: path, method, error: err, action: 'reviews.admin.edit' });
+      return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+    }
+  }
+
+  // Single Review Deletion (/api/admin/reviews/:id or /api/reviews/:id)
+  if (singleReviewMatch && method === 'DELETE') {
+    const revId = decodeURIComponent(singleReviewMatch[1]);
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const permErr = requirePermission(auth!, 'reviews.delete');
+    if (permErr) return permErr;
+
+    try {
+      await deleteReviewFromD1(env.DB, revId);
+      return jsonResponse({ success: true, message: 'Review deleted successfully.' });
+    } catch (err: any) {
+      logServerError({ route: path, method, error: err, action: 'reviews.admin.delete' });
+      return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+    }
+  }
+
   if (path === '/api/reviews') {
     if (method === 'GET') {
       try {
@@ -3916,24 +4098,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         console.error('Error creating review:', err);
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
       }
-    }
-  }
-
-  const reviewIdMatch = path.match(/^\/api\/reviews\/([^/]+)$/);
-  if (reviewIdMatch && method === 'DELETE') {
-    const revId = decodeURIComponent(reviewIdMatch[1]);
-    const { auth, errorResponse } = await requireAuth(request, env);
-    if (errorResponse) return errorResponse;
-    if (auth!.role === 'customer') {
-      return jsonResponse({ success: false, error: 'Forbidden: Customers cannot delete reviews.' }, 403);
-    }
-
-    try {
-      await deleteReviewFromD1(env.DB, revId);
-      return jsonResponse({ success: true, message: `Review deleted successfully.` });
-    } catch (err: any) {
-      logServerError({ route: path, method, error: err, action: 'review.delete' });
-      return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
     }
   }
 
