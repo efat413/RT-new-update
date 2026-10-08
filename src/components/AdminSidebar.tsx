@@ -34,6 +34,7 @@ interface AdminSidebarProps {
   usersCount: number;
   pendingOrdersCount: number;
   lowStockProductsCount: number;
+  pendingReviewsCount?: number;
   hasPermission: (perm: string) => boolean;
   orderStatusFilter: string;
   setOrderStatusFilter: (filter: any) => void;
@@ -63,6 +64,7 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
   usersCount,
   pendingOrdersCount,
   lowStockProductsCount,
+  pendingReviewsCount = 0,
   hasPermission,
   orderStatusFilter,
   setOrderStatusFilter,
@@ -173,9 +175,9 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
     },
     {
       id: 'reviews',
-      label: 'Customer Reviews',
+      label: 'Reviews',
       icon: MessageSquare,
-      badge: null,
+      badge: pendingReviewsCount > 0 ? `${pendingReviewsCount}` : null,
       color: 'amber',
       permission: 'reviews.view',
     },
@@ -253,7 +255,9 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
                   {item.badge !== null && (
                     <span
                       className={`px-1.5 py-0.5 rounded-full text-[10px] font-extrabold ${
-                        isActive
+                        item.id === 'reviews' && pendingReviewsCount > 0
+                          ? 'bg-amber-500/25 text-amber-300 border border-amber-500/40 shadow-xs'
+                          : isActive
                           ? 'bg-rose-500/30 text-rose-200 border border-rose-500/40'
                           : 'bg-slate-800 text-slate-400 border border-slate-700'
                       }`}

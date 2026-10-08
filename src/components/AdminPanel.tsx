@@ -145,7 +145,7 @@ const AdminTabFallback: React.FC = () => (
     <span className="text-xs font-medium text-slate-500">Loading module...</span>
   </div>
 );
-import { uploadApi, profitAnalyticsApi, productsApi } from '../services/storeApi';
+import { uploadApi, profitAnalyticsApi, productsApi, reviewsApi } from '../services/storeApi';
 import { orderApi } from '../services/orderApi';
 import { formatWhatsAppLink, normalizeWhatsAppNumber } from '../utils/phone';
 import { copyToClipboardSafe } from '../utils/clipboard';
@@ -312,9 +312,28 @@ const AdminPanelContent: React.FC = () => {
   const [permissionsModalUser, setPermissionsModalUser] = useState<UserAccount | null>(null);
   const [selectedStaffUserId, setSelectedStaffUserId] = useState<string>('');
 
+  // Reviews count & badge state for sidebar
+  const [pendingReviewsCount, setPendingReviewsCount] = useState<number>(0);
+
+  const fetchPendingReviewsCount = useCallback(async () => {
+    if (!hasPermission('reviews.view')) return;
+    try {
+      const list = await reviewsApi.getAllAdmin({ status: 'pending' });
+      if (Array.isArray(list)) {
+        setPendingReviewsCount(list.length);
+      }
+    } catch {}
+  }, [hasPermission]);
+
+  useEffect(() => {
+    if (isAdminLoggedIn && hasPermission('reviews.view')) {
+      fetchPendingReviewsCount();
+    }
+  }, [isAdminLoggedIn, hasPermission, fetchPendingReviewsCount]);
+
   // Active Tab
   const [activeTab, setActiveTab] = useState<
-    'overview' | 'profit' | 'orders' | 'products' | 'categories' | 'slides' | 'couriers' | 'settings' | 'users' | 'pixels' | 'vouchers' | 'debug'
+    'overview' | 'profit' | 'orders' | 'products' | 'categories' | 'slides' | 'couriers' | 'settings' | 'users' | 'pixels' | 'vouchers' | 'debug' | 'reviews'
   >((adminActiveTab as any) || 'overview');
 
   const handleSelectTab = useCallback((tabId: string) => {
@@ -2766,6 +2785,7 @@ const AdminPanelContent: React.FC = () => {
           usersCount={users.length}
           pendingOrdersCount={pendingOrdersCount}
           lowStockProductsCount={products.filter((p) => p.stock < 5).length}
+          pendingReviewsCount={pendingReviewsCount}
           hasPermission={hasPermission}
           orderStatusFilter={orderStatusFilter}
           setOrderStatusFilter={setOrderStatusFilter}
@@ -7077,7 +7097,7 @@ const AdminPanelContent: React.FC = () => {
           ) : (
             <ErrorBoundary compact fallbackTitle="Reviews Unavailable" fallbackMessage="Could not load customer reviews moderation tab.">
               <React.Suspense fallback={<AdminTabFallback />}>
-                <AdminReviewsTab />
+                <AdminReviewsTab onPendingCountChange={setPendingReviewsCount} />
               </React.Suspense>
             </ErrorBoundary>
           )

@@ -31,6 +31,7 @@ export interface AdminTopOptionsBarProps {
   usersCount: number;
   pendingOrdersCount: number;
   warningsCount: number;
+  pendingReviewsCount?: number;
   hasPermission?: (permission: any) => boolean;
 }
 
@@ -46,6 +47,7 @@ export const AdminTopOptionsBar: React.FC<AdminTopOptionsBarProps> = ({
   usersCount,
   pendingOrdersCount,
   warningsCount,
+  pendingReviewsCount = 0,
   hasPermission = (_perm?: any) => true,
 }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -135,9 +137,9 @@ export const AdminTopOptionsBar: React.FC<AdminTopOptionsBarProps> = ({
     },
     {
       id: 'reviews',
-      label: 'Customer Reviews',
+      label: 'Reviews',
       icon: MessageSquare,
-      badge: null,
+      badge: pendingReviewsCount > 0 ? `${pendingReviewsCount}` : null,
       badgeColor: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
       permission: 'reviews.view',
     },
