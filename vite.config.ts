@@ -3963,16 +3963,58 @@ function localApiDevPlugin(): Plugin {
               }
 
               // Authoritative Identity Determination (dev server):
-              // Support BOTH HttpOnly cookie ('auth_token') and 'Authorization: Bearer <token>' via requireDevAuth
-              const devAuth = requireDevAuth(req);
+              // Support BOTH HttpOnly cookie ('auth_token') and 'Authorization: Bearer <token>' via requireDevAuth.
+              // If a token is presented, authentication MUST succeed through requireDevAuth.
+              // If requireDevAuth rejects the token (expired, bad signature, password changed, account deactivated):
+              // immediately return the 401/403 error and halt order creation!
+              let rawDevToken = '';
+              const devCookieHeader = (req.headers['cookie'] || '') as string;
+              const devCookieMatch = devCookieHeader.match(/(?:^|;\s*)auth_token=([^;]+)/);
+              if (devCookieMatch) {
+                const val = decodeURIComponent(devCookieMatch[1]).trim();
+                if (val && val !== 'deleted' && val !== 'null' && val !== 'undefined') {
+                  rawDevToken = val;
+                }
+              }
+              if (!rawDevToken) {
+                const authHeader = (req.headers['authorization'] || '') as string;
+                if (authHeader && authHeader.startsWith('Bearer ')) {
+                  const val = authHeader.substring(7).trim();
+                  if (val && val !== 'null' && val !== 'undefined') {
+                    rawDevToken = val;
+                  }
+                }
+              }
+
               let devUserId: string | undefined = undefined;
               let devUserEmail: string | undefined = undefined;
               let devUserObj: any = null;
 
-              if (!devAuth.error && devAuth.auth?.user) {
-                devUserObj = devAuth.auth.user;
-                devUserId = String(devUserObj.id || '').trim() || undefined;
-                devUserEmail = String(devUserObj.email || '').trim().toLowerCase() || undefined;
+              if (rawDevToken) {
+                const devAuth = requireDevAuth(req);
+                if (devAuth.error) {
+                  res.statusCode = devAuth.error.status;
+                  return res.end(JSON.stringify(devAuth.error.body));
+                }
+                if (devAuth.auth?.user) {
+                  devUserObj = devAuth.auth.user;
+                  devUserId = String(devUserObj.id || '').trim() || undefined;
+                  devUserEmail = String(devUserObj.email || '').trim().toLowerCase() || undefined;
+                }
+              }
+
+              // Security hardening: Client-provided role, userRole, customerId, and auth status are NEVER trusted
+              delete (rawOrder as any).role;
+              delete (rawOrder as any).userRole;
+              delete (rawOrder as any).customerId;
+              delete (rawOrder as any).isAuthenticated;
+              delete (rawOrder as any).authenticated;
+              if (rawOrder.customer) {
+                delete (rawOrder.customer as any).role;
+                delete (rawOrder.customer as any).userRole;
+                delete (rawOrder.customer as any).customerId;
+                delete (rawOrder.customer as any).isAuthenticated;
+                delete (rawOrder.customer as any).authenticated;
               }
 
               const cleanEmail = (rawOrder.customer?.email || rawOrder.userEmail || devUserEmail || '').toLowerCase().trim();
@@ -4078,6 +4120,12 @@ function localApiDevPlugin(): Plugin {
 
               // Reuse authoritative dev identity resolved during idempotency verification
               const orderCustomer = { ...(rawOrder.customer || {}) };
+              delete (orderCustomer as any).role;
+              delete (orderCustomer as any).userRole;
+              delete (orderCustomer as any).customerId;
+              delete (orderCustomer as any).isAuthenticated;
+              delete (orderCustomer as any).authenticated;
+
               if (devUserId && devUserEmail) {
                 orderCustomer.userId = devUserId;
                 orderCustomer.email = devUserEmail;
@@ -4119,6 +4167,12 @@ function localApiDevPlugin(): Plugin {
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString(),
               };
+
+              delete (order as any).role;
+              delete (order as any).userRole;
+              delete (order as any).customerId;
+              delete (order as any).isAuthenticated;
+              delete (order as any).authenticated;
 
               // Deduct stock in devProducts atomically (all items guaranteed to have stock)
               for (const it of verifiedItems) {

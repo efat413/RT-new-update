@@ -4510,37 +4510,49 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       }
 
       // Authoritative Identity Determination:
-      // Supports BOTH HttpOnly cookie ('auth_token') and 'Authorization: Bearer <token>' headers
-      // by reusing existing authentication utilities (extractTokenFromRequest, requireAuth, verifyAuthToken).
-      // If a valid authenticated session exists:
-      //   - Authoritatively attach verified userId and userEmail to the order payload
-      //   - Synchronize customer delivery information with the verified user's identity
-      // If unauthenticated (guest checkout) or session token is invalid/expired:
-      //   - Preserve existing guest checkout functionality seamlessly
-      //   - Strip client-supplied userId to prevent account impersonation
+      // Supports BOTH HttpOnly cookie ('auth_token') and 'Authorization: Bearer <token>' headers.
+      // - If session token is provided:
+      //   Authenticate authoritatively via requireAuth(request, env).
+      //   If requireAuth fails (expired, invalid signature, password changed, account deactivated/suspended):
+      //     Immediately rollback rate limit, return the 401/403 error response, and stop execution.
+      //   No fallback token verification that bypasses session validation rules is permitted.
+      // - If valid authenticated session exists:
+      //   Authoritatively attach verified userId and userEmail from server-side context.
+      // - If unauthenticated (guest checkout, no token provided):
+      //   Proceed as legitimate guest checkout.
+      //   Client-supplied userId, customerId, role, and authentication status are NEVER trusted and are stripped.
       verifiedTokenUser = null;
       let authenticatedDbUser: any = null;
 
       const token = extractTokenFromRequest(request);
       if (token) {
-        try {
-          // Re-use existing requireAuth helper (checks token, DB existence, password signature, and active status)
-          const authRes = await requireAuth(request, env);
-          if (!authRes.errorResponse && authRes.auth) {
-            authenticatedDbUser = authRes.auth.dbUser;
-            verifiedTokenUser = authRes.auth.tokenUser;
-          } else {
-            // Fallback token verification using resolveAuthSecret & verifyAuthToken
-            // (e.g. for valid JWTs when D1 user lookup is transiently bypassed or in testing)
-            const secret = await resolveAuthSecret(env);
-            const fallbackTokenUser = await verifyAuthToken(token, secret, env);
-            if (fallbackTokenUser) {
-              verifiedTokenUser = fallbackTokenUser;
-            }
-          }
-        } catch {
-          // If token verification encounters an error, safely treat as unauthenticated guest checkout
+        const authRes = await requireAuth(request, env);
+        if (authRes.errorResponse || !authRes.auth) {
+          await rollbackOrderRateLimit(clientIp, env.DB);
+          return (
+            authRes.errorResponse ||
+            jsonResponse(
+              { success: false, error: 'Unauthorized: Authentication required.' },
+              401
+            )
+          );
         }
+        authenticatedDbUser = authRes.auth.dbUser;
+        verifiedTokenUser = authRes.auth.tokenUser;
+      }
+
+      // Security hardening: Client-provided userId, customerId, role, and auth status are NEVER trusted
+      delete (orderData as any).role;
+      delete (orderData as any).userRole;
+      delete (orderData as any).customerId;
+      delete (orderData as any).isAuthenticated;
+      delete (orderData as any).authenticated;
+      if (orderData.customer) {
+        delete (orderData.customer as any).role;
+        delete (orderData.customer as any).userRole;
+        delete (orderData.customer as any).customerId;
+        delete (orderData.customer as any).isAuthenticated;
+        delete (orderData.customer as any).authenticated;
       }
 
       if (verifiedTokenUser) {
