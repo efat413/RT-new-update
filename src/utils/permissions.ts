@@ -82,33 +82,22 @@ export function hasUserPermission(
       return false;
     }
 
-    // Strict Financial Security: Any financial alias or cost/profit query is permanently Super Admin-only
-    const normalizedKey = permStr.toLowerCase().replace(/[^a-z0-9]/g, '');
-    if (
-      normalizedKey.includes('buyingprice') ||
-      normalizedKey.includes('viewbuyingprice') ||
-      normalizedKey.includes('managebuyingprice') ||
-      normalizedKey.includes('unitprofit') ||
-      normalizedKey.includes('viewprofit') ||
-      normalizedKey.includes('reportprofit') ||
-      normalizedKey.includes('reportfinancial') ||
-      normalizedKey.includes('costprice') ||
-      normalizedKey.includes('purchaseprice') ||
-      normalizedKey.includes('productcost') ||
-      normalizedKey.includes('settingsmanage') ||
-      normalizedKey.includes('managesettings') ||
-      normalizedKey.includes('usermanage') ||
-      normalizedKey.includes('manageuser') ||
-      normalizedKey.includes('userdelete') ||
-      normalizedKey.includes('deleteuser') ||
-      normalizedKey.includes('permissionmanage') ||
-      normalizedKey.includes('managepermission')
-    ) {
+    if (!user.permissions) {
       return false;
     }
 
-    if (!user.permissions) {
-      return false;
+    // Explicit checks for product financial permissions
+    if (permStr === 'product.view_buying_price' || permStr === 'product.buying_price' || permStr === 'view_buying_price') {
+      return Boolean(user.permissions['product.view_buying_price'] || user.permissions['product.buying_price']);
+    }
+    if (permStr === 'product.manage_buying_price' || permStr === 'manage_buying_price') {
+      return Boolean(user.permissions['product.manage_buying_price']);
+    }
+    if (permStr === 'product.view_profit' || permStr === 'report.profit' || permStr === 'view_profit') {
+      return Boolean(user.permissions['product.view_profit'] || user.permissions['report.profit']);
+    }
+    if (permStr === 'product.update') {
+      return Boolean(user.permissions['product.update']);
     }
 
     // Direct match on user.permissions

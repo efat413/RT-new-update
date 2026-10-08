@@ -1044,29 +1044,18 @@ function hasPermission(
     return false; // Permanently Super Admin-only!
   }
 
-  // Strict Financial & Privileged Security: Any financial, settings, user, or permission alias is permanently Super Admin-only
-  const normalizedKey = keyStr.toLowerCase().replace(/[^a-z0-9]/g, '');
-  if (
-    normalizedKey.includes('buyingprice') ||
-    normalizedKey.includes('viewbuyingprice') ||
-    normalizedKey.includes('managebuyingprice') ||
-    normalizedKey.includes('unitprofit') ||
-    normalizedKey.includes('viewprofit') ||
-    normalizedKey.includes('reportprofit') ||
-    normalizedKey.includes('reportfinancial') ||
-    normalizedKey.includes('costprice') ||
-    normalizedKey.includes('purchaseprice') ||
-    normalizedKey.includes('productcost') ||
-    normalizedKey.includes('settingsmanage') ||
-    normalizedKey.includes('managesettings') ||
-    normalizedKey.includes('usermanage') ||
-    normalizedKey.includes('manageuser') ||
-    normalizedKey.includes('userdelete') ||
-    normalizedKey.includes('deleteuser') ||
-    normalizedKey.includes('permissionmanage') ||
-    normalizedKey.includes('managepermission')
-  ) {
-    return false; // Permanently Super Admin-only!
+  // Explicit checks for product financial permissions
+  if (keyStr === 'product.view_buying_price' || keyStr === 'product.buying_price' || keyStr === 'view_buying_price') {
+    return Boolean(auth.permissions && (auth.permissions['product.view_buying_price'] || auth.permissions['product.buying_price']));
+  }
+  if (keyStr === 'product.manage_buying_price' || keyStr === 'manage_buying_price') {
+    return Boolean(auth.permissions && auth.permissions['product.manage_buying_price']);
+  }
+  if (keyStr === 'product.view_profit' || keyStr === 'report.profit' || keyStr === 'view_profit') {
+    return Boolean(auth.permissions && (auth.permissions['product.view_profit'] || auth.permissions['report.profit']));
+  }
+  if (keyStr === 'product.update') {
+    return Boolean(auth.permissions && auth.permissions['product.update']);
   }
 
   // Granular PermissionKey check
@@ -2315,11 +2304,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     const updatedPermissions: Record<string, boolean> = { ...existingPermissions };
     for (const [key, val] of Object.entries(permissionsInput)) {
       if (isValidPermissionKey(key)) {
-        if (val) {
-          updatedPermissions[key] = true;
-        } else {
-          delete updatedPermissions[key];
-        }
+        updatedPermissions[key] = Boolean(val);
       }
     }
 
@@ -2766,9 +2751,13 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         // Security: Non-super admin cannot set buyingPrice without dedicated product.manage_buying_price permission
         // Viewing buying price NEVER grants permission to modify buying price
         const canManageBuyingPrice = auth!.role === 'super_admin' || hasPermission(auth!, 'product.manage_buying_price');
-        if (!canManageBuyingPrice) {
-          delete productData.buyingPrice;
-          delete productData.buying_price;
+        const hasBuyingAttempt = productData.buyingPrice !== undefined || productData.buying_price !== undefined;
+        if (!canManageBuyingPrice && hasBuyingAttempt) {
+          return jsonResponse({
+            success: false,
+            error: 'Forbidden: You do not have the "product.manage_buying_price" permission required to set buying price.',
+            requiredPermission: 'product.manage_buying_price',
+          }, 403);
         }
 
         const created = await insertProduct(env.DB, productData);
@@ -2930,9 +2919,13 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         // Security: Non-super admin cannot modify buyingPrice without dedicated product.manage_buying_price permission
         // Viewing buying price NEVER grants permission to modify buying price
         const canManageBuyingPrice = auth!.role === 'super_admin' || hasPermission(auth!, 'product.manage_buying_price');
-        if (!canManageBuyingPrice) {
-          delete updates.buyingPrice;
-          delete updates.buying_price;
+        const hasBuyingAttempt = updates.buyingPrice !== undefined || updates.buying_price !== undefined;
+        if (!canManageBuyingPrice && hasBuyingAttempt) {
+          return jsonResponse({
+            success: false,
+            error: 'Forbidden: You do not have the "product.manage_buying_price" permission required to modify buying price.',
+            requiredPermission: 'product.manage_buying_price',
+          }, 403);
         }
 
         const updated = await updateProductInD1(env.DB, prodId, updates);

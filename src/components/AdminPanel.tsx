@@ -3737,16 +3737,22 @@ const AdminPanelContent: React.FC = () => {
                                       <span className="truncate font-medium">• {it.product.title}</span>
                                       <span className="font-bold text-slate-900 shrink-0">x{it.quantity}</span>
                                     </div>
-                                    {isSuperAdmin && it.buyingPriceSnapshot !== undefined && (() => {
+                                    {(() => {
+                                      const canViewBuying = isSuperAdmin || hasPermission('product.view_buying_price');
+                                      const canViewProfit = isSuperAdmin || hasPermission('product.view_profit');
+                                      if (!canViewBuying && !canViewProfit) return null;
+                                      const hasCost = canViewBuying && it.buyingPriceSnapshot !== undefined;
                                       const profitVal = it.productGrossProfit != null
                                         ? it.productGrossProfit
-                                        : (((it.sellingPriceSnapshot ?? it.product.price) - it.buyingPriceSnapshot) * it.quantity);
-                                      const isLoss = profitVal < 0;
+                                        : (it.buyingPriceSnapshot !== undefined ? (((it.sellingPriceSnapshot ?? it.product.price) - it.buyingPriceSnapshot) * it.quantity) : undefined);
+                                      const hasProfit = canViewProfit && profitVal !== undefined;
+                                      if (!hasCost && !hasProfit) return null;
+                                      const isLoss = (profitVal || 0) < 0;
                                       return (
                                         <div className={`flex items-center gap-1.5 mt-0.5 text-[9px] font-mono ${isLoss ? 'text-rose-600' : 'text-emerald-700'}`}>
-                                          <span>Cost: ৳{it.buyingPriceSnapshot}</span>
-                                          <span>•</span>
-                                          <span>{isLoss ? `Loss: -৳${Math.abs(profitVal)}` : `Profit: ৳${profitVal}`}</span>
+                                          {hasCost && <span>Cost: ৳{it.buyingPriceSnapshot}</span>}
+                                          {hasCost && hasProfit && <span>•</span>}
+                                          {hasProfit && <span>{isLoss ? `Loss: -৳${Math.abs(profitVal!)}` : `Profit: ৳${profitVal}`}</span>}
                                         </div>
                                       );
                                     })()}
@@ -4654,18 +4660,34 @@ const AdminPanelContent: React.FC = () => {
                             </div>
                           )}
 
-                          {/* Super Admin Confidential Cost & Unit Profit Badge */}
-                          {isSuperAdmin && (product.buyingPrice !== undefined || (product as any).buying_price !== undefined) && (() => {
-                            const costVal = product.buyingPrice !== undefined ? Number(product.buyingPrice) : Number((product as any).buying_price);
-                            const profitVal = product.unitProfit !== undefined
-                              ? Number(product.unitProfit)
-                              : ((product as any).unit_profit !== undefined ? Number((product as any).unit_profit) : (product.price - costVal));
+                          {/* Confidential Cost & Unit Profit Badge */}
+                          {(() => {
+                            const canViewBuying = isSuperAdmin || hasPermission('product.view_buying_price');
+                            const canViewProfit = isSuperAdmin || hasPermission('product.view_profit');
+                            if (!canViewBuying && !canViewProfit) return null;
+
+                            const rawCost = product.buyingPrice !== undefined ? product.buyingPrice : (product as any).buying_price;
+                            const hasCost = canViewBuying && rawCost !== undefined && rawCost !== null;
+                            const costVal = hasCost ? Number(rawCost) : 0;
+
+                            const rawProfit = product.unitProfit !== undefined
+                              ? product.unitProfit
+                              : ((product as any).unit_profit !== undefined ? (product as any).unit_profit : (hasCost ? product.price - costVal : undefined));
+                            const hasProfit = canViewProfit && rawProfit !== undefined && rawProfit !== null;
+                            const profitVal = hasProfit ? Number(rawProfit) : 0;
+
+                            if (!hasCost && !hasProfit) return null;
+
                             return (
                               <div className="pt-2 mt-1 border-t border-slate-100 flex items-center justify-between text-xs">
-                                <span className="text-[11px] text-slate-500 font-medium">
-                                  Cost: <strong className="text-slate-800 font-semibold font-mono">৳{costVal.toLocaleString()}</strong>
-                                </span>
-                                <ConfidentialProfitBadge profitVal={profitVal} />
+                                {hasCost ? (
+                                  <span className="text-[11px] text-slate-500 font-medium">
+                                    Cost: <strong className="text-slate-800 font-semibold font-mono">৳{costVal.toLocaleString()}</strong>
+                                  </span>
+                                ) : <span />}
+                                {hasProfit ? (
+                                  <ConfidentialProfitBadge profitVal={profitVal} />
+                                ) : null}
                               </div>
                             );
                           })()}
@@ -7631,138 +7653,174 @@ const AdminPanelContent: React.FC = () => {
                       )}
                     </div>
                     {/* Integrated Price Stepper & Direct Keypad Input Box */}
-                    <div className="flex items-center rounded-xl border border-slate-300 bg-white overflow-hidden shadow-2xs focus-within:ring-2 focus-within:ring-rose-500 focus-within:border-rose-500">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const cur = Number(prodPrice) || 0;
-                          setProdPrice(Math.max(0, cur - 50));
-                        }}
-                        className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold text-sm border-r border-slate-200 cursor-pointer active:scale-95 transition-all select-none"
-                        title="Decrease price by ৳50"
-                      >
-                        -
-                      </button>
-                      <div className="relative flex-1">
-                        <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400 select-none">৳</span>
-                        <input
-                          id="product-modal-price"
-                          type="text"
-                          inputMode="numeric"
-                          pattern="[0-9]*"
-                          value={prodPrice === '' ? '' : prodPrice}
-                          onChange={(e) => {
-                            const cleaned = e.target.value.replace(/[^0-9]/g, '');
-                            setProdPrice(cleaned);
-                          }}
-                          onFocus={(e) => e.target.select()}
-                          onBlur={() => {
-                            if (prodPrice === '' || isNaN(Number(prodPrice))) {
-                              setProdPrice(0);
-                            } else {
-                              setProdPrice(Math.max(0, parseInt(String(prodPrice), 10)));
-                            }
-                          }}
-                          className="w-full pl-6 pr-2 py-2 text-xs font-bold text-slate-900 bg-transparent focus:outline-hidden font-mono"
-                          placeholder="0"
-                          title="Type specific price using keypad to increase or decrease"
-                          required
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const cur = Number(prodPrice) || 0;
-                          setProdPrice(cur + 50);
-                        }}
-                        className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold text-sm border-l border-slate-200 cursor-pointer active:scale-95 transition-all select-none"
-                        title="Increase price by ৳50"
-                      >
-                        +
-                      </button>
-                    </div>
+                    {(() => {
+                      const canEditSellingPrice = Boolean(!editingProduct ? hasPermission('product.create') : (isSuperAdmin || hasPermission('product.update')));
+                      return (
+                        <div className="space-y-1">
+                          <div className={`flex items-center rounded-xl border bg-white overflow-hidden shadow-2xs ${
+                            canEditSellingPrice
+                              ? 'border-slate-300 focus-within:ring-2 focus-within:ring-rose-500 focus-within:border-rose-500'
+                              : 'border-slate-200 bg-slate-100 opacity-80'
+                          }`}>
+                            <button
+                              type="button"
+                              disabled={!canEditSellingPrice}
+                              onClick={() => {
+                                const cur = Number(prodPrice) || 0;
+                                setProdPrice(Math.max(0, cur - 50));
+                              }}
+                              className={`px-3 py-2 text-slate-700 font-extrabold text-sm border-r border-slate-200 select-none ${
+                                canEditSellingPrice
+                                  ? 'bg-slate-100 hover:bg-slate-200 cursor-pointer active:scale-95 transition-all'
+                                  : 'bg-slate-100 text-slate-400 cursor-not-allowed opacity-50'
+                              }`}
+                              title={canEditSellingPrice ? "Decrease price by ৳50" : "Permission product.update required"}
+                            >
+                              -
+                            </button>
+                            <div className="relative flex-1">
+                              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400 select-none">৳</span>
+                              <input
+                                id="product-modal-price"
+                                type="text"
+                                inputMode="numeric"
+                                pattern="[0-9]*"
+                                disabled={!canEditSellingPrice}
+                                readOnly={!canEditSellingPrice}
+                                value={prodPrice === '' ? '' : prodPrice}
+                                onChange={(e) => {
+                                  if (!canEditSellingPrice) return;
+                                  const cleaned = e.target.value.replace(/[^0-9]/g, '');
+                                  setProdPrice(cleaned);
+                                }}
+                                onFocus={(e) => canEditSellingPrice && e.target.select()}
+                                onBlur={() => {
+                                  if (!canEditSellingPrice) return;
+                                  if (prodPrice === '' || isNaN(Number(prodPrice))) {
+                                    setProdPrice(0);
+                                  } else {
+                                    setProdPrice(Math.max(0, parseInt(String(prodPrice), 10)));
+                                  }
+                                }}
+                                className={`w-full pl-6 pr-2 py-2 text-xs font-bold font-mono ${
+                                  canEditSellingPrice
+                                    ? 'text-slate-900 bg-transparent focus:outline-hidden'
+                                    : 'text-slate-500 bg-slate-100 cursor-not-allowed select-none'
+                                }`}
+                                placeholder="0"
+                                title={canEditSellingPrice ? "Type specific price using keypad to increase or decrease" : "Read-only"}
+                                required
+                              />
+                            </div>
+                            <button
+                              type="button"
+                              disabled={!canEditSellingPrice}
+                              onClick={() => {
+                                const cur = Number(prodPrice) || 0;
+                                setProdPrice(cur + 50);
+                              }}
+                              className={`px-3 py-2 text-slate-700 font-extrabold text-sm border-l border-slate-200 select-none ${
+                                canEditSellingPrice
+                                  ? 'bg-slate-100 hover:bg-slate-200 cursor-pointer active:scale-95 transition-all'
+                                  : 'bg-slate-100 text-slate-400 cursor-not-allowed opacity-50'
+                              }`}
+                              title={canEditSellingPrice ? "Increase price by ৳50" : "Permission product.update required"}
+                            >
+                              +
+                            </button>
+                          </div>
+                          {!canEditSellingPrice && (
+                            <p className="text-[10px] text-amber-700">
+                              Permission required: product.update to edit selling price.
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })()}
 
                     {/* Quick Increase / Decrease Preset Controls */}
-                    <div className="space-y-1.5 mt-2">
-                      <div className="flex flex-wrap items-center gap-1.5 p-1.5 bg-slate-100/90 rounded-xl border border-slate-200">
-                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-tight pl-1">
-                          Quick:
-                        </span>
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const cur = Number(prodPrice) || 0;
-                              setProdPrice(Math.max(0, cur - 100));
-                            }}
-                            className="px-1.5 py-0.5 rounded bg-white border border-slate-200 text-[10px] font-bold text-slate-600 hover:bg-slate-50 cursor-pointer"
-                            title="Decrease by ৳100"
-                          >
-                            -100
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const cur = Number(prodPrice) || 0;
-                              setProdPrice(Math.max(0, cur - 50));
-                            }}
-                            className="px-1.5 py-0.5 rounded bg-white border border-slate-200 text-[10px] font-bold text-slate-600 hover:bg-slate-50 cursor-pointer"
-                            title="Decrease by ৳50"
-                          >
-                            -50
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const cur = Number(prodPrice) || 0;
-                              setProdPrice(cur + 50);
-                            }}
-                            className="px-1.5 py-0.5 rounded bg-white border border-slate-200 text-[10px] font-bold text-slate-600 hover:bg-slate-50 cursor-pointer"
-                            title="Increase by ৳50"
-                          >
-                            +50
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const cur = Number(prodPrice) || 0;
-                              setProdPrice(cur + 100);
-                            }}
-                            className="px-1.5 py-0.5 rounded bg-white border border-slate-200 text-[10px] font-bold text-slate-600 hover:bg-slate-50 cursor-pointer"
-                            title="Increase by ৳100"
-                          >
-                            +100
-                          </button>
+                    {(!editingProduct || isSuperAdmin || hasPermission('product.update')) && (
+                      <div className="space-y-1.5 mt-2">
+                        <div className="flex flex-wrap items-center gap-1.5 p-1.5 bg-slate-100/90 rounded-xl border border-slate-200">
+                          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-tight pl-1">
+                            Quick:
+                          </span>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const cur = Number(prodPrice) || 0;
+                                setProdPrice(Math.max(0, cur - 100));
+                              }}
+                              className="px-1.5 py-0.5 rounded bg-white border border-slate-200 text-[10px] font-bold text-slate-600 hover:bg-slate-50 cursor-pointer"
+                              title="Decrease by ৳100"
+                            >
+                              -100
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const cur = Number(prodPrice) || 0;
+                                setProdPrice(Math.max(0, cur - 50));
+                              }}
+                              className="px-1.5 py-0.5 rounded bg-white border border-slate-200 text-[10px] font-bold text-slate-600 hover:bg-slate-50 cursor-pointer"
+                              title="Decrease by ৳50"
+                            >
+                              -50
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const cur = Number(prodPrice) || 0;
+                                setProdPrice(cur + 50);
+                              }}
+                              className="px-1.5 py-0.5 rounded bg-white border border-slate-200 text-[10px] font-bold text-slate-600 hover:bg-slate-50 cursor-pointer"
+                              title="Increase by ৳50"
+                            >
+                              +50
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const cur = Number(prodPrice) || 0;
+                                setProdPrice(cur + 100);
+                              }}
+                              className="px-1.5 py-0.5 rounded bg-white border border-slate-200 text-[10px] font-bold text-slate-600 hover:bg-slate-50 cursor-pointer"
+                              title="Increase by ৳100"
+                            >
+                              +100
+                            </button>
+                          </div>
+
+                          {editingProduct && Number(prodPrice) !== editingProduct.price && (
+                            <button
+                              type="button"
+                              onClick={() => setProdPrice(editingProduct.price)}
+                              className="text-[10px] text-slate-500 hover:text-slate-800 underline ml-auto cursor-pointer"
+                              title="Reset to published price"
+                            >
+                              Reset
+                            </button>
+                          )}
                         </div>
 
                         {editingProduct && Number(prodPrice) !== editingProduct.price && (
-                          <button
-                            type="button"
-                            onClick={() => setProdPrice(editingProduct.price)}
-                            className="text-[10px] text-slate-500 hover:text-slate-800 underline ml-auto cursor-pointer"
-                            title="Reset to published price"
-                          >
-                            Reset
-                          </button>
+                          <div className="text-[10px] font-medium flex items-center gap-1">
+                            {Number(prodPrice) > editingProduct.price ? (
+                              <span className="text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 font-bold flex items-center gap-0.5">
+                                <TrendingUp className="w-2.5 h-2.5" />
+                                +৳{(Number(prodPrice) - editingProduct.price).toLocaleString()} increased (+{Math.round(((Number(prodPrice) - editingProduct.price) / (editingProduct.price || 1)) * 100)}%)
+                              </span>
+                            ) : (
+                              <span className="text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 font-bold flex items-center gap-0.5">
+                                <TrendingDown className="w-2.5 h-2.5" />
+                                -৳{(editingProduct.price - Number(prodPrice)).toLocaleString()} decreased (-{Math.round(((editingProduct.price - Number(prodPrice)) / (editingProduct.price || 1)) * 100)}%)
+                              </span>
+                            )}
+                          </div>
                         )}
                       </div>
-
-                      {editingProduct && Number(prodPrice) !== editingProduct.price && (
-                        <div className="text-[10px] font-medium flex items-center gap-1">
-                          {Number(prodPrice) > editingProduct.price ? (
-                            <span className="text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 font-bold flex items-center gap-0.5">
-                              <TrendingUp className="w-2.5 h-2.5" />
-                              +৳{(Number(prodPrice) - editingProduct.price).toLocaleString()} increased (+{Math.round(((Number(prodPrice) - editingProduct.price) / (editingProduct.price || 1)) * 100)}%)
-                            </span>
-                          ) : (
-                            <span className="text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 font-bold flex items-center gap-0.5">
-                              <TrendingDown className="w-2.5 h-2.5" />
-                              -৳{(editingProduct.price - Number(prodPrice)).toLocaleString()} decreased (-{Math.round(((editingProduct.price - Number(prodPrice)) / (editingProduct.price || 1)) * 100)}%)
-                            </span>
-                          )}
-                        </div>
-                      )}
-                    </div>
+                    )}
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">
@@ -7798,94 +7856,127 @@ const AdminPanelContent: React.FC = () => {
                   );
                 })()}
 
-                {/* Super Admin Confidential Buying Price & Calculated Profit */}
-                {isSuperAdmin && (
-                  <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-emerald-800 flex items-center gap-1.5">
-                        <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                        Super Admin: Buying Price & Unit Profit
-                      </span>
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-200 text-emerald-900 uppercase">
-                        Confidential
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-2 gap-3 pt-1">
-                      <div>
-                        <div className="flex items-center justify-between mb-1">
-                          <label htmlFor="product-modal-buying-price" className="block text-xs font-bold text-slate-700">
-                            Buying Price / Cost Price (৳)
-                          </label>
-                          <button
-                            type="button"
-                            onClick={() => setShowBuyingPrice((prev) => !prev)}
-                            className="p-1 text-slate-400 hover:text-emerald-700 hover:bg-emerald-100/60 rounded-md transition-colors inline-flex items-center"
-                            title={showBuyingPrice ? 'Hide Buying Price' : 'Show Buying Price'}
-                            aria-label={showBuyingPrice ? 'Hide Buying Price' : 'Show Buying Price'}
-                          >
-                            {showBuyingPrice ? (
-                              <EyeOff className="w-3.5 h-3.5 text-slate-600" />
-                            ) : (
-                              <Eye className="w-3.5 h-3.5 text-slate-500" />
-                            )}
-                          </button>
-                        </div>
-                        <input
-                          id="product-modal-buying-price"
-                          type={showBuyingPrice ? 'number' : 'password'}
-                          inputMode="numeric"
-                          min="0"
-                          step="any"
-                          value={prodBuyingPrice}
-                          onChange={(e) => setProdBuyingPrice(e.target.value)}
-                          placeholder="e.g. 500"
-                          className="w-full px-3 py-2 bg-white border border-emerald-300 rounded-xl text-xs font-medium text-slate-800 focus:ring-2 focus:ring-emerald-500"
-                        />
+                {/* Financial Buying Price & Calculated Profit */}
+                {(() => {
+                  const canViewBuying = isSuperAdmin || hasPermission('product.view_buying_price');
+                  const canManageBuying = isSuperAdmin || hasPermission('product.manage_buying_price');
+                  const canViewProfit = isSuperAdmin || hasPermission('product.view_profit');
+
+                  if (!canViewBuying && !canViewProfit) return null;
+
+                  return (
+                    <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-emerald-800 flex items-center gap-1.5">
+                          <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                          Financial: Buying Price & Unit Profit
+                        </span>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${
+                          canManageBuying ? 'bg-emerald-200 text-emerald-900' : 'bg-amber-100 text-amber-800 border border-amber-200'
+                        }`}>
+                          {canManageBuying ? 'Confidential' : 'Read Only'}
+                        </span>
                       </div>
-                      <div>
-                        <div className="flex items-center justify-between mb-1">
-                          <label className="block text-xs font-bold text-slate-700">
-                            Unit Profit / Profit Amount (Auto Calculated)
-                          </label>
-                          <button
-                            type="button"
-                            onClick={() => setShowUnitProfit((prev) => !prev)}
-                            className="p-1 text-slate-400 hover:text-emerald-700 hover:bg-emerald-100/60 rounded-md transition-colors inline-flex items-center"
-                            title={showUnitProfit ? 'Hide Profit Amount' : 'Show Profit Amount'}
-                            aria-label={showUnitProfit ? 'Hide Profit Amount' : 'Show Profit Amount'}
-                          >
-                            {showUnitProfit ? (
-                              <EyeOff className="w-3.5 h-3.5 text-slate-600" />
-                            ) : (
-                              <Eye className="w-3.5 h-3.5 text-slate-500" />
+                      <div className="grid grid-cols-2 gap-3 pt-1">
+                        {canViewBuying ? (
+                          <div>
+                            <div className="flex items-center justify-between mb-1">
+                              <label htmlFor="product-modal-buying-price" className="block text-xs font-bold text-slate-700">
+                                Buying Price (৳) {!canManageBuying && <span className="text-[10px] text-amber-700 font-normal">(Read Only)</span>}
+                              </label>
+                              <button
+                                type="button"
+                                onClick={() => setShowBuyingPrice((prev) => !prev)}
+                                className="p-1 text-slate-400 hover:text-emerald-700 hover:bg-emerald-100/60 rounded-md transition-colors inline-flex items-center cursor-pointer"
+                                title={showBuyingPrice ? 'Hide Buying Price' : 'Show Buying Price'}
+                                aria-label={showBuyingPrice ? 'Hide Buying Price' : 'Show Buying Price'}
+                              >
+                                {showBuyingPrice ? (
+                                  <EyeOff className="w-3.5 h-3.5 text-slate-600" />
+                                ) : (
+                                  <Eye className="w-3.5 h-3.5 text-slate-500" />
+                                )}
+                              </button>
+                            </div>
+                            <input
+                              id="product-modal-buying-price"
+                              type={showBuyingPrice ? 'number' : 'password'}
+                              inputMode="numeric"
+                              min="0"
+                              step="any"
+                              value={prodBuyingPrice}
+                              readOnly={!canManageBuying}
+                              disabled={!canManageBuying}
+                              onChange={(e) => {
+                                if (canManageBuying) {
+                                  setProdBuyingPrice(e.target.value);
+                                }
+                              }}
+                              placeholder={canManageBuying ? 'e.g. 500' : '—'}
+                              className={`w-full px-3 py-2 border rounded-xl text-xs font-medium ${
+                                canManageBuying
+                                  ? 'bg-white border-emerald-300 text-slate-800 focus:ring-2 focus:ring-emerald-500'
+                                  : 'bg-slate-100 border-slate-300 text-slate-500 cursor-not-allowed select-none'
+                              }`}
+                            />
+                            {!canManageBuying && (
+                              <p className="text-[10px] text-amber-700 mt-1">
+                                product.manage_buying_price is required to edit Buying Price.
+                              </p>
                             )}
-                          </button>
-                        </div>
-                        <div className="px-3 py-2 bg-emerald-100/60 border border-emerald-200 rounded-xl text-xs font-bold text-emerald-900 flex items-center justify-between min-h-[38px]">
-                          {showUnitProfit ? (
-                            <>
-                              <span>
-                                ৳ {prodBuyingPrice !== '' && !isNaN(Number(prodBuyingPrice))
-                                  ? Math.max(0, Number(prodPrice) - Number(prodBuyingPrice)).toLocaleString()
-                                  : '—'}
-                              </span>
-                              {prodBuyingPrice !== '' && !isNaN(Number(prodBuyingPrice)) && Number(prodBuyingPrice) > 0 && Number(prodPrice) > 0 && (
-                                <span className="text-[10px] font-semibold text-emerald-700">
-                                  ({Math.round(((Number(prodPrice) - Number(prodBuyingPrice)) / Number(prodPrice)) * 100)}% margin)
-                                </span>
+                          </div>
+                        ) : (
+                          <div />
+                        )}
+                        {canViewProfit ? (
+                          <div>
+                            <div className="flex items-center justify-between mb-1">
+                              <label className="block text-xs font-bold text-slate-700">
+                                Unit Profit / Margin
+                              </label>
+                              <button
+                                type="button"
+                                onClick={() => setShowUnitProfit((prev) => !prev)}
+                                className="p-1 text-slate-400 hover:text-emerald-700 hover:bg-emerald-100/60 rounded-md transition-colors inline-flex items-center cursor-pointer"
+                                title={showUnitProfit ? 'Hide Profit Amount' : 'Show Profit Amount'}
+                                aria-label={showUnitProfit ? 'Hide Profit Amount' : 'Show Profit Amount'}
+                              >
+                                {showUnitProfit ? (
+                                  <EyeOff className="w-3.5 h-3.5 text-slate-600" />
+                                ) : (
+                                  <Eye className="w-3.5 h-3.5 text-slate-500" />
+                                )}
+                              </button>
+                            </div>
+                            <div className="px-3 py-2 bg-emerald-100/60 border border-emerald-200 rounded-xl text-xs font-bold text-emerald-900 flex items-center justify-between min-h-[38px]">
+                              {showUnitProfit ? (
+                                <>
+                                  <span>
+                                    ৳ {prodBuyingPrice !== '' && !isNaN(Number(prodBuyingPrice))
+                                      ? Math.max(0, Number(prodPrice) - Number(prodBuyingPrice)).toLocaleString()
+                                      : (editingProduct?.unitProfit !== undefined ? Number(editingProduct.unitProfit).toLocaleString() : '—')}
+                                  </span>
+                                  {prodBuyingPrice !== '' && !isNaN(Number(prodBuyingPrice)) && Number(prodBuyingPrice) > 0 && Number(prodPrice) > 0 && (
+                                    <span className="text-[10px] font-semibold text-emerald-700">
+                                      ({Math.round(((Number(prodPrice) - Number(prodBuyingPrice)) / Number(prodPrice)) * 100)}% margin)
+                                    </span>
+                                  )}
+                                </>
+                              ) : (
+                                <span className="font-mono tracking-widest text-slate-500 font-semibold select-none">৳ ••••••</span>
                               )}
-                            </>
-                          ) : (
-                            <span className="font-mono tracking-widest text-slate-500 font-semibold select-none">৳ ••••••</span>
-                          )}
-                        </div>
+                            </div>
+                          </div>
+                        ) : (
+                          <div />
+                        )}
                       </div>
+                      <p className="text-[10px] text-emerald-700 leading-tight">
+                        Buying price is strictly protected. Only authorized administrators with permission can view or manage cost and profit.
+                      </p>
                     </div>
-                    <p className="text-[10px] text-emerald-700 leading-tight">
-                      Buying price is strictly hidden from customers and sub-admins. Used in D1 server-side order profit analytics.
-                    </p>
-                  </div>
-                )}
+                  );
+                })()}
 
                 <div className="grid grid-cols-2 gap-3">
                   <div>

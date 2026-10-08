@@ -769,29 +769,18 @@ function localApiDevPlugin(): Plugin {
     const permStr = String(permission);
     if (isSuperAdminOnlyPermission(permStr as any)) return false;
 
-    // Strict Financial & Privileged Security: Any financial, settings, user, or permission alias is permanently Super Admin-only
-    const normalizedKey = permStr.toLowerCase().replace(/[^a-z0-9]/g, '');
-    if (
-      normalizedKey.includes('buyingprice') ||
-      normalizedKey.includes('viewbuyingprice') ||
-      normalizedKey.includes('managebuyingprice') ||
-      normalizedKey.includes('unitprofit') ||
-      normalizedKey.includes('viewprofit') ||
-      normalizedKey.includes('reportprofit') ||
-      normalizedKey.includes('reportfinancial') ||
-      normalizedKey.includes('costprice') ||
-      normalizedKey.includes('purchaseprice') ||
-      normalizedKey.includes('productcost') ||
-      normalizedKey.includes('settingsmanage') ||
-      normalizedKey.includes('managesettings') ||
-      normalizedKey.includes('usermanage') ||
-      normalizedKey.includes('manageuser') ||
-      normalizedKey.includes('userdelete') ||
-      normalizedKey.includes('deleteuser') ||
-      normalizedKey.includes('permissionmanage') ||
-      normalizedKey.includes('managepermission')
-    ) {
-      return false; // Permanently Super Admin-only!
+    // Explicit checks for product financial permissions
+    if (permStr === 'product.view_buying_price' || permStr === 'product.buying_price' || permStr === 'view_buying_price') {
+      return Boolean(auth.granularPermissions && (auth.granularPermissions['product.view_buying_price'] || auth.granularPermissions['product.buying_price']));
+    }
+    if (permStr === 'product.manage_buying_price' || permStr === 'manage_buying_price') {
+      return Boolean(auth.granularPermissions && auth.granularPermissions['product.manage_buying_price']);
+    }
+    if (permStr === 'product.view_profit' || permStr === 'report.profit' || permStr === 'view_profit') {
+      return Boolean(auth.granularPermissions && (auth.granularPermissions['product.view_profit'] || auth.granularPermissions['report.profit']));
+    }
+    if (permStr === 'product.update') {
+      return Boolean(auth.granularPermissions && auth.granularPermissions['product.update']);
     }
 
     // Granular PermissionKey check
@@ -2256,11 +2245,7 @@ function localApiDevPlugin(): Plugin {
             const updatedPermissions: Record<string, boolean> = { ...existingPermissions };
             for (const [key, val] of Object.entries(permissionsInput)) {
               if (isValidPermissionKey(key)) {
-                if (val) {
-                  updatedPermissions[key] = true;
-                } else {
-                  delete updatedPermissions[key];
-                }
+                updatedPermissions[key] = Boolean(val);
               }
             }
 
@@ -2674,6 +2659,16 @@ function localApiDevPlugin(): Plugin {
               const rawInputBp = product.buyingPrice !== undefined && product.buyingPrice !== null
                 ? product.buyingPrice
                 : (product.buying_price !== undefined && product.buying_price !== null ? product.buying_price : null);
+              if (!canManageBuyingPrice && rawInputBp !== null) {
+                return sendDevError(res, {
+                  status: 403,
+                  body: {
+                    success: false,
+                    error: 'Forbidden: You do not have the "product.manage_buying_price" permission required to set buying price.',
+                    requiredPermission: 'product.manage_buying_price',
+                  },
+                });
+              }
               const buyingPrice = canManageBuyingPrice
                 ? (rawInputBp !== null && rawInputBp !== '' && !isNaN(Number(rawInputBp)) ? Math.max(0, Number(rawInputBp)) : 0)
                 : 0;
@@ -2849,10 +2844,18 @@ function localApiDevPlugin(): Plugin {
               const updates = body.updates || body.product || body;
               const idx = devProducts.findIndex((p) => p.id === id || p.slug === id);
               if (idx >= 0) {
-                if (!canManageBuying) {
-                  delete updates.buyingPrice;
-                  delete updates.buying_price;
-                } else if (updates.buyingPrice !== undefined || updates.buying_price !== undefined) {
+                const hasBuyingAttempt = updates.buyingPrice !== undefined || updates.buying_price !== undefined;
+                if (!canManageBuying && hasBuyingAttempt) {
+                  return sendDevError(res, {
+                    status: 403,
+                    body: {
+                      success: false,
+                      error: 'Forbidden: You do not have the "product.manage_buying_price" permission required to modify buying price.',
+                      requiredPermission: 'product.manage_buying_price',
+                    },
+                  });
+                }
+                if (updates.buyingPrice !== undefined || updates.buying_price !== undefined) {
                   const bVal = updates.buyingPrice !== undefined ? updates.buyingPrice : updates.buying_price;
                   if (bVal !== null && bVal !== '' && !isNaN(Number(bVal))) {
                     updates.buyingPrice = Math.max(0, Number(bVal));
