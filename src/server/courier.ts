@@ -1,6 +1,14 @@
 import { D1Database } from './types';
 import { Order } from '../types';
 import { getOrderById, updateOrderInD1 } from './db';
+import {
+  validateCourierApiDestination,
+  safeFetchCourierApi,
+  APPROVED_STEADFAST_HOSTNAMES,
+  APPROVED_STEADFAST_BASE_URLS,
+} from './ssrf';
+
+export { validateCourierApiDestination, safeFetchCourierApi };
 
 /**
  * Normalized Steadfast Delivery Status Mapping
@@ -82,39 +90,33 @@ export interface SteadfastCredentials {
 
 /**
  * Standardize Steadfast Courier base URLs.
- * Steadfast's active, operational REST API gateway is hosted on https://portal.packzy.com/api/v1.
- * portal.steadfast.com.bd is deprecated/inaccessible and causes Cloudflare HTTP 530 (Origin DNS Error).
+ * Enforces strict server-side allowlisting:
+ * 1. Primary: https://portal.packzy.com/api/v1
+ * 2. Fallback: https://portal.steadfast.com.bd/api/v1
+ *
+ * User-controlled arbitrary base URLs from requests are NEVER allowed to override
+ * the production Steadfast credential destination.
  */
 export function resolveSteadfastBaseUrls(customBaseUrl?: string): string[] {
   const PACKZY_PRIMARY = 'https://portal.packzy.com/api/v1';
   const STEADFAST_LEGACY = 'https://portal.steadfast.com.bd/api/v1';
 
-  const urls: string[] = [];
+  // If a customBaseUrl is passed from client, strictly validate it against approved Steadfast hostnames
   if (customBaseUrl && customBaseUrl.trim()) {
-    const clean = customBaseUrl.trim().replace(/\/+$/, '');
-    // If the legacy domain is explicitly provided, prioritize packzy first to avoid 530 errors
-    if (clean.includes('portal.steadfast.com.bd')) {
-      urls.push(PACKZY_PRIMARY);
-    } else {
-      urls.push(clean);
-      if (clean !== PACKZY_PRIMARY) {
-        urls.push(PACKZY_PRIMARY);
-      }
+    const val = validateCourierApiDestination(customBaseUrl.trim(), { courierType: 'steadfast' });
+    if (!val.valid) {
+      console.warn('Rejected unapproved Steadfast customBaseUrl:', customBaseUrl, val.error);
+      return [PACKZY_PRIMARY, STEADFAST_LEGACY];
     }
-  } else {
-    urls.push(PACKZY_PRIMARY);
   }
 
-  if (!urls.includes(STEADFAST_LEGACY)) {
-    urls.push(STEADFAST_LEGACY);
-  }
-
-  return urls;
+  return [PACKZY_PRIMARY, STEADFAST_LEGACY];
 }
 
 /**
  * Resilient multi-endpoint dispatcher for Steadfast Courier API.
  * Automatically recovers from Cloudflare 530 Origin DNS errors, 5xx server issues, and timeouts.
+ * Enforces SSRF defense and strict credential protection.
  */
 export async function callSteadfastApi(
   endpointPath: string,
@@ -136,6 +138,18 @@ export async function callSteadfastApi(
     };
   }
 
+  // Pre-validate credentials.baseUrl if passed from request
+  if (credentials.baseUrl) {
+    const val = validateCourierApiDestination(credentials.baseUrl, { courierType: 'steadfast' });
+    if (!val.valid) {
+      return {
+        ok: false,
+        status: 400,
+        error: `Invalid Steadfast gateway destination: ${val.error}`,
+      };
+    }
+  }
+
   const cleanPath = endpointPath.replace(/^\/+/, '');
   const candidateBaseUrls = resolveSteadfastBaseUrls(credentials.baseUrl);
 
@@ -147,6 +161,15 @@ export async function callSteadfastApi(
     const baseUrl = candidateBaseUrls[i];
     const fullUrl = `${baseUrl}/${cleanPath}`;
 
+    // Validate destination before making request
+    const val = validateCourierApiDestination(fullUrl, { courierType: 'steadfast' });
+    if (!val.valid) {
+      console.error('SSRF filter blocked request to:', fullUrl, val.error);
+      lastStatus = 400;
+      lastError = val.error || 'Destination blocked by SSRF filter';
+      continue;
+    }
+
     try {
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
@@ -156,75 +179,70 @@ export async function callSteadfastApi(
         'Secret-Key': secretKey,
       };
 
-      const res = await fetch(fullUrl, {
+      const fetchResult = await safeFetchCourierApi({
+        url: fullUrl,
         method: options.method || 'GET',
         headers,
         body: options.body ? JSON.stringify(options.body) : undefined,
-        signal: AbortSignal.timeout(options.timeoutMs || 15000),
+        timeoutMs: options.timeoutMs || 15000,
+        courierType: 'steadfast',
+        maxRedirects: 2,
       });
 
-      lastStatus = res.status;
+      lastStatus = fetchResult.status;
+      lastData = fetchResult.data;
 
       // Failover immediately if Cloudflare returns 530 (Origin DNS Error) or other 5xx / 404
-      if (res.status === 530 || res.status === 502 || res.status === 503 || res.status === 504 || res.status === 404) {
-        lastError = res.status === 530
+      if (
+        fetchResult.status === 530 ||
+        fetchResult.status === 502 ||
+        fetchResult.status === 503 ||
+        fetchResult.status === 504 ||
+        fetchResult.status === 404
+      ) {
+        lastError = fetchResult.status === 530
           ? `HTTP 530 Origin DNS error on ${baseUrl}`
-          : `HTTP ${res.status} on ${baseUrl}`;
+          : `HTTP ${fetchResult.status} on ${baseUrl}`;
         continue;
       }
 
-      let parsed: any = null;
-      try {
-        parsed = await res.json();
-      } catch {
-        const text = await res.text().catch(() => '');
-        if (!res.ok) {
-          lastError = text.slice(0, 100) || `HTTP ${res.status}`;
-          continue;
-        }
-        parsed = { raw: text };
-      }
-
-      lastData = parsed;
-
-      // Clean authentication error translation
-      if (res.status === 401) {
+      if (fetchResult.status === 401) {
         return {
           ok: false,
           status: 401,
-          data: parsed,
-          error: parsed?.message || 'Invalid Steadfast API Key or Secret Key. Please verify your credentials in your Steadfast/Packzy merchant dashboard.',
+          data: lastData,
+          error: lastData?.message || 'Invalid Steadfast API Key or Secret Key. Please verify your credentials in your Steadfast/Packzy merchant dashboard.',
         };
       }
 
-      if (res.status === 403) {
+      if (fetchResult.status === 403) {
         return {
           ok: false,
           status: 403,
-          data: parsed,
-          error: parsed?.message || 'Steadfast Courier account is not active or API access is disabled.',
+          data: lastData,
+          error: lastData?.message || 'Steadfast Courier account is not active or API access is disabled.',
         };
       }
 
-      if (res.ok) {
+      if (fetchResult.ok) {
         return {
           ok: true,
-          status: res.status,
-          data: parsed,
+          status: fetchResult.status,
+          data: lastData,
         };
       }
 
       const rawMsg =
-        parsed?.message ||
-        (parsed?.errors ? (typeof parsed.errors === 'string' ? parsed.errors : JSON.stringify(parsed.errors)) : `Steadfast returned HTTP ${res.status}`);
+        lastData?.message ||
+        (lastData?.errors ? (typeof lastData.errors === 'string' ? lastData.errors : JSON.stringify(lastData.errors)) : `Steadfast returned HTTP ${fetchResult.status}`);
       const clientMsg = typeof rawMsg === 'string' && rawMsg.length < 300 && !/secret|key|token|password/i.test(rawMsg)
         ? rawMsg
-        : `Steadfast returned HTTP ${res.status}`;
+        : `Steadfast returned HTTP ${fetchResult.status}`;
 
       return {
         ok: false,
-        status: res.status,
-        data: parsed,
+        status: fetchResult.status,
+        data: lastData,
         error: clientMsg,
       };
     } catch (err: any) {

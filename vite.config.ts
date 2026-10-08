@@ -38,7 +38,12 @@ import {
 import { callSteadfastApi, normalizeSteadfastStatus } from './src/server/courier';
 import { bufferToHex, verifyPassword, hashPassword, needsPasswordRehash } from './src/server/auth';
 import { verifyCourierWebhookAuth, computeHmacSha256Hex, computeWebhookFingerprint } from './src/server/webhookAuth';
-import { validateWebhookDestination, safeFetchWebhook } from './src/server/ssrf';
+import {
+  validateWebhookDestination,
+  safeFetchWebhook,
+  validateCourierApiDestination,
+  safeFetchCourierApi,
+} from './src/server/ssrf';
 import {
   validateImageBuffer,
   generateSafeMediaKey,
@@ -4992,6 +4997,18 @@ function localApiDevPlugin(): Plugin {
             const secretKey = (body?.secretKey || process.env.STEADFAST_SECRET_KEY || '').trim();
             const baseUrl = body?.baseUrl;
 
+            // Reject arbitrary custom baseUrl to prevent SSRF and secret exfiltration
+            if (baseUrl) {
+              const val = validateCourierApiDestination(baseUrl, { courierType: 'steadfast' });
+              if (!val.valid) {
+                res.statusCode = 400;
+                return res.end(JSON.stringify({
+                  success: false,
+                  error: 'Invalid Steadfast API destination. Only approved Steadfast gateways (portal.packzy.com) are permitted.',
+                }));
+              }
+            }
+
             if (apiKey && secretKey) {
               try {
                 const callResult = await callSteadfastApi('get_balance', { apiKey, secretKey, baseUrl });
@@ -5130,6 +5147,18 @@ function localApiDevPlugin(): Plugin {
                 }));
               }
 
+              // Validate courierParam.baseUrl if provided by request
+              if (courierParam.baseUrl) {
+                const val = validateCourierApiDestination(courierParam.baseUrl, { courierType: 'steadfast' });
+                if (!val.valid) {
+                  res.statusCode = 400;
+                  return res.end(JSON.stringify({
+                    success: false,
+                    error: 'Invalid Steadfast courier destination. Only approved Steadfast gateways (portal.packzy.com) are permitted.',
+                  }));
+                }
+              }
+
               try {
                 const sfPayload: Record<string, any> = {
                   invoice: String(parcelData.invoice || order.orderNumber),
@@ -5229,6 +5258,17 @@ function localApiDevPlugin(): Plugin {
             const baseUrl = (courierParam.baseUrl || body?.baseUrl || parcelData.baseUrl || '').trim();
             const trackingPattern = (courierParam.trackingUrlPattern || '').trim() || 'https://steadfast.com.bd/t/{trackingCode}';
 
+            // Security check: NEVER send Steadfast secrets to generic courier URLs
+            const devSfKey = (process.env.STEADFAST_API_KEY || '').trim();
+            const devSfSec = (process.env.STEADFAST_SECRET_KEY || '').trim();
+            if ((devSfKey && apiKey === devSfKey) || (devSfSec && secretKey === devSfSec)) {
+              res.statusCode = 400;
+              return res.end(JSON.stringify({
+                success: false,
+                error: 'Security violation: Steadfast credentials cannot be sent to other courier gateways.',
+              }));
+            }
+
             if (!apiKey) {
               res.statusCode = 400;
               return res.end(JSON.stringify({
@@ -5241,9 +5281,29 @@ function localApiDevPlugin(): Plugin {
             let consignmentId = '';
 
             if (baseUrl) {
+              // Enforce SSRF validation and allowlist for generic courier gateway
+              const val = validateCourierApiDestination(baseUrl, { courierType: courierCode });
+              if (!val.valid) {
+                res.statusCode = 400;
+                return res.end(JSON.stringify({
+                  success: false,
+                  error: val.error || `Invalid courier API destination for ${courierName}. Destination domain is not approved or violates SSRF protection.`,
+                }));
+              }
+
               try {
-                const cleanBase = baseUrl.replace(/\/+$/, '');
+                const cleanBase = val.normalizedUrl!.replace(/\/+$/, '');
                 const endpoint = cleanBase.includes('/v1') || cleanBase.includes('/api') ? `${cleanBase}/orders` : `${cleanBase}/api/v1/orders`;
+                
+                const endpointVal = validateCourierApiDestination(endpoint, { courierType: courierCode });
+                if (!endpointVal.valid) {
+                  res.statusCode = 400;
+                  return res.end(JSON.stringify({
+                    success: false,
+                    error: endpointVal.error || `Invalid courier API endpoint URL.`,
+                  }));
+                }
+
                 const headers: Record<string, string> = {
                   'Content-Type': 'application/json',
                   'Accept': 'application/json',
@@ -5255,7 +5315,8 @@ function localApiDevPlugin(): Plugin {
                   headers['X-Secret-Key'] = secretKey;
                 }
 
-                const response = await fetch(endpoint, {
+                const fetchResult = await safeFetchCourierApi({
+                  url: endpoint,
                   method: 'POST',
                   headers,
                   body: JSON.stringify({
@@ -5268,23 +5329,31 @@ function localApiDevPlugin(): Plugin {
                     weight: Number(parcelData.weight) || 0.5,
                     items_count: totalLot || 1,
                   }),
-                  signal: AbortSignal.timeout(10000),
+                  timeoutMs: 10000,
+                  courierType: courierCode,
+                  maxRedirects: 2,
                 });
 
-                if (response.ok) {
-                  const data: any = await response.json().catch(() => ({}));
+                if (fetchResult.ok) {
+                  const data: any = fetchResult.data || {};
                   trackingCode = data.tracking_code || data.trackingCode || data.consignment_id || data.id || '';
                   consignmentId = String(data.consignment_id || data.consignmentId || data.id || '');
-                } else if (response.status === 401 || response.status === 403) {
-                  const data: any = await response.json().catch(() => ({}));
+                } else if (fetchResult.status === 401 || fetchResult.status === 403) {
+                  const data: any = fetchResult.data || {};
                   res.statusCode = 400;
                   return res.end(JSON.stringify({
                     success: false,
                     error: data.message || `Invalid API credentials for ${courierName}. Please check API Key and Secret.`,
                   }));
+                } else if (!fetchResult.ok) {
+                  res.statusCode = 400;
+                  return res.end(JSON.stringify({
+                    success: false,
+                    error: fetchResult.error || `Courier gateway error from ${courierName}.`,
+                  }));
                 }
-              } catch {
-                // Network timeout or mock base URL fallback
+              } catch (e: any) {
+                console.error('Non-steadfast courier dev dispatch error:', e);
               }
             }
 
