@@ -158,6 +158,8 @@ export interface ProductReview {
   date?: string;
   verifiedPurchase?: boolean;
   status?: 'approved' | 'pending' | 'rejected' | string;
+  approvedAt?: string | null;
+  approvedBy?: string | null;
 }
 
 export interface Coupon {

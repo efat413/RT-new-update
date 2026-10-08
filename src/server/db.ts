@@ -2392,17 +2392,32 @@ export function rowToReview(row: ReviewRow): ProductReview {
     comment: row.comment,
     verifiedPurchase: Boolean(row.verified_purchase),
     status: (row as any).status || 'approved',
+    approvedAt: (row as any).approved_at || ((row as any).status === 'approved' ? row.created_at : null),
+    approvedBy: (row as any).approved_by || null,
     createdAt: row.created_at,
   };
 }
 
-export async function getAllReviews(db: D1Database, productId?: string): Promise<ProductReview[]> {
-  let query = `SELECT ${REVIEW_COLUMNS} FROM reviews`;
+export async function getAllReviews(
+  db: D1Database,
+  productId?: string,
+  status?: string
+): Promise<ProductReview[]> {
+  let query = 'SELECT * FROM reviews';
+  const whereClauses: string[] = [];
   const bindings: any[] = [];
 
   if (productId) {
-    query += ' WHERE product_id = ?';
+    whereClauses.push('product_id = ?');
     bindings.push(productId);
+  }
+  if (status) {
+    whereClauses.push('LOWER(status) = ?');
+    bindings.push(status.toLowerCase());
+  }
+
+  if (whereClauses.length > 0) {
+    query += ` WHERE ${whereClauses.join(' AND ')}`;
   }
   query += ' ORDER BY created_at DESC';
 
@@ -2421,19 +2436,37 @@ export async function insertReview(db: D1Database, input: any): Promise<ProductR
   const comment = input.comment || '';
   // Security Hardening: strictly default to 0 (unverified) unless server logic explicitly sets true
   const verifiedPurchase = input.verifiedPurchase === true ? 1 : 0;
+  // Security Hardening: Customer reviews MUST always default to 'pending' unless explicitly admin
+  const status = input.status === 'approved' ? 'approved' : 'pending';
+  const approvedAt = status === 'approved' ? (input.approvedAt || new Date().toISOString()) : null;
+  const approvedBy = status === 'approved' ? (input.approvedBy || null) : null;
   const createdAt = input.createdAt || new Date().toISOString();
 
-  await db
-    .prepare(`
-      INSERT INTO reviews (id, product_id, author_name, rating, comment, verified_purchase, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `)
-    .bind(id, productId, authorName, rating, comment, verifiedPurchase, createdAt)
-    .run();
+  try {
+    await db
+      .prepare(`
+        INSERT INTO reviews (id, product_id, author_name, rating, comment, verified_purchase, status, approved_at, approved_by, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .bind(id, productId, authorName, rating, comment, verifiedPurchase, status, approvedAt, approvedBy, createdAt)
+      .run();
+  } catch {
+    await db
+      .prepare(`
+        INSERT INTO reviews (id, product_id, author_name, rating, comment, verified_purchase, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `)
+      .bind(id, productId, authorName, rating, comment, verifiedPurchase, createdAt)
+      .run();
+  }
 
-  const row = await db.prepare(`SELECT ${REVIEW_COLUMNS} FROM reviews WHERE id = ?`).bind(id).first<ReviewRow>();
+  const row = await db.prepare('SELECT * FROM reviews WHERE id = ?').bind(id).first<ReviewRow>();
   if (!row) throw new Error('Failed to retrieve inserted review');
-  return rowToReview(row);
+  const rev = rowToReview(row);
+  rev.status = status;
+  rev.approvedAt = approvedAt;
+  rev.approvedBy = approvedBy;
+  return rev;
 }
 
 /**
@@ -2527,16 +2560,29 @@ export async function deleteReviewFromD1(db: D1Database, id: string): Promise<bo
 export async function updateReviewStatusInD1(
   db: D1Database,
   id: string,
-  status: string
+  status: string,
+  approvedBy?: string | null
 ): Promise<ProductReview | null> {
   const cleanStatus = status === 'rejected' ? 'rejected' : status === 'pending' ? 'pending' : 'approved';
+  const nowIso = cleanStatus === 'approved' ? new Date().toISOString() : null;
+  const moderator = cleanStatus === 'approved' ? (approvedBy || 'admin') : null;
+
   try {
-    await db.prepare('UPDATE reviews SET status = ? WHERE id = ?').bind(cleanStatus, id).run();
-  } catch {}
-  const row = await db.prepare(`SELECT ${REVIEW_COLUMNS} FROM reviews WHERE id = ?`).bind(id).first<ReviewRow>();
+    await db
+      .prepare('UPDATE reviews SET status = ?, approved_at = ?, approved_by = ? WHERE id = ?')
+      .bind(cleanStatus, nowIso, moderator, id)
+      .run();
+  } catch {
+    try {
+      await db.prepare('UPDATE reviews SET status = ? WHERE id = ?').bind(cleanStatus, id).run();
+    } catch {}
+  }
+  const row = await db.prepare('SELECT * FROM reviews WHERE id = ?').bind(id).first<ReviewRow>();
   if (!row) return null;
   const rev = rowToReview(row);
   rev.status = cleanStatus;
+  rev.approvedAt = nowIso;
+  rev.approvedBy = moderator;
   return rev;
 }
 

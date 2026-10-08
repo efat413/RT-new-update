@@ -135,6 +135,9 @@ const AdminDebugTab = React.lazy(() =>
 const AdminProfitAnalyticsTab = React.lazy(() =>
   import('./AdminProfitAnalyticsTab').then((m) => ({ default: m.AdminProfitAnalyticsTab }))
 );
+const AdminReviewsTab = React.lazy(() =>
+  import('./AdminReviewsTab').then((m) => ({ default: m.AdminReviewsTab }))
+);
 
 const AdminTabFallback: React.FC = () => (
   <div className="py-24 flex flex-col items-center justify-center space-y-3 text-slate-400">
@@ -7060,6 +7063,21 @@ const AdminPanelContent: React.FC = () => {
             <ErrorBoundary compact fallbackTitle="Profit Analytics Unavailable" fallbackMessage="Could not load profit analytics tab.">
               <React.Suspense fallback={<AdminTabFallback />}>
                 <AdminProfitAnalyticsTab />
+              </React.Suspense>
+            </ErrorBoundary>
+          )
+        )}
+
+        {/* ============================================================ */}
+        {/* TAB 13: CUSTOMER REVIEWS MODERATION & RBAC                   */}
+        {/* ============================================================ */}
+        {activeTab === 'reviews' && (
+          !hasPermission('reviews.view') ? (
+            renderPermissionRestrictedNotice('reviews.view', 'Customer Reviews Moderation')
+          ) : (
+            <ErrorBoundary compact fallbackTitle="Reviews Unavailable" fallbackMessage="Could not load customer reviews moderation tab.">
+              <React.Suspense fallback={<AdminTabFallback />}>
+                <AdminReviewsTab />
               </React.Suspense>
             </ErrorBoundary>
           )

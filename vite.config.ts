@@ -3328,6 +3328,7 @@ function localApiDevPlugin(): Plugin {
                 return res.end(JSON.stringify({ success: false, error: 'Product, author name, and comment are required.' }));
               }
 
+              const adminStatus = r.status === 'pending' ? 'pending' : (r.status === 'rejected' ? 'rejected' : 'approved');
               const newR = {
                 id: r.id || `rev-${Date.now()}`,
                 productId,
@@ -3335,7 +3336,9 @@ function localApiDevPlugin(): Plugin {
                 rating,
                 comment,
                 verifiedPurchase,
-                status: r.status || 'approved',
+                status: adminStatus,
+                approvedAt: adminStatus === 'approved' ? new Date().toISOString() : null,
+                approvedBy: adminStatus === 'approved' ? (authResult.auth!.user?.email || authResult.auth!.user?.id || 'admin') : null,
                 createdAt: r.createdAt || new Date().toISOString(),
               };
               devReviews.unshift(newR);
@@ -3365,6 +3368,8 @@ function localApiDevPlugin(): Plugin {
           }
 
           target.status = 'approved';
+          target.approvedAt = new Date().toISOString();
+          target.approvedBy = authResult.auth!.user?.email || authResult.auth!.user?.id || 'admin';
           res.statusCode = 200;
           return res.end(JSON.stringify({ success: true, message: 'Review approved successfully.', review: target }));
         }
@@ -3395,6 +3400,8 @@ function localApiDevPlugin(): Plugin {
               return res.end(JSON.stringify({ success: false, error: 'Invalid status. Expected "approved", "pending", or "rejected".' }));
             }
             target.status = newStatus;
+            target.approvedAt = newStatus === 'approved' ? new Date().toISOString() : null;
+            target.approvedBy = newStatus === 'approved' ? (authResult.auth!.user?.email || authResult.auth!.user?.id || 'admin') : null;
             res.statusCode = 200;
             return res.end(JSON.stringify({ success: true, message: `Review status updated to ${newStatus}.`, review: target }));
           });
@@ -3454,7 +3461,8 @@ function localApiDevPlugin(): Plugin {
         if (url.pathname === '/api/reviews') {
           if (method === 'GET') {
             const productId = url.searchParams.get('productId') || undefined;
-            const filteredReviews = productId ? devReviews.filter((r) => r.productId === productId) : devReviews;
+            const approvedReviews = devReviews.filter((r) => (r.status || 'approved') === 'approved');
+            const filteredReviews = productId ? approvedReviews.filter((r) => r.productId === productId) : approvedReviews;
             res.setHeader('Cache-Control', 'public, max-age=30, s-maxage=60, stale-while-revalidate=30');
             res.setHeader('Vary', 'Origin');
             res.statusCode = 200;
@@ -3576,6 +3584,9 @@ function localApiDevPlugin(): Plugin {
                 }
               }
 
+              // Customer reviews: status = pending ALWAYS!
+              // Even verified purchases must remain pending until approved by admin.
+              // Never trust status, approved_at, approved_by, or client verifiedPurchase.
               const newR = {
                 id: r.id || `rev-${Date.now()}`,
                 productId: targetProductId,
@@ -3583,11 +3594,18 @@ function localApiDevPlugin(): Plugin {
                 rating,
                 comment,
                 verifiedPurchase: isVerifiedPurchase,
+                status: 'pending',
+                approvedAt: null,
+                approvedBy: null,
                 createdAt: r.createdAt || new Date().toISOString(),
               };
               devReviews.unshift(newR);
               res.statusCode = 201;
-              return res.end(JSON.stringify({ success: true, review: newR }));
+              return res.end(JSON.stringify({
+                success: true,
+                message: 'Thank you! Your review has been submitted and is pending administrator approval before appearing in the store.',
+                review: newR,
+              }));
             });
           }
         }

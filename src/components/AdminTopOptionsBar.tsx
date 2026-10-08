@@ -12,6 +12,7 @@ import {
   Users,
   Activity,
   TicketPercent,
+  MessageSquare,
   Bug,
   AlertTriangle,
   CheckCircle2,
@@ -131,6 +132,14 @@ export const AdminTopOptionsBar: React.FC<AdminTopOptionsBarProps> = ({
       badge: `${couponsCount}`,
       badgeColor: 'bg-slate-700 text-slate-300',
       permission: 'canManageSettings',
+    },
+    {
+      id: 'reviews',
+      label: 'Customer Reviews',
+      icon: MessageSquare,
+      badge: null,
+      badgeColor: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
+      permission: 'reviews.view',
     },
     {
       id: 'debug',

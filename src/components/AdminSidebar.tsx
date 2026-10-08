@@ -16,6 +16,7 @@ import {
   Lock,
   Bug,
   TrendingUp,
+  MessageSquare,
 } from 'lucide-react';
 
 interface AdminSidebarProps {
@@ -169,6 +170,14 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
       badge: couponsCount,
       color: 'violet',
       permission: 'canManageSettings',
+    },
+    {
+      id: 'reviews',
+      label: 'Customer Reviews',
+      icon: MessageSquare,
+      badge: null,
+      color: 'amber',
+      permission: 'reviews.view',
     },
     {
       id: 'debug',

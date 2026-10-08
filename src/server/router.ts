@@ -3846,12 +3846,16 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       }
 
       try {
+        const adminStatus = reviewData.status === 'pending' ? 'pending' : (reviewData.status === 'rejected' ? 'rejected' : 'approved');
         const created = await insertReview(env.DB, {
           productId,
           authorName,
           comment,
           rating,
           verifiedPurchase,
+          status: adminStatus,
+          approvedAt: adminStatus === 'approved' ? new Date().toISOString() : null,
+          approvedBy: adminStatus === 'approved' ? (auth!.dbUser?.email || auth!.dbUser?.id || auth!.tokenUser?.email) : null,
         });
         return jsonResponse({ success: true, review: created }, 201);
       } catch (err: any) {
@@ -3871,7 +3875,12 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     if (permErr) return permErr;
 
     try {
-      const updated = await updateReviewStatusInD1(env.DB, revId, 'approved');
+      const updated = await updateReviewStatusInD1(
+        env.DB,
+        revId,
+        'approved',
+        auth!.dbUser?.email || auth!.dbUser?.id || auth!.tokenUser?.email
+      );
       if (!updated) {
         return jsonResponse({ success: false, error: 'Review not found.' }, 404);
       }
@@ -3900,7 +3909,12 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     }
 
     try {
-      const updated = await updateReviewStatusInD1(env.DB, revId, newStatus);
+      const updated = await updateReviewStatusInD1(
+        env.DB,
+        revId,
+        newStatus,
+        newStatus === 'approved' ? (auth!.dbUser?.email || auth!.dbUser?.id || auth!.tokenUser?.email) : null
+      );
       if (!updated) {
         return jsonResponse({ success: false, error: 'Review not found.' }, 404);
       }
@@ -3962,7 +3976,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     if (method === 'GET') {
       try {
         const productId = url.searchParams.get('productId') || undefined;
-        const reviews = await getAllReviews(env.DB, productId);
+        // Public storefront requests MUST ONLY return approved reviews!
+        const reviews = await getAllReviews(env.DB, productId, 'approved');
         return jsonResponse({ success: true, count: reviews.length, reviews }, 200, {
           'Cache-Control': 'public, max-age=30, s-maxage=60, stale-while-revalidate=30',
           'Vary': 'Origin, Accept-Encoding',
@@ -4086,14 +4101,24 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           }
         }
 
+        // Customer reviews: status = pending ALWAYS!
+        // Even verified purchases must remain pending until approved by admin.
+        // Never trust status, approved_at, approved_by, or client verifiedPurchase.
         const created = await insertReview(env.DB, {
           productId: targetProductId,
           authorName,
           comment,
           rating,
           verifiedPurchase: isVerifiedPurchase,
+          status: 'pending',
+          approvedAt: null,
+          approvedBy: null,
         });
-        return jsonResponse({ success: true, review: created }, 201);
+        return jsonResponse({
+          success: true,
+          message: 'Thank you! Your review has been submitted and is pending administrator approval before appearing in the store.',
+          review: created,
+        }, 201);
       } catch (err: any) {
         console.error('Error creating review:', err);
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);

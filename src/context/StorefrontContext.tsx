@@ -681,8 +681,25 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     }
   }, [reviews]);
 
+  useEffect(() => {
+    reviewsApi
+      .getAll()
+      .then((serverRevs) => {
+        if (Array.isArray(serverRevs) && serverRevs.length > 0) {
+          setReviews((prev) => {
+            const pendingRevs = prev.filter((r) => r.status === 'pending');
+            const serverIds = new Set(serverRevs.map((r) => r.id));
+            return [...serverRevs, ...pendingRevs.filter((r) => !serverIds.has(r.id))];
+          });
+        }
+      })
+      .catch((err) => {
+        console.warn('[Reviews] Could not load server reviews:', err);
+      });
+  }, []);
+
   const getProductReviews = useCallback((productId: string) => {
-    return reviews.filter((r) => r.productId === productId);
+    return reviews.filter((r) => r.productId === productId && (r.status || 'approved') === 'approved');
   }, [reviews]);
 
   const addProductReview = useCallback((reviewData: Omit<ProductReview, 'id' | 'createdAt'>) => {
@@ -692,10 +709,16 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     crypto.getRandomValues(revBuf);
     const revRand = 100 + (revBuf[0] % 900);
     const newReview: ProductReview = {
-      ...reviewData,
+      productId: reviewData.productId,
       author: authorName,
       authorName: authorName,
+      rating: Math.min(5, Math.max(1, Number(reviewData.rating) || 5)),
+      comment: String(reviewData.comment || '').trim(),
       id: `rev-${Date.now()}-${revRand}`,
+      status: 'pending',
+      approvedAt: null,
+      approvedBy: null,
+      verifiedPurchase: false,
       createdAt: new Date().toISOString(),
       date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
     };
@@ -703,20 +726,24 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setReviews(updatedReviews);
     reviewsApi.create(newReview).catch(console.error);
 
-    const productRevs = updatedReviews.filter((r) => r.productId === reviewData.productId);
-    const avgRating = productRevs.reduce((acc, r) => acc + r.rating, 0) / productRevs.length;
-
-    setProducts((prev) =>
-      prev.map((p) =>
-        p.id === reviewData.productId
-          ? {
-              ...p,
-              rating: Number(avgRating.toFixed(1)),
-              reviewsCount: Math.max((p.reviewsCount ?? 0) + 1, productRevs.length),
-            }
-          : p
-      )
+    // Only approved reviews affect public product ratings and counts
+    const approvedProductRevs = updatedReviews.filter(
+      (r) => r.productId === reviewData.productId && (r.status || 'approved') === 'approved'
     );
+    if (approvedProductRevs.length > 0) {
+      const avgRating = approvedProductRevs.reduce((acc, r) => acc + r.rating, 0) / approvedProductRevs.length;
+      setProducts((prev) =>
+        prev.map((p) =>
+          p.id === reviewData.productId
+            ? {
+                ...p,
+                rating: Number(avgRating.toFixed(1)),
+                reviewsCount: approvedProductRevs.length,
+              }
+            : p
+        )
+      );
+    }
   }, [reviews]);
 
   const deleteProductReview = useCallback((reviewId: string) => {

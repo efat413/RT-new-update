@@ -208,6 +208,8 @@ export interface ReviewRow {
   comment: string;
   verified_purchase: number;
   status?: string;
+  approved_at?: string | null;
+  approved_by?: string | null;
   created_at: string;
 }
 

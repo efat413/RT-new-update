@@ -210,7 +210,7 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
   const activeImage = imageList[selectedImageIdx] || product.imageUrl;
   const isSavedInWishlist = wishlist.includes(product.id);
   const productReviews = Array.isArray(reviews)
-    ? reviews.filter((r) => r && r.productId === product.id)
+    ? reviews.filter((r) => r && r.productId === product.id && (r.status || 'approved') === 'approved')
     : [];
 
   const backendReviewsCount =
@@ -291,11 +291,10 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
       authorName: reviewAuthor.trim() || 'Verified Shopper',
       rating: reviewRating,
       comment: reviewComment.trim(),
-      verifiedPurchase: true,
     });
 
     setReviewComment('');
-    setReviewSuccessMsg('Thank you! Your verified review has been submitted.');
+    setReviewSuccessMsg('Thank you! Your review has been submitted and is pending administrator approval before appearing in the store.');
     setTimeout(() => setReviewSuccessMsg(''), 4000);
   };
 
