@@ -2250,15 +2250,22 @@ export async function saveMediaAssetInD1(
   dataBase64: string,
   size: number
 ): Promise<void> {
+  if (!db) {
+    throw new Error('Database connection is not available for media persistence.');
+  }
+  const cleanId = (id || '').trim();
+  if (!cleanId) {
+    throw new Error('Media asset ID cannot be empty.');
+  }
   const res = await db
     .prepare(`
       INSERT OR REPLACE INTO media_assets (id, content_type, data, size, created_at)
       VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
     `)
-    .bind(id, contentType, dataBase64, size)
+    .bind(cleanId, contentType, dataBase64, size)
     .run();
-  if (res.success === false) {
-    throw new Error(res.error || 'Failed to save media asset in D1.');
+  if (!res || res.success === false) {
+    throw new Error((res && res.error) || 'Failed to save media asset in D1.');
   }
 }
 
@@ -3031,6 +3038,12 @@ export async function verifyCustomerPurchaseInD1(
 
 export async function deleteReviewFromD1(db: D1Database, id: string): Promise<boolean> {
   const existing = await db.prepare('SELECT product_id FROM reviews WHERE id = ?').bind(id).first<{ product_id: string }>();
+  // Atomically delete associated binary review image blobs and sub-chunks
+  try {
+    await db.prepare('DELETE FROM review_images WHERE review_id = ?').bind(id).run();
+  } catch (imgErr) {
+    console.warn('[D1 Review Image Purge Warning]:', imgErr);
+  }
   const res = await db.prepare('DELETE FROM reviews WHERE id = ?').bind(id).run();
   if (existing && existing.product_id) {
     await recalculateProductRatingFromApprovedReviews(db, existing.product_id);

@@ -3492,12 +3492,27 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const key = generateSafeMediaKey(verifiedExt);
 
       // 3. Store asset in Cloudflare D1 with strictly verified MIME type
-      if (env.DB) {
-        const base64Data = uint8ArrayToBase64(new Uint8Array(fileBuffer));
+      // Atomicity Guarantee: Fail the entire upload request (HTTP 500) if primary binary fails D1 persistence
+      if (!env.DB) {
+        return jsonResponse(
+          { success: false, error: 'Database service unavailable for media persistence.' },
+          500
+        );
+      }
+
+      const base64Data = uint8ArrayToBase64(new Uint8Array(fileBuffer));
+      try {
         await saveMediaAssetInD1(env.DB, key, verifiedMime, base64Data, fileBuffer.byteLength);
+      } catch (persistErr: any) {
+        console.error('[Upload Atomicity Failure] Primary media binary failed D1 persistence:', persistErr);
+        return jsonResponse(
+          { success: false, error: 'Failed to persist media asset in database.' },
+          500
+        );
       }
 
       // Pre-generate standard responsive variants (240, 360, 480, 720, 1080) if node/sharp is available
+      // Isolate variant generation: Treat responsive WebP variants as non-blocking/optional
       if (typeof process !== 'undefined' && process.versions?.node) {
         try {
           const sharpModule = await import('sharp');
@@ -3505,11 +3520,20 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           const baseKeyWithoutExt = key.replace(/\.[^.]+$/, '');
           const standardWidths = [240, 360, 480, 720, 1080];
           for (const w of standardWidths) {
-            const webpBuf = await sharp(Buffer.from(fileBuffer)).resize(w, null, { withoutEnlargement: true, fit: 'inside' }).webp({ quality: 82 }).toBuffer();
-            const varKey = `${baseKeyWithoutExt}_w${w}.webp`;
-            if (env.DB) {
-              const b64 = Buffer.from(webpBuf).toString('base64');
-              await saveMediaAssetInD1(env.DB, varKey, 'image/webp', b64, webpBuf.byteLength);
+            try {
+              const webpBuf = await sharp(Buffer.from(fileBuffer))
+                .resize(w, null, { withoutEnlargement: true, fit: 'inside' })
+                .webp({ quality: 82 })
+                .toBuffer();
+              const varKey = `${baseKeyWithoutExt}_w${w}.webp`;
+              if (env.DB) {
+                const b64 = Buffer.from(webpBuf).toString('base64');
+                await saveMediaAssetInD1(env.DB, varKey, 'image/webp', b64, webpBuf.byteLength).catch((vErr) => {
+                  console.warn(`[Media Variant] Non-blocking variant persistence skipped for ${varKey}:`, vErr);
+                });
+              }
+            } catch (singleVarErr) {
+              console.warn(`[Media Variant] Non-blocking variant generation skipped for width ${w}:`, singleVarErr);
             }
           }
         } catch (variantErr) {
@@ -3517,7 +3541,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         }
       }
 
-      // 4. Record successful upload in distributed rate limiters
+      // 4. Record successful upload in distributed rate limiters ONLY after successful primary persistence
       await Promise.all([
         recordFailedAttempt(burstKey, 10, 60, env.DB),
         recordFailedAttempt(hourKey, 60, 3600, env.DB),
@@ -3563,10 +3587,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       // 1. Check for pre-generated variant in D1 media storage first:
       if (targetWidth && targetWidth > 0 && targetWidth <= 2400) {
         const baseKeyWithoutExt = key.replace(/\.[^.]+$/, '');
-        // Prioritized candidate variant keys:
-        // a. Exact target width requested
-        // b. Matched standard width (240, 360, 480, 720, 1080)
-        // c. Closest alternative standard variants
         const candidateKeys = Array.from(new Set([
           `${baseKeyWithoutExt}_w${targetWidth}.webp`,
           ...(matchedWidth ? [`${baseKeyWithoutExt}_w${matchedWidth}.webp`] : []),
@@ -3585,20 +3605,23 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
             }
           }
           if (variantBuffer && variantBuffer.byteLength > 0) {
-            return new Response(variantBuffer, {
-              status: 200,
-              headers: {
-                ...getSafeMediaHeaders('image/webp'),
-                ...getCorsHeaders(request, env),
-                'Content-Length': String(variantBuffer.byteLength),
-              },
-            });
+            // Strictly validate MIME from magic-byte inspection before serving variant
+            const varValidation = validateImageBuffer(variantBuffer);
+            if (varValidation.valid && varValidation.mime) {
+              return new Response(variantBuffer, {
+                status: 200,
+                headers: {
+                  ...getSafeMediaHeaders(varValidation.mime),
+                  ...getCorsHeaders(request, env),
+                  'Content-Length': String(variantBuffer.byteLength),
+                },
+              });
+            }
           }
         }
       }
 
       // 2. In production Cloudflare Workers with Image Resizing enabled:
-      // Check if Cloudflare edge image transformation is available on this request
       const isCloudflareResizeRequest = request.headers.has('cf-image-resizing');
       if (
         !isCloudflareResizeRequest &&
@@ -3632,20 +3655,37 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       }
 
       let rawBuffer: Uint8Array | null = null;
-      let contentType = 'image/jpeg';
 
       // Check D1 media_assets table
       if (env.DB) {
         const asset = await getMediaAssetFromD1(env.DB, key);
         if (asset) {
           rawBuffer = base64ToUint8Array(asset.dataBase64);
-          contentType = asset.contentType || 'image/jpeg';
         }
       }
 
-      if (!rawBuffer) {
-        return new Response('Media asset not found', { status: 404 });
+      if (!rawBuffer || rawBuffer.byteLength === 0) {
+        return new Response('Media asset not found', {
+          status: 404,
+          headers: {
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            ...getCorsHeaders(request, env),
+          },
+        });
       }
+
+      // Strictly validate MIME/Content-Type from magic-byte inspection before responding
+      const rawValidation = validateImageBuffer(rawBuffer);
+      if (!rawValidation.valid || !rawValidation.mime) {
+        return new Response('Invalid or corrupted image data', {
+          status: 400,
+          headers: {
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            ...getCorsHeaders(request, env),
+          },
+        });
+      }
+      let verifiedContentType = rawValidation.mime;
 
       // If transformation was requested (?w=360, etc.)
       if (targetWidth && targetWidth > 0 && targetWidth <= 2400) {
@@ -3654,7 +3694,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
             const sharpModule = await import('sharp');
             const sharp = (sharpModule as any).default || sharpModule;
             const accept = request.headers.get('accept') || '';
-            const wantsWebp = accept.includes('image/webp') || contentType !== 'image/gif';
+            const wantsWebp = accept.includes('image/webp') || verifiedContentType !== 'image/gif';
 
             const effectiveWidth = matchedWidth || targetWidth;
             let pipeline = sharp(Buffer.from(rawBuffer)).resize(effectiveWidth, null, {
@@ -3664,7 +3704,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
             if (wantsWebp) {
               const webpBuffer = await pipeline.webp({ quality: Math.min(Math.max(targetQuality, 50), 95) }).toBuffer();
-              // Persist newly generated variant into D1 media storage for instant future hits
               const baseKeyWithoutExt = key.replace(/\.[^.]+$/, '');
               const varKey = `${baseKeyWithoutExt}_w${effectiveWidth}.webp`;
               try {
@@ -3676,20 +3715,26 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
                 console.warn('Failed to persist dynamic variant:', persistErr);
               }
 
+              const transformedValidation = validateImageBuffer(webpBuffer);
+              const dynamicMime = transformedValidation.valid && transformedValidation.mime ? transformedValidation.mime : 'image/webp';
+
               return new Response(webpBuffer, {
                 status: 200,
                 headers: {
-                  ...getSafeMediaHeaders('image/webp'),
+                  ...getSafeMediaHeaders(dynamicMime),
                   ...getCorsHeaders(request, env),
                   'Content-Length': String(webpBuffer.byteLength),
                 },
               });
             } else {
               const resizedBuffer = await pipeline.toBuffer();
+              const transformedValidation = validateImageBuffer(resizedBuffer);
+              const dynamicMime = transformedValidation.valid && transformedValidation.mime ? transformedValidation.mime : verifiedContentType;
+
               return new Response(resizedBuffer, {
                 status: 200,
                 headers: {
-                  ...getSafeMediaHeaders(contentType),
+                  ...getSafeMediaHeaders(dynamicMime),
                   ...getCorsHeaders(request, env),
                   'Content-Length': String(resizedBuffer.byteLength),
                 },
@@ -3704,7 +3749,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       return new Response(rawBuffer.buffer, {
         status: 200,
         headers: {
-          ...getSafeMediaHeaders(contentType),
+          ...getSafeMediaHeaders(verifiedContentType),
           ...getCorsHeaders(request, env),
           'Content-Length': String(rawBuffer.byteLength),
         },
@@ -3733,7 +3778,14 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     try {
       const asset = await getReviewImageBlobFromD1(env.DB, imageId);
       if (!asset || !asset.data || asset.data.byteLength === 0) {
-        return jsonResponse({ success: false, error: 'Review image not found.' }, 404);
+        return jsonResponse(
+          { success: false, error: 'Review image not found.' },
+          404,
+          {
+            'Cache-Control': 'private, no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+          }
+        );
       }
 
       const isApproved = asset.reviewStatus === 'approved';
@@ -3743,7 +3795,14 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       if (!isApproved) {
         const authRes = await requireAuth(request, env);
         if (authRes.errorResponse || !authRes.auth) {
-          return jsonResponse({ success: false, error: 'Review image not found.' }, 404);
+          return jsonResponse(
+            { success: false, error: 'Review image not found.' },
+            404,
+            {
+              'Cache-Control': 'private, no-cache, no-store, must-revalidate',
+              'Pragma': 'no-cache',
+            }
+          );
         }
 
         const canView =
@@ -3753,26 +3812,47 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           authRes.auth.role === 'super_admin';
 
         if (!canView) {
-          return jsonResponse({ success: false, error: 'Review image not found.' }, 404);
+          return jsonResponse(
+            { success: false, error: 'Review image not found.' },
+            404,
+            {
+              'Cache-Control': 'private, no-cache, no-store, must-revalidate',
+              'Pragma': 'no-cache',
+            }
+          );
         }
       }
 
+      // Strictly validate MIME/Content-Type from magic-byte inspection before responding
+      const validation = validateImageBuffer(asset.data);
+      if (!validation.valid || !validation.mime) {
+        return jsonResponse(
+          { success: false, error: 'Corrupted or unsupported review image binary.' },
+          400,
+          {
+            'Cache-Control': 'private, no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+          }
+        );
+      }
+      const verifiedMime = validation.mime;
+
       // Cache-Control headers:
-      // - public, max-age=86400 only for approved images
-      // - private, no-store for admin moderation views to prevent stale edge/browser caching after status changes
+      // - Moderated media: Serve with Cache-Control: private, no-cache for unapproved/pending states
+      // - Serve with Cache-Control: public, max-age=86400, stale-while-revalidate=3600 ONLY for approved states
       const cacheControl = isApproved
-        ? 'public, max-age=86400, immutable'
-        : 'private, no-store';
+        ? 'public, max-age=86400, stale-while-revalidate=3600'
+        : 'private, no-cache';
 
       return new Response(asset.data.buffer, {
         status: 200,
         headers: {
-          'Content-Type': asset.mimeType,
-          'Content-Length': String(asset.fileSize || asset.data.byteLength),
+          'Content-Type': verifiedMime,
+          'Content-Length': String(asset.data.byteLength),
           'Cache-Control': cacheControl,
           'X-Content-Type-Options': 'nosniff',
           'Content-Security-Policy': "default-src 'none'",
-          'Vary': 'Accept',
+          'Vary': 'Accept, Origin, Cookie, Authorization',
           ...getCorsHeaders(request, env),
         },
       });
@@ -4410,6 +4490,24 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         return jsonResponse({ success: false, error: 'Review not found.' }, 404);
       }
 
+      // Edge cache invalidation when review is rejected or status transitions away from approved
+      if (updates.status === 'rejected' || updates.status === 'pending') {
+        if (typeof caches !== 'undefined' && (caches as any).default) {
+          try {
+            const origin = new URL(request.url).origin;
+            const imgs = Array.isArray(updated.images) ? updated.images : [];
+            for (const img of imgs) {
+              const imgMatch = String(img).match(/\/api\/reviews\/images\/([a-zA-Z0-9_\-]+)/);
+              if (imgMatch) {
+                await (caches as any).default.delete(new Request(`${origin}/api/reviews/images/${imgMatch[1]}`));
+              }
+            }
+          } catch (cacheErr) {
+            console.warn('[Cache Invalidation Warning]:', cacheErr);
+          }
+        }
+      }
+
       return jsonResponse({ success: true, review: updated });
     } catch (err: any) {
       logServerError({ route: path, method, error: err, action: 'review.manage' });
@@ -4428,7 +4526,25 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     if (permErr) return permErr;
 
     try {
+      const existingReview = await getReviewById(env.DB, revId).catch(() => null);
+
       await deleteReviewFromD1(env.DB, revId);
+
+      // Edge cache invalidation when review is deleted
+      if (typeof caches !== 'undefined' && (caches as any).default && existingReview && Array.isArray(existingReview.images)) {
+        try {
+          const origin = new URL(request.url).origin;
+          for (const img of existingReview.images) {
+            const imgMatch = String(img).match(/\/api\/reviews\/images\/([a-zA-Z0-9_\-]+)/);
+            if (imgMatch) {
+              await (caches as any).default.delete(new Request(`${origin}/api/reviews/images/${imgMatch[1]}`));
+            }
+          }
+        } catch (cacheErr) {
+          console.warn('[Cache Invalidation Warning]:', cacheErr);
+        }
+      }
+
       return jsonResponse({ success: true, message: `Review deleted successfully.` });
     } catch (err: any) {
       logServerError({ route: path, method, error: err, action: 'review.delete' });

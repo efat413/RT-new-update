@@ -486,6 +486,7 @@ function localApiDevPlugin(): Plugin {
     }
   };
   const devMedia = new Map<string, { buffer: Buffer; contentType: string }>();
+  const devReviewImages = new Map<string, { buffer: Buffer; mimeType: string; reviewId?: string }>();
   let devExpenses: any[] = [];
   let devCourierWebhooks: any[] = Array.isArray(devSettings.courierWebhooks) ? devSettings.courierWebhooks : [];
   let devCourierWebhookLogs: any[] = [];
@@ -3850,7 +3851,14 @@ function localApiDevPlugin(): Plugin {
 
             const existingIndex = devReviews.findIndex((rev) => rev.id === revId);
             if (existingIndex !== -1) {
-              const targetProductId = devReviews[existingIndex].productId;
+              const targetRev = devReviews[existingIndex];
+              const targetProductId = targetRev.productId;
+              if (Array.isArray(targetRev.images)) {
+                for (const imgUri of targetRev.images) {
+                  const m = String(imgUri).match(/\/api\/reviews\/images\/([a-zA-Z0-9_\-]+)/);
+                  if (m) devReviewImages.delete(m[1]);
+                }
+              }
               devReviews.splice(existingIndex, 1);
               recalculateDevProductRating(targetProductId);
             }
@@ -5245,14 +5253,19 @@ function localApiDevPlugin(): Plugin {
               devMedia.set(key, { buffer: fileBuffer, contentType: verifiedMime });
 
               // Pre-generate standard responsive variants (240, 360, 480, 720, 1080)
+              // Isolate variant generation: WebP variants are non-blocking/optional
               try {
                 const sharpModule = await import('sharp');
                 const sharp = (sharpModule as any).default || sharpModule;
                 const baseKeyWithoutExt = key.replace(/\.[^.]+$/, '');
                 const standardWidths = [240, 360, 480, 720, 1080];
                 for (const w of standardWidths) {
-                  const webpBuf = await sharp(fileBuffer).resize(w, null, { withoutEnlargement: true, fit: 'inside' }).webp({ quality: 82 }).toBuffer();
-                  devMedia.set(`${baseKeyWithoutExt}_w${w}.webp`, { buffer: webpBuf, contentType: 'image/webp' });
+                  try {
+                    const webpBuf = await sharp(fileBuffer).resize(w, null, { withoutEnlargement: true, fit: 'inside' }).webp({ quality: 82 }).toBuffer();
+                    devMedia.set(`${baseKeyWithoutExt}_w${w}.webp`, { buffer: webpBuf, contentType: 'image/webp' });
+                  } catch (singleErr) {
+                    console.warn(`[Dev variant skipped for width ${w}]:`, singleErr);
+                  }
                 }
               } catch (e) {
                 console.warn('Dev variant pre-generation error:', e);
@@ -5313,7 +5326,9 @@ function localApiDevPlugin(): Plugin {
             for (const varKey of candidateKeys) {
               const variantItem = devMedia.get(varKey);
               if (variantItem) {
-                const headers = getSafeMediaHeaders('image/webp');
+                const varVal = validateImageBuffer(variantItem.buffer);
+                const varMime = varVal.valid && varVal.mime ? varVal.mime : 'image/webp';
+                const headers = getSafeMediaHeaders(varMime);
                 for (const [hName, hVal] of Object.entries(headers)) {
                   res.setHeader(hName, hVal);
                 }
@@ -5326,12 +5341,21 @@ function localApiDevPlugin(): Plugin {
 
           const item = devMedia.get(key);
           if (item) {
+            // Strictly inspect magic bytes before responding
+            const rawVal = validateImageBuffer(item.buffer);
+            if (!rawVal.valid || !rawVal.mime) {
+              res.statusCode = 400;
+              res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+              return res.end('Invalid or corrupted image data');
+            }
+            const verifiedMime = rawVal.mime;
+
             if (targetWidth && targetWidth > 0 && targetWidth <= 2400) {
               try {
                 const sharpModule = await import('sharp');
                 const sharp = (sharpModule as any).default || sharpModule;
                 const accept = (req.headers['accept'] || '') as string;
-                const wantsWebp = accept.includes('image/webp') || item.contentType !== 'image/gif';
+                const wantsWebp = accept.includes('image/webp') || verifiedMime !== 'image/gif';
 
                 const effectiveWidth = matchedWidth || targetWidth;
                 let pipeline = sharp(item.buffer).resize(effectiveWidth, null, {
@@ -5351,7 +5375,7 @@ function localApiDevPlugin(): Plugin {
                   return res.end(webpBuffer);
                 } else {
                   const resizedBuffer = await pipeline.toBuffer();
-                  const headers = getSafeMediaHeaders(item.contentType);
+                  const headers = getSafeMediaHeaders(verifiedMime);
                   for (const [hName, hVal] of Object.entries(headers)) {
                     res.setHeader(hName, hVal);
                   }
@@ -5364,7 +5388,7 @@ function localApiDevPlugin(): Plugin {
               }
             }
 
-            const headers = getSafeMediaHeaders(item.contentType);
+            const headers = getSafeMediaHeaders(verifiedMime);
             for (const [hName, hVal] of Object.entries(headers)) {
               res.setHeader(hName, hVal);
             }
@@ -5372,7 +5396,86 @@ function localApiDevPlugin(): Plugin {
             return res.end(item.buffer);
           }
           res.statusCode = 404;
+          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
           return res.end('Media asset not found');
+        }
+
+        // Review images endpoint in dev
+        const devReviewImageMatch = url.pathname.match(/^\/api\/reviews\/images\/([^/]+)$/);
+        if (devReviewImageMatch && method === 'GET') {
+          const imageId = decodeURIComponent(devReviewImageMatch[1]).trim();
+          if (!imageId || !/^[a-zA-Z0-9_\-]+$/.test(imageId)) {
+            res.statusCode = 400;
+            res.setHeader('Content-Type', 'application/json');
+            return res.end(JSON.stringify({ success: false, error: 'Invalid review image ID format.' }));
+          }
+
+          const devImgItem = devReviewImages.get(imageId);
+          let imgBuffer: Buffer | null = devImgItem?.buffer || null;
+          let reviewStatus: string | null = null;
+
+          // Find associated review in devReviews
+          const parentReview = devReviews.find((r) =>
+            (r.images || []).some((imgUri: string) => imgUri.includes(imageId)) ||
+            devImgItem?.reviewId === r.id
+          );
+          if (parentReview) {
+            reviewStatus = parentReview.status || 'pending';
+          }
+
+          if (!imgBuffer) {
+            res.statusCode = 404;
+            res.setHeader('Cache-Control', 'private, no-cache, no-store, must-revalidate');
+            res.setHeader('Content-Type', 'application/json');
+            return res.end(JSON.stringify({ success: false, error: 'Review image not found.' }));
+          }
+
+          const isApproved = reviewStatus === 'approved';
+
+          if (!isApproved) {
+            const authResult = requireDevAuth(req);
+            if (authResult.error || !authResult.auth) {
+              res.statusCode = 404;
+              res.setHeader('Cache-Control', 'private, no-cache, no-store, must-revalidate');
+              res.setHeader('Content-Type', 'application/json');
+              return res.end(JSON.stringify({ success: false, error: 'Review image not found.' }));
+            }
+
+            const canView =
+              hasDevPermission(authResult.auth, 'reviews.view') ||
+              hasDevPermission(authResult.auth, 'review.view') ||
+              hasDevPermission(authResult.auth, 'review.manage') ||
+              authResult.auth.role === 'super_admin';
+
+            if (!canView) {
+              res.statusCode = 404;
+              res.setHeader('Cache-Control', 'private, no-cache, no-store, must-revalidate');
+              res.setHeader('Content-Type', 'application/json');
+              return res.end(JSON.stringify({ success: false, error: 'Review image not found.' }));
+            }
+          }
+
+          // Strictly inspect magic bytes
+          const val = validateImageBuffer(imgBuffer);
+          if (!val.valid || !val.mime) {
+            res.statusCode = 400;
+            res.setHeader('Cache-Control', 'private, no-cache, no-store, must-revalidate');
+            res.setHeader('Content-Type', 'application/json');
+            return res.end(JSON.stringify({ success: false, error: 'Corrupted review image binary.' }));
+          }
+
+          const cacheControl = isApproved
+            ? 'public, max-age=86400, stale-while-revalidate=3600'
+            : 'private, no-cache';
+
+          res.setHeader('Content-Type', val.mime);
+          res.setHeader('Content-Length', String(imgBuffer.length));
+          res.setHeader('Cache-Control', cacheControl);
+          res.setHeader('X-Content-Type-Options', 'nosniff');
+          res.setHeader('Content-Security-Policy', "default-src 'none'");
+          res.setHeader('Vary', 'Accept, Origin, Cookie, Authorization');
+          res.statusCode = 200;
+          return res.end(imgBuffer);
         }
 
         // Courier endpoints in dev

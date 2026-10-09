@@ -7,7 +7,30 @@
   if (typeof window === 'undefined') return;
   try {
     const win = window;
-    let nativeFetch: any = typeof win.fetch === 'function' ? win.fetch.bind(win) : null;
+
+    // Suppress external browser extension unhandled exceptions
+    try {
+      win.addEventListener(
+        'error',
+        (event) => {
+          const src = (event && (event.filename || (event.error && event.error.stack))) || '';
+          if (
+            typeof src === 'string' &&
+            (src.includes('chrome-extension://') ||
+              src.includes('moz-extension://') ||
+              src.includes('safari-extension://'))
+          ) {
+            if (event.preventDefault) event.preventDefault();
+            if (event.stopPropagation) event.stopPropagation();
+            return true;
+          }
+        },
+        true
+      );
+    } catch {}
+
+    const rawFetch = win.fetch;
+    let nativeFetch: any = typeof rawFetch === 'function' ? rawFetch.bind(win) : rawFetch;
 
     if (typeof Window !== 'undefined' && Window.prototype) {
       try {
@@ -21,7 +44,7 @@
               nativeFetch = fn;
             },
             configurable: true,
-            enumerable: true,
+            enumerable: protoDesc.enumerable !== false,
           });
         }
       } catch {}
@@ -44,3 +67,4 @@
     } catch {}
   } catch {}
 })();
+

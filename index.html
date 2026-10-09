@@ -3,6 +3,50 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      (function() {
+        if (typeof window === 'undefined') return;
+        try {
+          window.addEventListener('error', function(event) {
+            var src = (event && (event.filename || (event.error && event.error.stack))) || '';
+            if (typeof src === 'string' && (src.indexOf('chrome-extension://') !== -1 || src.indexOf('moz-extension://') !== -1 || src.indexOf('safari-extension://') !== -1)) {
+              if (event.preventDefault) event.preventDefault();
+              if (event.stopPropagation) event.stopPropagation();
+              return true;
+            }
+          }, true);
+
+          var rawFetch = window.fetch;
+          var fetchHolder = typeof rawFetch === 'function' ? rawFetch.bind(window) : rawFetch;
+
+          if (typeof Window !== 'undefined' && Window.prototype) {
+            try {
+              var protoDesc = Object.getOwnPropertyDescriptor(Window.prototype, 'fetch');
+              if (protoDesc && protoDesc.configurable && !protoDesc.set) {
+                Object.defineProperty(Window.prototype, 'fetch', {
+                  get: function() { return fetchHolder; },
+                  set: function(fn) { fetchHolder = fn; },
+                  configurable: true,
+                  enumerable: protoDesc.enumerable !== false
+                });
+              }
+            } catch (e) {}
+          }
+
+          try {
+            var winDesc = Object.getOwnPropertyDescriptor(window, 'fetch');
+            if (!winDesc || (winDesc.configurable !== false && !winDesc.set)) {
+              Object.defineProperty(window, 'fetch', {
+                get: function() { return fetchHolder; },
+                set: function(fn) { fetchHolder = fn; },
+                configurable: true,
+                enumerable: true
+              });
+            }
+          } catch (e) {}
+        } catch (e) {}
+      })();
+    </script>
     <link rel="icon" type="image/jpeg" href="https://i.pinimg.com/736x/bb/fe/59/bbfe59570509bbc00e9d703fd45ada18.jpg" />
     <title>Rongodhonu Trade | রঙধনু ট্রেড - Online Shopping in Bangladesh</title>
     <meta name="description" content="Rongodhonu Trade (রঙধনু ট্রেড / Rongdhonu) - বাংলাদেশের বিশ্বস্ত অনলাইন শপ। ঘড়ি, ব্রেসলেট, মানিব্যাগ, হেডফোন, TWS ইয়ারবাডস ও আকর্ষণীয় গিফট আইটেম কিনুন ক্যাশ অন ডেলিভারিতে। রংধনু কালেকশন।" />
