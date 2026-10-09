@@ -42,6 +42,7 @@ import {
   getAdminReviews,
   insertReview,
   updateReviewStatusInD1,
+  updateReviewVerifiedStatusInD1,
   deleteReviewFromD1,
   verifyCustomerPurchaseInD1,
   // Users
@@ -3844,12 +3845,13 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           return jsonResponse({ success: false, error: 'Selected product does not exist.' }, 404);
         }
 
+        const isVerified = Boolean(reviewData.verifiedPurchase);
         const created = await insertReview(env.DB, {
           productId: prod.id,
           authorName,
           comment,
           rating,
-          verifiedPurchase: false, // Admin-created reviews are NEVER falsely marked as verified purchase
+          verifiedPurchase: isVerified,
           createdByAdmin: true,
           status: allowedStatus,
           moderatorId: auth!.dbUser.id,
@@ -3932,6 +3934,50 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       return jsonResponse({ success: true, review: updated });
     } catch (err: any) {
       logServerError({ route: path, method, error: err, action: 'review.moderate' });
+      return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+    }
+  }
+
+  // 6.2b Review verified customer badge endpoint
+  const adminReviewVerifiedMatch = path.match(/^\/api\/(?:admin\/)?reviews\/([^/]+)\/verified$/);
+  if (adminReviewVerifiedMatch && (method === 'PATCH' || method === 'PUT')) {
+    const revId = decodeURIComponent(adminReviewVerifiedMatch[1]);
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    if (!hasPermission(auth!, 'review.manage')) {
+      return jsonResponse({ success: false, error: 'Forbidden: Insufficient review management permissions.' }, 403);
+    }
+
+    try {
+      const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+      if (jsonErr) return jsonErr;
+
+      const isVerified = body?.verified !== undefined ? Boolean(body.verified) : true;
+      const updated = await updateReviewVerifiedStatusInD1(env.DB, revId, isVerified);
+
+      if (!updated) {
+        return jsonResponse({ success: false, error: 'Review not found.' }, 404);
+      }
+
+      // Record in audit log
+      try {
+        const isDev = isDevEnvironment(env);
+        const clientIp = getClientIp(request, isDev);
+        await insertAuditLogInD1(env.DB, {
+          actorId: auth!.dbUser.id,
+          actorEmail: auth!.dbUser.email,
+          actorRole: auth!.role,
+          action: 'REVIEW_VERIFIED_BADGE_TOGGLED',
+          targetId: revId,
+          targetType: 'review',
+          details: `Updated verified badge for review ${revId} to ${isVerified}`,
+          ipAddress: clientIp,
+        });
+      } catch {}
+
+      return jsonResponse({ success: true, review: updated });
+    } catch (err: any) {
+      logServerError({ route: path, method, error: err, action: 'review.verified' });
       return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
     }
   }

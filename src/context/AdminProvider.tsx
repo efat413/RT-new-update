@@ -1520,12 +1520,32 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, [fetchAdminReviews, refreshAllStoreData, showNotification]);
 
+  const adminToggleVerifiedReview = useCallback(async (id: string, verified: boolean) => {
+    try {
+      const updated = await reviewsApi.adminToggleVerified(id, verified);
+      setAdminReviews((prev) => prev.map((r) => r.id === id ? updated : r));
+      showNotification(
+        'success',
+        verified ? 'Verified Customer Badge Added 🛡️' : 'Verified Badge Removed',
+        verified
+          ? 'Customer review has been marked with the Verified Customer badge.'
+          : 'Verified Customer badge removed from this review.'
+      );
+      refreshAllStoreData(true);
+      return { success: true, review: updated };
+    } catch (err: any) {
+      showNotification('error', 'Update Failed', err?.message || 'Failed to update verified badge');
+      return { success: false, error: err?.message || 'Failed to update verified badge' };
+    }
+  }, [refreshAllStoreData, showNotification]);
+
   const adminCreateReview = useCallback(async (review: {
     productId: string;
     authorName: string;
     rating: number;
     comment: string;
     status?: 'approved' | 'pending';
+    verifiedPurchase?: boolean;
     moderationNote?: string;
   }) => {
     try {
@@ -1535,7 +1555,7 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       showNotification(
         'success',
         'Review Created',
-        `Review created successfully with status: ${created.status || 'approved'}.`
+        `Review created successfully with status: ${created.status || 'pending'}.`
       );
       fetchAdminReviews();
       refreshAllStoreData(true);
@@ -1624,6 +1644,23 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     orderSummary,
     orderQueryFilters,
     setOrderQueryFilters,
+    adminReviews,
+    adminReviewsTotal,
+    adminReviewsPage,
+    setAdminReviewsPage,
+    adminReviewsLimit,
+    setAdminReviewsLimit,
+    adminReviewsTotalPages,
+    adminReviewsCounts,
+    isAdminReviewsLoading,
+    adminReviewFilters,
+    setAdminReviewFilters,
+    fetchAdminReviews,
+    adminApproveReview,
+    adminRejectReview,
+    adminDeleteReview,
+    adminToggleVerifiedReview,
+    adminCreateReview,
   }), [
     adminActiveTab,
     adminSettingsSection,
@@ -1695,6 +1732,20 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     orderTotalPages,
     orderSummary,
     orderQueryFilters,
+    adminReviews,
+    adminReviewsTotal,
+    adminReviewsPage,
+    adminReviewsLimit,
+    adminReviewsTotalPages,
+    adminReviewsCounts,
+    isAdminReviewsLoading,
+    adminReviewFilters,
+    fetchAdminReviews,
+    adminApproveReview,
+    adminRejectReview,
+    adminDeleteReview,
+    adminToggleVerifiedReview,
+    adminCreateReview,
   ]);
 
   return <AdminContext.Provider value={value}>{children}</AdminContext.Provider>;

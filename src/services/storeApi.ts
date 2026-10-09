@@ -710,12 +710,30 @@ export const reviewsApi = {
     return res.data.review;
   },
 
+  async adminToggleVerified(
+    id: string,
+    verified: boolean
+  ): Promise<ProductReview> {
+    const res = await apiRequest<{ success: boolean; review: ProductReview }>(
+      `${API_BASE}/admin/reviews/${encodeURIComponent(id)}/verified`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ verified }),
+      }
+    );
+    if (!res.success || !res.data?.review) {
+      throw new Error(res.error || 'Failed to update customer verification badge.');
+    }
+    return res.data.review;
+  },
+
   async adminCreate(review: {
     productId: string;
     authorName: string;
     rating: number;
     comment: string;
     status?: 'approved' | 'pending';
+    verifiedPurchase?: boolean;
     moderationNote?: string;
   }): Promise<ProductReview> {
     const res = await apiRequest<{ success: boolean; review: ProductReview }>(`${API_BASE}/admin/reviews`, {

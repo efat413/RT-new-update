@@ -1696,7 +1696,8 @@ const AdminPanelContent: React.FC = () => {
   const [adminReviewAuthor, setAdminReviewAuthor] = useState('Verified Customer');
   const [adminReviewRating, setAdminReviewRating] = useState(5);
   const [adminReviewComment, setAdminReviewComment] = useState('');
-  const [adminReviewStatus, setAdminReviewStatus] = useState<'approved' | 'pending'>('approved');
+  const [adminReviewStatus, setAdminReviewStatus] = useState<'approved' | 'pending'>('pending');
+  const [adminReviewVerified, setAdminReviewVerified] = useState(true);
   const [adminReviewNote, setAdminReviewNote] = useState('Staff Added');
   const [adminReviewSubmitting, setAdminReviewSubmitting] = useState(false);
   const [adminReviewError, setAdminReviewError] = useState<string | null>(null);
@@ -1706,7 +1707,8 @@ const AdminPanelContent: React.FC = () => {
     setAdminReviewAuthor('Verified Customer');
     setAdminReviewRating(5);
     setAdminReviewComment('');
-    setAdminReviewStatus('approved');
+    setAdminReviewStatus('pending');
+    setAdminReviewVerified(true);
     setAdminReviewNote('Staff Added');
     setAdminReviewError(null);
   };
@@ -1739,6 +1741,7 @@ const AdminPanelContent: React.FC = () => {
         rating: adminReviewRating,
         comment: adminReviewComment.trim(),
         status: adminReviewStatus,
+        verifiedPurchase: adminReviewVerified,
         moderationNote: adminReviewNote.trim() || undefined,
       });
 
@@ -9871,7 +9874,7 @@ const AdminPanelContent: React.FC = () => {
                 </div>
               </div>
 
-              {/* Review Text */}
+              {/* Customer Review Comment */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
                   Customer Review Comment *
@@ -9886,6 +9889,27 @@ const AdminPanelContent: React.FC = () => {
                   className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 focus:border-rose-500 focus:ring-2 focus:ring-rose-500/20 focus:outline-none"
                 />
               </div>
+
+              {/* Verified Customer Badge Toggle */}
+              <label className="p-3 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-between cursor-pointer hover:bg-slate-100/70 transition-colors">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                  <div>
+                    <span className="font-bold text-xs text-slate-800 block">
+                      Verified Customer Badge (ভেরিফাইড কাস্টমার ব্যাজ)
+                    </span>
+                    <span className="text-[10px] text-slate-500">
+                      Show official green Verified Customer badge on storefront
+                    </span>
+                  </div>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={adminReviewVerified}
+                  onChange={(e) => setAdminReviewVerified(e.target.checked)}
+                  className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 border-slate-300 cursor-pointer"
+                />
+              </label>
 
               {/* Status Selection */}
               <div>

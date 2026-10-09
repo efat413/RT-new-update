@@ -3389,6 +3389,7 @@ function localApiDevPlugin(): Plugin {
                 return res.end(JSON.stringify({ success: false, error: 'Selected product does not exist.' }));
               }
 
+              const isVerifiedBadge = Boolean(r.verifiedPurchase);
               const newR = {
                 id: r.id || `rev-${Date.now()}`,
                 productId: targetProduct.id,
@@ -3396,7 +3397,7 @@ function localApiDevPlugin(): Plugin {
                 author: authorName,
                 rating,
                 comment,
-                verifiedPurchase: false, // Never falsely label admin-created review as verified purchase
+                verifiedPurchase: isVerifiedBadge,
                 status: allowedStatus,
                 moderatorId: authResult.auth!.user.id,
                 moderatedAt: allowedStatus === 'approved' ? new Date().toISOString() : undefined,
@@ -3446,8 +3447,39 @@ function localApiDevPlugin(): Plugin {
             targetRev.moderatorId = authResult.auth!.user.id;
             targetRev.moderatedAt = new Date().toISOString();
             if (body?.note) targetRev.moderationNote = String(body.note).slice(0, 250);
+            if (body?.verified !== undefined) targetRev.verifiedPurchase = Boolean(body.verified);
 
             recalculateDevProductReviews(targetRev.productId);
+
+            res.statusCode = 200;
+            return res.end(JSON.stringify({ success: true, review: targetRev }));
+          });
+        }
+
+        // 6.2b Review verified customer badge toggle (admin only)
+        const devReviewVerifiedMatch = url.pathname.match(/^\/api\/(?:admin\/)?reviews\/([^/]+)\/verified$/);
+        if (devReviewVerifiedMatch && (method === 'PATCH' || method === 'PUT')) {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          if (!hasDevPermission(authResult.auth!, 'review.manage')) {
+            return sendDevError(res, {
+              status: 403,
+              body: { success: false, error: 'Forbidden: Insufficient review management permissions.' },
+            });
+          }
+
+          const revId = decodeURIComponent(devReviewVerifiedMatch[1]);
+          return readBody((body) => {
+            const targetRev = devReviews.find((r) => r.id === revId);
+            if (!targetRev) {
+              res.statusCode = 404;
+              return res.end(JSON.stringify({ success: false, error: 'Review not found.' }));
+            }
+
+            const isVerified = body?.verified !== undefined ? Boolean(body.verified) : !targetRev.verifiedPurchase;
+            targetRev.verifiedPurchase = isVerified;
+            targetRev.moderatorId = authResult.auth!.user.id;
+            targetRev.moderatedAt = new Date().toISOString();
 
             res.statusCode = 200;
             return res.end(JSON.stringify({ success: true, review: targetRev }));

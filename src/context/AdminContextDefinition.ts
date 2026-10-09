@@ -156,7 +156,8 @@ export interface AdminContextType {
   adminApproveReview: (id: string, note?: string) => Promise<{ success: boolean; review?: ProductReview; error?: string }>;
   adminRejectReview: (id: string, note?: string) => Promise<{ success: boolean; review?: ProductReview; error?: string }>;
   adminDeleteReview: (id: string) => Promise<{ success: boolean; error?: string }>;
-  adminCreateReview: (review: { productId: string; authorName: string; rating: number; comment: string; status?: 'approved' | 'pending'; moderationNote?: string }) => Promise<{ success: boolean; review?: ProductReview; error?: string }>;
+  adminToggleVerifiedReview?: (id: string, verified: boolean) => Promise<{ success: boolean; review?: ProductReview; error?: string }>;
+  adminCreateReview: (review: { productId: string; authorName: string; rating: number; comment: string; status?: 'approved' | 'pending'; verifiedPurchase?: boolean; moderationNote?: string }) => Promise<{ success: boolean; review?: ProductReview; error?: string }>;
 }
 
 export const AdminContext = createContext<AdminContextType | null>(null);

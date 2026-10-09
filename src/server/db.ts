@@ -2688,12 +2688,12 @@ export async function insertReview(db: D1Database, input: any): Promise<ProductR
   const authorName = (input.authorName || input.author || 'Customer').trim();
   const rating = Math.min(5, Math.max(1, Number(input.rating) || 5));
   const comment = input.comment || '';
-  // Security Hardening: strictly default to 0 (unverified) unless server logic explicitly sets true
-  const verifiedPurchase = input.verifiedPurchase === true ? 1 : 0;
   const createdAt = input.createdAt || new Date().toISOString();
 
   // Explicit moderation status controls
   const createdByAdmin = input.createdByAdmin === true ? 1 : 0;
+  // If created by admin, allow setting verifiedPurchase badge; otherwise require authoritative verification
+  const verifiedPurchase = createdByAdmin ? (input.verifiedPurchase ? 1 : 0) : (input.verifiedPurchase === true ? 1 : 0);
   const status = input.status === 'approved' ? 'approved' : (input.status === 'rejected' ? 'rejected' : 'pending');
   const moderatorId = input.moderatorId || (createdByAdmin ? 'admin' : null);
   const moderatedAt = input.moderatedAt || (status === 'approved' && createdByAdmin ? createdAt : null);
@@ -2780,6 +2780,31 @@ export async function updateReviewStatusInD1(
 
   // Recalculate aggregates for the product so public rating & counts reflect approval or rejection
   await recalculateProductReviewAggregates(db, existing.product_id);
+
+  let updated: any = null;
+  try {
+    updated = await db.prepare(`SELECT ${ADMIN_REVIEW_COLUMNS} FROM reviews WHERE id = ?`).bind(id).first<ReviewRow>();
+  } catch {
+    updated = await db.prepare(`SELECT ${PUBLIC_REVIEW_COLUMNS} FROM reviews WHERE id = ?`).bind(id).first<ReviewRow>();
+  }
+  return updated ? rowToReview(updated) : null;
+}
+
+/**
+  * Updates customer verified purchase badge on a review (admin action)
+  */
+export async function updateReviewVerifiedStatusInD1(
+  db: D1Database,
+  id: string,
+  verified: boolean
+): Promise<ProductReview | null> {
+  const existing = await db.prepare('SELECT * FROM reviews WHERE id = ?').bind(id).first<ReviewRow>();
+  if (!existing) return null;
+
+  await db
+    .prepare('UPDATE reviews SET verified_purchase = ? WHERE id = ?')
+    .bind(verified ? 1 : 0, id)
+    .run();
 
   let updated: any = null;
   try {

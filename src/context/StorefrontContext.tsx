@@ -656,7 +656,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [reviews, setReviews] = useState<ProductReview[]>([]);
 
   const getProductReviews = useCallback((productId: string) => {
-    return reviews.filter((r) => r.productId === productId);
+    return reviews.filter((r) => r.productId === productId && (r.status === 'approved' || (!r.status && !r.id.startsWith('rev-pending'))));
   }, [reviews]);
 
   const refreshProductReviews = useCallback(async (productId?: string) => {

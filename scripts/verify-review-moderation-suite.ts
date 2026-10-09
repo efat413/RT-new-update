@@ -287,6 +287,18 @@ class MockPreparedStatement {
       return { success: false };
     }
 
+    // UPDATE reviews SET verified_purchase = ? WHERE id = ?
+    if (s.startsWith('UPDATE reviews SET verified_purchase = ? WHERE id = ?') || (s.includes('UPDATE reviews') && s.includes('verified_purchase = ?'))) {
+      const verified = Number(this.params[0]);
+      const revId = this.params[1];
+      const r = this.db.getReviews().find((x) => x.id === revId);
+      if (r) {
+        r.verified_purchase = verified;
+        return { success: true };
+      }
+      return { success: false };
+    }
+
     // DELETE FROM reviews WHERE id = ?
     if (s.startsWith('DELETE FROM reviews WHERE id = ?')) {
       const revId = this.params[0];
@@ -987,6 +999,75 @@ async function runReviewModerationSuite() {
   assert(
     auditLogs.some((l) => l.action === 'REVIEW_CREATED_ADMIN'),
     '12.7 REVIEW_CREATED_ADMIN action was recorded in audit logs'
+  );
+
+  // ----------------------------------------------------
+  // TEST 13: Admin Verified Customer Badge Management
+  // ----------------------------------------------------
+  console.log('\n--- TEST 13: Admin Verified Customer Badge Management ---');
+  // 13.1 Admin toggle verified customer badge on unverified review
+  const toggleVerifiedReq = new Request(`http://localhost:3000/api/admin/reviews/rev-legacy-1/verified`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${moderatorToken}`,
+    },
+    body: JSON.stringify({ verified: true }),
+  });
+  const toggleVerifiedRes = await handleApiRequest(toggleVerifiedReq, env);
+  const toggleVerifiedData = await toggleVerifiedRes.json();
+  assert(
+    toggleVerifiedRes.status === 200 && toggleVerifiedData.success === true,
+    '13.1 Admin successfully sets verified customer badge (HTTP 200)'
+  );
+  assert(
+    toggleVerifiedData.review.verifiedPurchase === true,
+    '13.2 Review verifiedPurchase updated to true'
+  );
+
+  // 13.3 Admin toggle verified badge to false
+  const toggleUnverifiedReq = new Request(`http://localhost:3000/api/admin/reviews/rev-legacy-1/verified`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${moderatorToken}`,
+    },
+    body: JSON.stringify({ verified: false }),
+  });
+  const toggleUnverifiedRes = await handleApiRequest(toggleUnverifiedReq, env);
+  const toggleUnverifiedData = await toggleUnverifiedRes.json();
+  assert(
+    toggleUnverifiedRes.status === 200 && toggleUnverifiedData.review.verifiedPurchase === false,
+    '13.3 Admin successfully removes verified customer badge (verifiedPurchase: false)'
+  );
+
+  // 13.4 Admin creates review with verified customer badge enabled
+  const adminCreateVerifiedReq = new Request('http://localhost:3000/api/admin/reviews', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${moderatorToken}`,
+    },
+    body: JSON.stringify({
+      review: {
+        productId: 'prod-test-01',
+        authorName: 'VIP Verified Customer',
+        rating: 5,
+        comment: 'Excellent handcrafted wallet! Verified badge applied by admin.',
+        status: 'approved',
+        verifiedPurchase: true,
+      },
+    }),
+  });
+  const adminCreateVerifiedRes = await handleApiRequest(adminCreateVerifiedReq, env);
+  const adminCreateVerifiedData = await adminCreateVerifiedRes.json();
+  assert(
+    adminCreateVerifiedRes.status === 201 && adminCreateVerifiedData.success === true,
+    '13.4 Admin review created with verified customer badge option (HTTP 201)'
+  );
+  assert(
+    adminCreateVerifiedData.review.verifiedPurchase === true,
+    '13.5 Created review includes verifiedPurchase = true badge'
   );
 
   console.log('\n========================================================');

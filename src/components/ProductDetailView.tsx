@@ -339,8 +339,9 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
   // 3. Normal Product Display
   const activeImage = imageList[selectedImageIdx] || product.imageUrl;
   const isSavedInWishlist = wishlist.includes(product.id);
+  // Storefront displays approved reviews only; pending reviews require admin moderation
   const productReviews = Array.isArray(reviews)
-    ? reviews.filter((r) => r && r.productId === product.id)
+    ? reviews.filter((r) => r && r.productId === product.id && (r.status === 'approved' || (!r.status && !r.id.startsWith('rev-pending'))))
     : [];
 
   const backendReviewsCount =
