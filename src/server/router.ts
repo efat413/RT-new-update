@@ -1746,6 +1746,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           success: true,
           message: 'Authentication successful',
           user: sanitizedUser,
+          token,
         },
         200,
         {

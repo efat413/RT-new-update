@@ -12,7 +12,7 @@ import {
   CourierWebhookConfig,
   CourierWebhookLog,
 } from '../types';
-import { isSessionUnauthorizedError, notifyAuthUnauthorized } from './authApi';
+import { isSessionUnauthorizedError, notifyAuthUnauthorized, getAuthToken } from './authApi';
 
 const API_BASE = '/api';
 
@@ -37,8 +37,10 @@ async function apiRequest<T>(url: string, options?: RequestInit, timeoutMs = 450
 
   try {
     const isMutation = options?.method && options.method.toUpperCase() !== 'GET' && options.method.toUpperCase() !== 'HEAD';
+    const token = getAuthToken();
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(isMutation ? { 'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0' } : {}),
       ...(options?.headers as Record<string, string> || {}),
     };
@@ -47,12 +49,34 @@ async function apiRequest<T>(url: string, options?: RequestInit, timeoutMs = 450
       ? `http://localhost:3000${url}`
       : url;
 
-    const res = await fetch(effectiveUrl, {
+    let res = await fetch(effectiveUrl, {
       ...options,
       credentials: 'include',
       headers,
       signal: controller.signal,
     });
+
+    // 1 automatic bounded retry on initial 401 to handle auth state initialization race condition
+    if (res.status === 401) {
+      await new Promise((r) => setTimeout(r, 150));
+      const retryToken = getAuthToken();
+      const retryHeaders: Record<string, string> = {
+        ...headers,
+        ...(retryToken ? { Authorization: `Bearer ${retryToken}` } : {}),
+      };
+      try {
+        const retryRes = await fetch(effectiveUrl, {
+          ...options,
+          credentials: 'include',
+          headers: retryHeaders,
+          signal: controller.signal,
+        });
+        if (retryRes.ok) {
+          res = retryRes;
+        }
+      } catch {}
+    }
+
     clearTimeout(timeoutId);
 
     const json = await res.json().catch(() => ({}));
@@ -60,7 +84,7 @@ async function apiRequest<T>(url: string, options?: RequestInit, timeoutMs = 450
       const rawError = json.error || json.message || (res.status >= 500 ? 'Something went wrong. Please try again.' : `Request failed (status ${res.status}).`);
       const errorMsg = safeErrorMessage(rawError, res.status);
       if (isSessionUnauthorizedError(res.status, errorMsg)) {
-        // Authenticated request rejected with 401: Cookie is invalid, expired, or revoked
+        // Authenticated request rejected with 401 after retry: Cookie/token is invalid or revoked
         notifyAuthUnauthorized({ url, error: errorMsg });
       }
       return {

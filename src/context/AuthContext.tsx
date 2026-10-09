@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { UserAccount, UserRole, AdminPermissions, MIN_PASSWORD_LENGTH } from '../types';
-import { authApi, onAuthUnauthorized } from '../services/authApi';
+import { authApi, onAuthUnauthorized, setAuthToken, removeAuthToken } from '../services/authApi';
 import { usersApi } from '../services/storeApi';
 import { hasUserPermission } from '../utils/permissions';
 import type { PermissionKey } from '../server/permissions';
@@ -220,15 +220,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const apiRes = await authApi.login(trimmedInput, trimmedPassword);
       if (apiRes.success && apiRes.user) {
         hadActiveSessionRef.current = true;
-        setCurrentUser(apiRes.user);
         const isPrivileged =
           apiRes.user.role === 'admin' ||
           apiRes.user.role === 'super_admin' ||
           apiRes.user.role === 'sub_admin';
 
-        setIsAdminLoggedIn(isPrivileged);
+        // Synchronously persist auth token and storage before publishing state to eliminate race condition
+        if (apiRes.token) {
+          setAuthToken(apiRes.token);
+        }
         persistAdminAuthToStorage(isPrivileged);
         persistCurrentUserToStorage(apiRes.user);
+
+        setIsAuthInitializing(false);
+        setCurrentUser(apiRes.user);
+        setIsAdminLoggedIn(isPrivileged);
 
         return { success: true, user: apiRes.user };
       }
@@ -278,10 +284,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (regRes.success && regRes.user) {
         hadActiveSessionRef.current = true;
-        setCurrentUser(regRes.user);
-        setIsAdminLoggedIn(false);
+        if (regRes.token) {
+          setAuthToken(regRes.token);
+        }
         persistAdminAuthToStorage(false);
         persistCurrentUserToStorage(regRes.user);
+
+        setIsAuthInitializing(false);
+        setCurrentUser(regRes.user);
+        setIsAdminLoggedIn(false);
         return { success: true, user: regRes.user };
       }
 
@@ -299,9 +310,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = useCallback(() => {
     hadActiveSessionRef.current = false;
+    removeAuthToken();
     authApi.logout();
     setCurrentUser(null);
     setIsAdminLoggedIn(false);
+    setIsAuthInitializing(false);
     persistAdminAuthToStorage(false);
     persistCurrentUserToStorage(null);
   }, []);
@@ -314,8 +327,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         res.user.role === 'super_admin' ||
         res.user.role === 'sub_admin';
       if (isPrivileged) {
-        setIsAdminLoggedIn(true);
         persistAdminAuthToStorage(true);
+        setIsAdminLoggedIn(true);
+        setIsAuthInitializing(false);
         return true;
       }
     }

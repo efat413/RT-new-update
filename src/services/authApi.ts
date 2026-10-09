@@ -12,9 +12,43 @@ export function onAuthUnauthorized(listener: AuthUnauthorizedListener): () => vo
   };
 }
 
+let inMemoryAuthToken: string | null = null;
+
+export function getAuthToken(): string | null {
+  if (inMemoryAuthToken) return inMemoryAuthToken;
+  if (typeof window === 'undefined') return null;
+  try {
+    const stored = localStorage.getItem('rongdhonu_auth_token') || sessionStorage.getItem('rongdhonu_auth_token');
+    if (stored) {
+      inMemoryAuthToken = stored;
+      return stored;
+    }
+  } catch {}
+  return null;
+}
+
+export function setAuthToken(token: string | null): void {
+  inMemoryAuthToken = token;
+  if (typeof window === 'undefined') return;
+  try {
+    if (token) {
+      localStorage.setItem('rongdhonu_auth_token', token);
+      sessionStorage.setItem('rongdhonu_auth_token', token);
+    } else {
+      localStorage.removeItem('rongdhonu_auth_token');
+      sessionStorage.removeItem('rongdhonu_auth_token');
+    }
+  } catch {}
+}
+
+export function removeAuthToken(): void {
+  setAuthToken(null);
+  purgeLegacyTokens(true);
+}
+
 /**
  * Completely purges all legacy browser storage tokens and caches.
- * Ensures the browser CANNOT read or store any authentication tokens.
+ * Ensures stale tokens are removed while preserving current valid session token unless logging out.
  */
 export function purgeLegacyTokens(includeUserSession: boolean = false): void {
   if (typeof window === 'undefined') return;
@@ -22,6 +56,9 @@ export function purgeLegacyTokens(includeUserSession: boolean = false): void {
     const keysToRemove: string[] = [];
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
+      if (k && !includeUserSession && (k === 'rongdhonu_auth_token' || k === 'rongdhonu_admin_auth_v1')) {
+        continue;
+      }
       if (k && (k.toLowerCase().includes('token') || (k.toLowerCase().includes('auth') && k !== 'rongdhonu_admin_auth_v1'))) {
         keysToRemove.push(k);
       }
@@ -33,6 +70,9 @@ export function purgeLegacyTokens(includeUserSession: boolean = false): void {
     const sessionKeysToRemove: string[] = [];
     for (let i = 0; i < sessionStorage.length; i++) {
       const k = sessionStorage.key(i);
+      if (k && !includeUserSession && k === 'rongdhonu_auth_token') {
+        continue;
+      }
       if (k && (k.toLowerCase().includes('token') || k.toLowerCase().includes('auth'))) {
         sessionKeysToRemove.push(k);
       }
@@ -45,6 +85,9 @@ export function purgeLegacyTokens(includeUserSession: boolean = false): void {
     localStorage.removeItem('rongdhonu_super_admin_pwd');
 
     if (includeUserSession) {
+      inMemoryAuthToken = null;
+      localStorage.removeItem('rongdhonu_auth_token');
+      sessionStorage.removeItem('rongdhonu_auth_token');
       localStorage.removeItem('rongdhonu_admin_auth_v1');
       localStorage.removeItem('rongdhonu_current_user');
     }
@@ -86,21 +129,6 @@ export function notifyAuthUnauthorized(details: { url: string; error?: string })
   }
 }
 
-/**
- * Deprecated compatibility stubs for legacy call sites.
- * Security Hardening: The browser does NOT store or read the authentication token.
- * All authentication relies exclusively on the HttpOnly cookie.
- */
-export function getAuthToken(): string | null {
-  return null;
-}
-export function setAuthToken(_token: string | null): void {
-  // No-op: Browser storage of auth token is completely removed.
-}
-export function removeAuthToken(): void {
-  purgeLegacyTokens();
-}
-
 let activeMePromise: Promise<{ success: boolean; user?: UserAccount; status?: number; error?: string }> | null = null;
 let cachedMeResult: {
   data: { success: boolean; user?: UserAccount; status?: number; error?: string };
@@ -116,13 +144,13 @@ export const authApi = {
 
   /**
    * Logs in a user or admin using email/username and password.
-   * Authentication token is securely managed exclusively via HttpOnly cookie.
-   * Raw token is NEVER returned in the JSON payload or stored in localStorage/sessionStorage.
+   * Authentication token is stored in memory and persisted for Authorization header fallback,
+   * alongside HttpOnly cookie credentials.
    */
   async login(
     usernameOrEmail: string,
     password: string
-  ): Promise<{ success: boolean; user?: UserAccount; error?: string }> {
+  ): Promise<{ success: boolean; user?: UserAccount; token?: string; error?: string }> {
     cachedMeResult = null;
     try {
       const res = await fetch(`${API_BASE}/auth/login`, {
@@ -143,9 +171,14 @@ export const authApi = {
         };
       }
 
+      if (data.token) {
+        setAuthToken(data.token);
+      }
+
       return {
         success: true,
         user: data.user,
+        token: data.token,
       };
     } catch (err: any) {
       return {
@@ -157,14 +190,13 @@ export const authApi = {
 
   /**
    * Registers a new customer account.
-   * Authentication token is securely set as an HttpOnly cookie and never exposed in JSON.
    */
   async register(data: {
     name: string;
     email: string;
     password: string;
     phone?: string;
-  }): Promise<{ success: boolean; user?: UserAccount; error?: string }> {
+  }): Promise<{ success: boolean; user?: UserAccount; token?: string; error?: string }> {
     cachedMeResult = null;
     try {
       const res = await fetch(`${API_BASE}/auth/register`, {
@@ -185,6 +217,10 @@ export const authApi = {
         };
       }
 
+      if (resData.token) {
+        setAuthToken(resData.token);
+      }
+
       cachedMeResult = {
         data: { success: true, status: res.status, user: resData.user },
         timestamp: Date.now(),
@@ -193,6 +229,7 @@ export const authApi = {
       return {
         success: true,
         user: resData.user,
+        token: resData.token,
       };
     } catch (err: any) {
       return {
@@ -203,8 +240,8 @@ export const authApi = {
   },
 
   /**
-   * Fetches the current authenticated user from the server using the HttpOnly cookie.
-   * Does NOT require or send an Authorization header.
+   * Fetches the current authenticated user from the server using HttpOnly cookie and Authorization header.
+   * Implements 1 clean bounded retry on initial 401 before declaring unauthorized.
    */
   async me(options?: { force?: boolean }): Promise<{ success: boolean; user?: UserAccount; status?: number; error?: string }> {
     if (!options?.force && cachedMeResult && (Date.now() - cachedMeResult.timestamp < ME_CACHE_TTL_MS)) {
@@ -221,14 +258,37 @@ export const authApi = {
           ? `http://localhost:3000${API_BASE}/auth/me`
           : `${API_BASE}/auth/me`;
 
-        const res = await fetch(effectiveUrl, {
+        const token = getAuthToken();
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        };
+
+        let res = await fetch(effectiveUrl, {
           method: 'GET',
           credentials: 'include',
-          headers: {
-            'Content-Type': 'application/json',
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
-          },
+          headers,
         });
+
+        // 1 automatic bounded retry on initial 401 to handle race condition with session persistence
+        if (res.status === 401) {
+          await new Promise((r) => setTimeout(r, 150));
+          const retryToken = getAuthToken();
+          try {
+            const retryRes = await fetch(effectiveUrl, {
+              method: 'GET',
+              credentials: 'include',
+              headers: {
+                ...headers,
+                ...(retryToken ? { Authorization: `Bearer ${retryToken}` } : {}),
+              },
+            });
+            if (retryRes.ok) {
+              res = retryRes;
+            }
+          } catch {}
+        }
 
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !data.success) {

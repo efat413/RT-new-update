@@ -749,15 +749,15 @@ const AdminPanelContent: React.FC = () => {
   const [monthProfit, setMonthProfit] = useState<ProfitAnalyticsSummary | null>(null);
 
   useEffect(() => {
-    if (canViewProfit) {
+    if (canViewProfit && isPrivilegedAdmin && !isAuthInitializing && currentUser) {
       profitAnalyticsApi.getSummary({ period: 'today' }).then((res) => setTodayProfit(res)).catch(() => {});
       profitAnalyticsApi.getSummary({ period: 'month' }).then((res) => setMonthProfit(res)).catch(() => {});
     }
-  }, [canViewProfit, orders.length]);
+  }, [canViewProfit, isPrivilegedAdmin, isAuthInitializing, currentUser, orders.length]);
 
   // Auto-Sync: When Admin Panel loads, run a background sync for active 'Shipped' orders to capture real-time delivery confirmations
   useEffect(() => {
-    if (isPrivilegedAdmin && (hasPermission('order.manage') || hasPermission('courier.dispatch') || hasPermission('canManageOrders'))) {
+    if (isPrivilegedAdmin && !isAuthInitializing && currentUser && (hasPermission('order.manage') || hasPermission('courier.dispatch') || hasPermission('canManageOrders'))) {
       const activeShipped = orders.filter(
         (o) =>
           (o.shippingStatus === 'Shipped' || o.courierStatus === 'In Transit') &&
@@ -767,14 +767,14 @@ const AdminPanelContent: React.FC = () => {
         syncAllCourierStatuses().catch(() => {});
       }
     }
-  }, [isPrivilegedAdmin]);
+  }, [isPrivilegedAdmin, isAuthInitializing, currentUser]);
 
   // Synchronize users directory directly from authoritative D1 database when Users tab is opened
   useEffect(() => {
-    if (activeTab === 'users' && hasPermission('canManageAccounts')) {
+    if (activeTab === 'users' && isPrivilegedAdmin && !isAuthInitializing && currentUser && hasPermission('canManageAccounts')) {
       fetchUsers().catch(() => {});
     }
-  }, [activeTab, hasPermission, fetchUsers]);
+  }, [activeTab, isPrivilegedAdmin, isAuthInitializing, currentUser, hasPermission, fetchUsers]);
 
   // --- INACTIVITY AUTO-LOGOUT (30 MINUTES CONTINUOUS INACTIVITY) ---
   const INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes

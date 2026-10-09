@@ -233,8 +233,9 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const lastMutationTimestampRef = useRef<number>(0);
 
   const refreshOrders = useCallback(async (overrideParams?: OrderQueryParams) => {
-    if (!isAdminLoggedIn || isAuthInitializing) return;
+    if (!isAdminLoggedIn || isAuthInitializing || !currentUser) return;
     const canFetchOrders =
+      currentUser.role === 'super_admin' ||
       hasPermission('order.view') ||
       hasPermission('order.manage') ||
       hasPermission('canManageOrders');
@@ -265,7 +266,7 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     } finally {
       setIsOrdersLoading(false);
     }
-  }, [isAdminLoggedIn, isAuthInitializing, hasPermission]);
+  }, [isAdminLoggedIn, isAuthInitializing, currentUser, hasPermission]);
 
   useEffect(() => {
     if (!isAdminLoggedIn || isAuthInitializing || !currentUser) return;
@@ -303,10 +304,10 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [setProducts]);
 
   useEffect(() => {
-    if (isAdminLoggedIn) {
+    if (isAdminLoggedIn && !isAuthInitializing && currentUser) {
       loadAdminAllProducts();
     }
-  }, [isAdminLoggedIn, loadAdminAllProducts]);
+  }, [isAdminLoggedIn, isAuthInitializing, currentUser, loadAdminAllProducts]);
 
   // Courier Configs
   const [courierConfigs, setCourierConfigs] = useState<CourierApiConfig[]>(() => {
@@ -377,7 +378,7 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   });
 
   const fetchUsers = useCallback(async (): Promise<UserAccount[]> => {
-    if (!isAdminLoggedIn || isAuthInitializing) return [];
+    if (!isAdminLoggedIn || isAuthInitializing || !currentUser) return [];
     try {
       const fetched = await usersApi.getAll();
       if (Array.isArray(fetched)) {
@@ -392,13 +393,13 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       console.warn('Failed to fetch users from D1:', err?.message || err);
       return [];
     }
-  }, [isAdminLoggedIn, isAuthInitializing]);
+  }, [isAdminLoggedIn, isAuthInitializing, currentUser]);
 
   useEffect(() => {
-    if (isAdminLoggedIn && !isAuthInitializing) {
+    if (isAdminLoggedIn && !isAuthInitializing && currentUser) {
       fetchUsers();
     }
-  }, [isAdminLoggedIn, isAuthInitializing, fetchUsers]);
+  }, [isAdminLoggedIn, isAuthInitializing, currentUser, fetchUsers]);
 
   // Financial & Profit Analytics
   const [profitSummary, setProfitSummary] = useState<ProfitAnalyticsSummary | null>(null);

@@ -1,5 +1,5 @@
 import { Order } from '../types';
-import { isSessionUnauthorizedError, notifyAuthUnauthorized } from './authApi';
+import { isSessionUnauthorizedError, notifyAuthUnauthorized, getAuthToken } from './authApi';
 
 export interface OrderSummaryStats {
   totalAll: number;
@@ -61,16 +61,18 @@ export interface PaginatedOrdersResponse {
 const API_BASE = '/api';
 
 function getHeaders(): Record<string, string> {
+  const token = getAuthToken();
   return {
     'Content-Type': 'application/json',
     'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 }
 
 /**
  * Client service to communicate with Cloudflare D1 Database via Cloudflare Worker/API.
  * Strongly validates HTTP status, JSON payload, and D1 database responses.
- * Uses pure HttpOnly cookie authentication (credentials: 'include').
+ * Uses pure HttpOnly cookie authentication (credentials: 'include') and Authorization header fallback.
  */
 export const orderApi = {
   /**
@@ -92,12 +94,29 @@ export const orderApi = {
       if (query.payment && query.payment !== 'all') url.searchParams.set('payment', query.payment);
       if (query.sortBy) url.searchParams.set('sortBy', query.sortBy);
 
-      const res = await fetch(url.toString(), {
+      let res = await fetch(url.toString(), {
         method: 'GET',
         credentials: 'include',
         headers: getHeaders(),
         signal: controller.signal,
       });
+
+      // 1 automatic bounded retry on initial 401 to handle auth state propagation race condition
+      if (res.status === 401) {
+        await new Promise((r) => setTimeout(r, 150));
+        try {
+          const retryRes = await fetch(url.toString(), {
+            method: 'GET',
+            credentials: 'include',
+            headers: getHeaders(),
+            signal: controller.signal,
+          });
+          if (retryRes.ok) {
+            res = retryRes;
+          }
+        } catch {}
+      }
+
       clearTimeout(timeoutId);
 
       const data: OrderApiResponse = await res.json().catch(() => ({ success: false }));
