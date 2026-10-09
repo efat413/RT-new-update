@@ -1,4 +1,4 @@
-import { Env, UserRow, D1Database } from './types';
+import { Env, UserRow, D1Database, OrderRow } from './types';
 import {
   checkTablesExist,
   // Products
@@ -69,6 +69,7 @@ import {
   insertOrder,
   updateOrderInD1,
   deleteOrderFromD1,
+  rowToOrder,
   // Schema & Sanitation
   sanitizeProductForRole,
   sanitizeOrderForRole,
@@ -1468,6 +1469,224 @@ async function sendPasswordResetEmail(
     console.error('[Auth Diagnostics] resend_failure: Network error communicating with Resend API', err?.message || err);
     return { success: false, error: 'Network error connecting to email service.' };
   }
+}
+
+/**
+ * Sanitizes a single CSV cell against CSV / Formula Injection attacks (CWE-1236).
+ * Prepends a single quote `'` if value begins with `=, +, -, @, \t, \r`.
+ * Wraps values containing commas, double quotes, tabs, or newlines in RFC-4180 standard quotes.
+ */
+export function sanitizeCsvCell(val: any): string {
+  if (val === null || val === undefined) return '';
+  let str = String(val);
+
+  // Formula injection defense: prepend single quote if text starts with formula operator (=, +, -, @, \t, \r)
+  if (/^[=+\-@\t\r\n]/.test(str)) {
+    str = `'${str}`;
+  }
+
+  // Normalize CRLF to LF internally
+  str = str.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+  // Escape internal double quotes and wrap in quotes if field contains commas, quotes, newlines, or tabs
+  if (str.includes('"') || str.includes(',') || str.includes('\n') || str.includes('\t')) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+
+  return str;
+}
+
+export interface CsvOrderExportOptions {
+  isSuperAdmin?: boolean;
+  canViewBuyingPrice?: boolean;
+  canViewProfit?: boolean;
+  format?: 'summary' | 'itemized';
+}
+
+/**
+ * Generates an RFC-4180 compliant CSV string with UTF-8 BOM (\uFEFF) for orders.
+ * Joins order_items consistently for accounting.
+ * Strictly excludes sensitive internal columns (card details, DBBL raw credentials/tokens, courier auth secrets).
+ */
+export function generateOrdersCsv(orders: Order[], options?: CsvOrderExportOptions): string {
+  const isItemized = options?.format === 'itemized';
+  const canViewCost = Boolean(options?.isSuperAdmin || options?.canViewBuyingPrice);
+  const canViewProfit = Boolean(options?.isSuperAdmin || options?.canViewProfit);
+
+  const rows: string[] = [];
+
+  if (isItemized) {
+    // 1. Accounting Line-Item View (1 row per order item joined consistently)
+    const headers = [
+      'Order Number',
+      'Order Date',
+      'Customer Name',
+      'Customer Phone',
+      'Customer Address',
+      'District',
+      'Delivery Zone',
+      'Item Title',
+      'SKU',
+      'Variant',
+      'Quantity',
+      'Unit Price (BDT)',
+      'Line Total (BDT)',
+      ...(canViewCost ? ['Unit Cost (BDT)', 'Line Cost (BDT)'] : []),
+      ...(canViewProfit ? ['Line Gross Profit (BDT)'] : []),
+      'Order Subtotal (BDT)',
+      'Delivery Fee (BDT)',
+      'Discount (BDT)',
+      'Coupon Code',
+      'Total Amount (BDT)',
+      'Advance Payment (BDT)',
+      'Due Amount (BDT)',
+      'Payment Method',
+      'Payment Status',
+      'Shipping Status',
+      'Courier Name',
+      'Courier Tracking',
+      'Consignment ID',
+      'Customer Notes',
+    ];
+    rows.push(headers.map(sanitizeCsvCell).join(','));
+
+    for (const ord of orders) {
+      const items = Array.isArray(ord.items) && ord.items.length > 0 ? ord.items : [null];
+      for (const it of items) {
+        const rawIt = it as any;
+        const itemTitle = rawIt ? (rawIt.product?.title || rawIt.title || 'Item') : 'N/A';
+        const itemSku = rawIt ? (rawIt.product?.sku || rawIt.sku || '') : '';
+        const itemVariant = rawIt ? [rawIt.selectedColor, rawIt.selectedSize].filter(Boolean).join(', ') : '';
+        const itemQty = rawIt ? (Number(rawIt.quantity) || 1) : 0;
+        const itemUnitPrice = rawIt ? (Number(rawIt.product?.price || rawIt.price) || 0) : 0;
+        const itemLineTotal = rawIt ? itemUnitPrice * itemQty : 0;
+        const itemUnitCost = rawIt
+          ? (Number(rawIt.productCost ? rawIt.productCost / itemQty : (rawIt.buyingPriceSnapshot || rawIt.product?.buyingPrice || 0)))
+          : 0;
+        const itemLineCost = rawIt ? itemUnitCost * itemQty : 0;
+        const itemLineProfit = itemLineTotal - itemLineCost;
+
+        const row = [
+          ord.orderNumber || ord.id,
+          ord.createdAt || '',
+          ord.customer?.fullName || '',
+          ord.customer?.phone || '',
+          ord.customer?.fullAddress || '',
+          ord.customer?.district || '',
+          ord.customer?.deliveryZone || '',
+          itemTitle,
+          itemSku,
+          itemVariant,
+          itemQty,
+          itemUnitPrice,
+          itemLineTotal,
+          ...(canViewCost ? [itemUnitCost, itemLineCost] : []),
+          ...(canViewProfit ? [itemLineProfit] : []),
+          ord.subtotal ?? 0,
+          ord.deliveryFee ?? 0,
+          ord.discountAmount ?? 0,
+          ord.couponCode || '',
+          ord.totalAmount ?? 0,
+          ord.advancePayment ?? 0,
+          ord.dueAmount ?? 0,
+          ord.paymentMethod || 'COD',
+          ord.paymentStatus || 'Pending',
+          ord.shippingStatus || 'Pending',
+          ord.courierName || '',
+          ord.courierWaybill || '',
+          ord.consignmentId || '',
+          ord.customer?.notes || '',
+        ];
+        rows.push(row.map(sanitizeCsvCell).join(','));
+      }
+    }
+  } else {
+    // 2. Accounting Order Summary View (1 row per order with joined items accounting columns)
+    const headers = [
+      'Order Number',
+      'Order Date',
+      'Customer Name',
+      'Customer Phone',
+      'Customer Address',
+      'District',
+      'Delivery Zone',
+      'Items Summary',
+      'Item SKUs',
+      'Total Items Quantity',
+      'Subtotal (BDT)',
+      'Delivery Fee (BDT)',
+      'Discount (BDT)',
+      'Coupon Code',
+      'Total Amount (BDT)',
+      'Advance Payment (BDT)',
+      'Due Amount (BDT)',
+      ...(canViewCost ? ['Total Cost (BDT)'] : []),
+      ...(canViewProfit ? ['Total Profit (BDT)'] : []),
+      'Payment Method',
+      'Payment Status',
+      'Shipping Status',
+      'Courier Name',
+      'Courier Tracking',
+      'Consignment ID',
+      'Transaction ID',
+      'Customer Notes',
+    ];
+    rows.push(headers.map(sanitizeCsvCell).join(','));
+
+    for (const ord of orders) {
+      const itemsList = Array.isArray(ord.items) ? ord.items : [];
+      const itemsSummary = itemsList
+        .map((it: any) => {
+          const title = it.product?.title || it.title || 'Item';
+          const qty = it.quantity || 1;
+          const price = it.product?.price || it.price || 0;
+          const variants = [it.selectedColor, it.selectedSize].filter(Boolean).join('/');
+          const variantSuffix = variants ? ` (${variants})` : '';
+          const skuSuffix = it.product?.sku || it.sku ? ` [${it.product?.sku || it.sku}]` : '';
+          return `${title}${variantSuffix}${skuSuffix} x ${qty} @ ৳${price}`;
+        })
+        .join('; ');
+
+      const totalItemsQty = itemsList.reduce((sum: number, it: any) => sum + (Number(it.quantity) || 1), 0);
+      const skus = Array.from(
+        new Set(itemsList.map((it: any) => it.product?.sku || it.sku).filter(Boolean))
+      ).join(', ');
+
+      const row = [
+        ord.orderNumber || ord.id,
+        ord.createdAt || '',
+        ord.customer?.fullName || '',
+        ord.customer?.phone || '',
+        ord.customer?.fullAddress || '',
+        ord.customer?.district || '',
+        ord.customer?.deliveryZone || '',
+        itemsSummary,
+        skus,
+        totalItemsQty,
+        ord.subtotal ?? 0,
+        ord.deliveryFee ?? 0,
+        ord.discountAmount ?? 0,
+        ord.couponCode || '',
+        ord.totalAmount ?? 0,
+        ord.advancePayment ?? 0,
+        ord.dueAmount ?? 0,
+        ...(canViewCost ? [ord.totalCost ?? 0] : []),
+        ...(canViewProfit ? [ord.totalGrossProfit ?? 0] : []),
+        ord.paymentMethod || 'COD',
+        ord.paymentStatus || 'Pending',
+        ord.shippingStatus || 'Pending',
+        ord.courierName || '',
+        ord.courierWaybill || '',
+        ord.consignmentId || '',
+        ord.transactionId || '',
+        ord.customer?.notes || '',
+      ];
+      rows.push(row.map(sanitizeCsvCell).join(','));
+    }
+  }
+
+  // Prepend UTF-8 BOM (\uFEFF) for native Excel UTF-8 decoding (Bangla font support)
+  return '\uFEFF' + rows.join('\r\n');
 }
 
 /**
@@ -5028,6 +5247,185 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
   // ==========================================
   // 8. ORDERS CRUD ROUTES (Authoritative D1 & Financial Security)
   // ==========================================
+  if ((path === '/api/admin/orders/export' || path === '/api/orders/export') && method === 'GET') {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+
+    const canViewOrders =
+      auth!.role === 'super_admin' ||
+      hasPermission(auth!, 'order.view') ||
+      hasPermission(auth!, 'order.manage');
+
+    if (!canViewOrders) {
+      return jsonResponse(
+        {
+          success: false,
+          error: 'Forbidden: Insufficient permissions to view or export orders.',
+          requiredPermission: 'order.view',
+        },
+        403
+      );
+    }
+
+    try {
+      let whereClause = ' WHERE 1=1';
+      const bindings: any[] = [];
+
+      // 1. Parameterized Date Range Filters (startDate & endDate)
+      const startDate = (url.searchParams.get('startDate') || '').trim();
+      if (startDate) {
+        if (startDate.length === 10) {
+          whereClause += ' AND substr(created_at, 1, 10) >= ?';
+          bindings.push(startDate);
+        } else {
+          whereClause += ' AND created_at >= ?';
+          bindings.push(startDate);
+        }
+      }
+
+      const endDate = (url.searchParams.get('endDate') || '').trim();
+      if (endDate) {
+        if (endDate.length === 10) {
+          whereClause += ' AND substr(created_at, 1, 10) <= ?';
+          bindings.push(endDate);
+        } else {
+          whereClause += ' AND created_at <= ?';
+          bindings.push(endDate);
+        }
+      }
+
+      // 2. Parameterized Shipping / Courier Status Filter
+      const statusParam = (url.searchParams.get('status') || '').trim();
+      if (statusParam && statusParam.toLowerCase() !== 'all') {
+        const statusKey = statusParam.toLowerCase();
+        if (statusKey === 'pending') {
+          whereClause += ` AND (
+            LOWER(shipping_status) IN ('pending', 'processing')
+            OR LOWER(COALESCE(courier_status, '')) LIKE '%pending%'
+            OR LOWER(COALESCE(courier_status, '')) LIKE '%pickup%'
+          )`;
+        } else if (statusKey === 'processing') {
+          whereClause += ` AND LOWER(shipping_status) = 'processing'`;
+        } else if (statusKey === 'shipped') {
+          whereClause += ` AND (
+            LOWER(shipping_status) = 'shipped'
+            OR LOWER(COALESCE(courier_status, '')) LIKE '%ship%'
+            OR LOWER(COALESCE(courier_status, '')) LIKE '%transit%'
+          )`;
+        } else if (statusKey === 'delivered') {
+          whereClause += ` AND (
+            LOWER(shipping_status) = 'delivered'
+            OR LOWER(COALESCE(courier_status, '')) LIKE '%deliver%'
+          )`;
+        } else if (statusKey === 'cancelled') {
+          whereClause += ` AND (
+            LOWER(shipping_status) = 'cancelled'
+            OR LOWER(COALESCE(courier_status, '')) LIKE '%cancel%'
+            OR LOWER(COALESCE(courier_status, '')) LIKE '%return%'
+          )`;
+        } else {
+          whereClause += ` AND LOWER(shipping_status) = ?`;
+          bindings.push(statusKey);
+        }
+      }
+
+      // 3. Parameterized Payment Status Filter
+      const paymentParam = (url.searchParams.get('paymentStatus') || url.searchParams.get('payment') || '').trim();
+      if (paymentParam && paymentParam.toLowerCase() !== 'all') {
+        const paymentKey = paymentParam.toUpperCase();
+        if (paymentKey === 'PAID') {
+          whereClause += ` AND UPPER(payment_status) = 'PAID'`;
+        } else if (paymentKey === 'PARTIAL' || paymentKey === 'PARTIALLY_PAID') {
+          whereClause += ` AND (UPPER(payment_status) = 'PARTIAL' OR UPPER(payment_status) = 'PARTIALLY_PAID')`;
+        } else if (paymentKey === 'DUE') {
+          whereClause += ` AND UPPER(payment_status) != 'PAID'`;
+        } else if (paymentParam.toLowerCase() === 'dbbl') {
+          whereClause += ` AND LOWER(payment_method) = 'dbbl'`;
+        } else if (paymentParam.toLowerCase() === 'cod') {
+          whereClause += ` AND LOWER(payment_method) = 'cod'`;
+        } else {
+          whereClause += ` AND UPPER(payment_status) = ?`;
+          bindings.push(paymentKey);
+        }
+      }
+
+      // 4. Parameterized Search Filter (customer name, phone, order number, id)
+      const searchParam = (url.searchParams.get('search') || '').trim();
+      if (searchParam) {
+        const s = `%${searchParam}%`;
+        whereClause += ` AND (
+          order_number LIKE ?
+          OR customer_phone LIKE ?
+          OR customer_name LIKE ?
+          OR id LIKE ?
+          OR customer_address LIKE ?
+          OR COALESCE(customer_district, '') LIKE ?
+          OR COALESCE(courier_waybill, '') LIKE ?
+          OR COALESCE(consignment_id, '') LIKE ?
+        )`;
+        bindings.push(s, s, s, s, s, s, s, s);
+      }
+
+      // 5. Parameterized Order IDs List Filter
+      const rawOrderIds = url.searchParams.get('orderIds');
+      const orderIdsList = rawOrderIds
+        ? rawOrderIds.split(',').map((id) => id.trim()).filter(Boolean)
+        : url.searchParams.getAll('orderIds').map((id) => id.trim()).filter(Boolean);
+
+      if (orderIdsList.length > 0) {
+        const safeIds = orderIdsList.slice(0, 500);
+        const placeholders = safeIds.map(() => '?').join(', ');
+        whereClause += ` AND (id IN (${placeholders}) OR order_number IN (${placeholders}))`;
+        bindings.push(...safeIds, ...safeIds);
+      }
+
+      // 6. Parameterized Bounded Limit (default 2000, capped at max 2000 rows)
+      const rawLimit = parseInt(url.searchParams.get('limit') || '2000', 10);
+      const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(2000, rawLimit) : 2000;
+
+      const querySql = `SELECT * FROM orders${whereClause} ORDER BY created_at DESC, id DESC LIMIT ?`;
+      bindings.push(limit);
+
+      const dbStmt = env.DB.prepare(querySql).bind(...bindings);
+      const queryResult = await dbStmt.all<OrderRow>();
+      const orderRows = queryResult.results || [];
+      const orders = orderRows.map(rowToOrder);
+
+      // 7. Role-based cost & profit permission controls
+      const isSuperAdmin = auth!.role === 'super_admin';
+      const canViewBuyingPrice = hasPermission(auth!, 'product.view_buying_price') || isSuperAdmin;
+      const canViewProfit =
+        hasPermission(auth!, 'report.profit') ||
+        hasPermission(auth!, 'product.view_profit') ||
+        isSuperAdmin;
+
+      const format = (url.searchParams.get('format') || (url.searchParams.get('itemized') === 'true' ? 'itemized' : 'summary')) as 'summary' | 'itemized';
+
+      const csvContent = generateOrdersCsv(orders, {
+        isSuperAdmin,
+        canViewBuyingPrice,
+        canViewProfit,
+        format,
+      });
+
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const filename = `orders-export-${todayStr}.csv`;
+
+      return new Response(csvContent, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/csv; charset=utf-8',
+          'Content-Disposition': `attachment; filename="${filename}"`,
+          'Cache-Control': 'no-store, no-cache, must-revalidate',
+          ...getCorsHeaders(request, env),
+        },
+      });
+    } catch (err: any) {
+      console.error('Error exporting orders to CSV:', err);
+      return jsonResponse({ success: false, error: 'Internal server error while exporting orders.' }, 500);
+    }
+  }
+
   if (path === '/api/orders' && method === 'GET') {
     const { auth, errorResponse } = await requireAuth(request, env);
     if (errorResponse) return errorResponse;
