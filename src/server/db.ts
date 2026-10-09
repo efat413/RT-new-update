@@ -158,26 +158,6 @@ export async function ensureProductTableSchema(db: D1Database): Promise<Set<stri
     } catch (err: any) {
       console.warn('[D1] product_slug_history table self-heal notice:', err?.message || err);
     }
-
-    // Self-heal: ensure product review stats strictly reflect approved reviews
-    try {
-      await db.prepare(`
-        UPDATE products
-        SET 
-          reviews_count = COALESCE((
-            SELECT COUNT(*) 
-            FROM reviews 
-            WHERE reviews.product_id = products.id AND reviews.status = 'approved'
-          ), 0),
-          rating = COALESCE((
-            SELECT ROUND(AVG(CAST(rating AS REAL)), 1) 
-            FROM reviews 
-            WHERE reviews.product_id = products.id AND reviews.status = 'approved'
-          ), 0.0)
-      `).run();
-    } catch (err: any) {
-      console.warn('[D1] Product review stats self-heal notice:', err?.message || err);
-    }
   }
 
   return columns;
@@ -663,14 +643,7 @@ export function rowToProduct(row: ProductRow): Product {
     stock: Number(row.stock) || 0,
     featured: Boolean(row.featured),
     featuredSortOrder: row.featured_sort_order != null ? Number(row.featured_sort_order) : 0,
-    rating: (() => {
-      const count = row.reviews_count != null && Number.isFinite(Number(row.reviews_count))
-        ? Math.max(0, Math.floor(Number(row.reviews_count)))
-        : 0;
-      return count > 0 && row.rating != null && Number.isFinite(Number(row.rating))
-        ? Math.min(5, Math.max(1, Math.round(Number(row.rating) * 10) / 10))
-        : 0;
-    })(),
+    rating: Number(row.rating) || 5.0,
     reviewsCount: row.reviews_count != null && Number.isFinite(Number(row.reviews_count))
       ? Math.max(0, Math.floor(Number(row.reviews_count)))
       : 0,
@@ -1238,10 +1211,15 @@ export async function insertProduct(db: D1Database, input: any): Promise<Product
   const featuredSortOrder = input.featuredSortOrder != null && !isNaN(Number(input.featuredSortOrder))
     ? Math.max(0, Math.floor(Number(input.featuredSortOrder)))
     : 0;
-  // Manual rating & review count inputs are obsolete.
-  // Approved review records are the only source of truth for public rating and review count.
-  const rating = 0;
-  const reviewsCount = 0;
+  const rating = input.rating != null && !isNaN(Number(input.rating))
+    ? Math.max(1, Math.min(5, Number(input.rating)))
+    : 5.0;
+  const parsedReviewsCount = input.reviewsCount !== undefined && input.reviewsCount !== null
+    ? Number(input.reviewsCount)
+    : 0;
+  const reviewsCount = Number.isFinite(parsedReviewsCount)
+    ? Math.max(0, Math.floor(parsedReviewsCount))
+    : 0;
   const specs = Array.isArray(input.specs) ? input.specs : [];
   const sizes = Array.isArray(input.sizes) ? input.sizes : [];
   const colors = Array.isArray(input.colors) ? input.colors : [];
@@ -1332,6 +1310,14 @@ export async function updateProductInD1(
   const images = updates.images !== undefined ? updates.images : existing.images;
   const stock = updates.stock !== undefined ? Math.max(0, Math.floor(Number(updates.stock))) : existing.stock;
   const featured = updates.featured !== undefined ? (updates.featured ? 1 : 0) : (existing.featured ? 1 : 0);
+  const rating = updates.rating !== undefined ? Number(updates.rating) : existing.rating;
+  let reviewsCount = existing.reviewsCount ?? 0;
+  if (updates.reviewsCount !== undefined) {
+    const parsedRev = updates.reviewsCount !== null
+      ? Number(updates.reviewsCount)
+      : 0;
+    reviewsCount = Number.isFinite(parsedRev) ? Math.max(0, Math.floor(parsedRev)) : 0;
+  }
   const specs = updates.specs !== undefined ? updates.specs : existing.specs;
   const sizes = updates.sizes !== undefined ? updates.sizes : existing.sizes;
   const colors = updates.colors !== undefined ? updates.colors : existing.colors;
@@ -1361,8 +1347,6 @@ export async function updateProductInD1(
     }
   }
 
-  // Approved review statistics (rating, reviews_count) are strictly maintained via syncProductReviewStatsInD1.
-  // Normal product editing updates only product content, inventory, pricing, and category.
   const candidateUpdates: { col: string; val: any }[] = [
     { col: 'slug', val: resolvedSlug },
     { col: 'title', val: title },
@@ -1376,6 +1360,8 @@ export async function updateProductInD1(
     { col: 'stock', val: stock },
     { col: 'featured', val: featured },
     { col: 'featured_sort_order', val: featuredSortOrder },
+    { col: 'rating', val: rating },
+    { col: 'reviews_count', val: reviewsCount },
     { col: 'specs_json', val: JSON.stringify(specs) },
     { col: 'sizes_json', val: JSON.stringify(sizes) },
     { col: 'colors_json', val: JSON.stringify(colors) },
@@ -2405,36 +2391,17 @@ export function rowToReview(row: ReviewRow): ProductReview {
     rating: Number(row.rating) || 5,
     comment: row.comment,
     verifiedPurchase: Boolean(row.verified_purchase),
-    status: (row as any).status || 'approved',
-    approvedAt: (row as any).approved_at || ((row as any).status === 'approved' ? row.created_at : null),
-    approvedBy: (row as any).approved_by || null,
-    source: (row as any).source || 'Customer Submitted',
-    customerImage: (row as any).customer_image || null,
-    screenshotAttachment: (row as any).screenshot_attachment || null,
     createdAt: row.created_at,
   };
 }
 
-export async function getAllReviews(
-  db: D1Database,
-  productId?: string,
-  status?: string
-): Promise<ProductReview[]> {
-  let query = 'SELECT * FROM reviews';
-  const whereClauses: string[] = [];
+export async function getAllReviews(db: D1Database, productId?: string): Promise<ProductReview[]> {
+  let query = `SELECT ${REVIEW_COLUMNS} FROM reviews`;
   const bindings: any[] = [];
 
   if (productId) {
-    whereClauses.push('product_id = ?');
+    query += ' WHERE product_id = ?';
     bindings.push(productId);
-  }
-  if (status) {
-    whereClauses.push('LOWER(status) = ?');
-    bindings.push(status.toLowerCase());
-  }
-
-  if (whereClauses.length > 0) {
-    query += ` WHERE ${whereClauses.join(' AND ')}`;
   }
   query += ' ORDER BY created_at DESC';
 
@@ -2453,56 +2420,19 @@ export async function insertReview(db: D1Database, input: any): Promise<ProductR
   const comment = input.comment || '';
   // Security Hardening: strictly default to 0 (unverified) unless server logic explicitly sets true
   const verifiedPurchase = input.verifiedPurchase === true ? 1 : 0;
-  // Security Hardening: Customer reviews MUST always default to 'pending' unless explicitly admin
-  const status = input.status === 'approved' ? 'approved' : 'pending';
-  const approvedAt = status === 'approved' ? (input.approvedAt || new Date().toISOString()) : null;
-  const approvedBy = status === 'approved' ? (input.approvedBy || null) : null;
-  const source = input.source || 'Customer Submitted';
-  const customerImage = input.customerImage || null;
-  const screenshotAttachment = input.screenshotAttachment || null;
   const createdAt = input.createdAt || new Date().toISOString();
 
-  try {
-    await db
-      .prepare(`
-        INSERT INTO reviews (id, product_id, author_name, rating, comment, verified_purchase, status, approved_at, approved_by, source, customer_image, screenshot_attachment, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `)
-      .bind(id, productId, authorName, rating, comment, verifiedPurchase, status, approvedAt, approvedBy, source, customerImage, screenshotAttachment, createdAt)
-      .run();
-  } catch {
-    try {
-      await db
-        .prepare(`
-          INSERT INTO reviews (id, product_id, author_name, rating, comment, verified_purchase, status, approved_at, approved_by, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `)
-        .bind(id, productId, authorName, rating, comment, verifiedPurchase, status, approvedAt, approvedBy, createdAt)
-        .run();
-    } catch {
-      await db
-        .prepare(`
-          INSERT INTO reviews (id, product_id, author_name, rating, comment, verified_purchase, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `)
-        .bind(id, productId, authorName, rating, comment, verifiedPurchase, createdAt)
-        .run();
-    }
-  }
+  await db
+    .prepare(`
+      INSERT INTO reviews (id, product_id, author_name, rating, comment, verified_purchase, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `)
+    .bind(id, productId, authorName, rating, comment, verifiedPurchase, createdAt)
+    .run();
 
-  const row = await db.prepare('SELECT * FROM reviews WHERE id = ?').bind(id).first<ReviewRow>();
+  const row = await db.prepare(`SELECT ${REVIEW_COLUMNS} FROM reviews WHERE id = ?`).bind(id).first<ReviewRow>();
   if (!row) throw new Error('Failed to retrieve inserted review');
-  if (status === 'approved') {
-    await syncProductReviewStatsInD1(db, productId);
-  }
-  const rev = rowToReview(row);
-  rev.status = status;
-  rev.approvedAt = approvedAt;
-  rev.approvedBy = approvedBy;
-  rev.source = source;
-  rev.customerImage = customerImage;
-  rev.screenshotAttachment = screenshotAttachment;
-  return rev;
+  return rowToReview(row);
 }
 
 /**
@@ -2589,143 +2519,8 @@ export async function verifyCustomerPurchaseInD1(
 }
 
 export async function deleteReviewFromD1(db: D1Database, id: string): Promise<boolean> {
-  const existing = await db.prepare('SELECT product_id FROM reviews WHERE id = ?').bind(id).first<{ product_id: string }>();
   const res = await db.prepare('DELETE FROM reviews WHERE id = ?').bind(id).run();
-  if (existing?.product_id) {
-    await syncProductReviewStatsInD1(db, existing.product_id);
-  }
   return res.success;
-}
-
-export async function updateReviewStatusInD1(
-  db: D1Database,
-  id: string,
-  status: string,
-  approvedBy?: string | null
-): Promise<ProductReview | null> {
-  const cleanStatus = status === 'rejected' ? 'rejected' : status === 'pending' ? 'pending' : 'approved';
-  const nowIso = cleanStatus === 'approved' ? new Date().toISOString() : null;
-  const moderator = cleanStatus === 'approved' ? (approvedBy || 'admin') : null;
-
-  try {
-    await db
-      .prepare('UPDATE reviews SET status = ?, approved_at = ?, approved_by = ? WHERE id = ?')
-      .bind(cleanStatus, nowIso, moderator, id)
-      .run();
-  } catch {
-    try {
-      await db.prepare('UPDATE reviews SET status = ? WHERE id = ?').bind(cleanStatus, id).run();
-    } catch {}
-  }
-  const row = await db.prepare('SELECT * FROM reviews WHERE id = ?').bind(id).first<ReviewRow>();
-  if (!row) return null;
-  await syncProductReviewStatsInD1(db, row.product_id);
-  const rev = rowToReview(row);
-  rev.status = cleanStatus;
-  rev.approvedAt = nowIso;
-  rev.approvedBy = moderator;
-  return rev;
-}
-
-export async function updateReviewInD1(
-  db: D1Database,
-  id: string,
-  updates: {
-    rating?: number;
-    comment?: string;
-    authorName?: string;
-    status?: string;
-    source?: string;
-    customerImage?: string | null;
-    screenshotAttachment?: string | null;
-  }
-): Promise<ProductReview | null> {
-  const fields: string[] = [];
-  const bindings: any[] = [];
-  if (updates.rating !== undefined) {
-    fields.push('rating = ?');
-    bindings.push(Math.min(5, Math.max(1, Math.round(Number(updates.rating) || 5))));
-  }
-  if (updates.comment !== undefined) {
-    fields.push('comment = ?');
-    bindings.push(String(updates.comment).trim());
-  }
-  if (updates.authorName !== undefined) {
-    fields.push('author_name = ?');
-    bindings.push(String(updates.authorName).trim());
-  }
-  if (updates.status !== undefined) {
-    fields.push('status = ?');
-    bindings.push(String(updates.status).trim());
-  }
-  if (updates.source !== undefined) {
-    fields.push('source = ?');
-    bindings.push(String(updates.source).trim());
-  }
-  if (updates.customerImage !== undefined) {
-    fields.push('customer_image = ?');
-    bindings.push(updates.customerImage ? String(updates.customerImage).trim() : null);
-  }
-  if (updates.screenshotAttachment !== undefined) {
-    fields.push('screenshot_attachment = ?');
-    bindings.push(updates.screenshotAttachment ? String(updates.screenshotAttachment).trim() : null);
-  }
-  if (fields.length > 0) {
-    bindings.push(id);
-    try {
-      await db.prepare(`UPDATE reviews SET ${fields.join(', ')} WHERE id = ?`).bind(...bindings).run();
-    } catch {
-      const fallbackFields = fields.filter((f) => !f.startsWith('status') && !f.startsWith('source') && !f.startsWith('customer_image') && !f.startsWith('screenshot_attachment'));
-      if (fallbackFields.length > 0) {
-        const fallbackBindings = bindings.slice(0, fallbackFields.length);
-        fallbackBindings.push(id);
-        await db.prepare(`UPDATE reviews SET ${fallbackFields.join(', ')} WHERE id = ?`).bind(...fallbackBindings).run();
-      }
-    }
-  }
-  const row = await db.prepare('SELECT * FROM reviews WHERE id = ?').bind(id).first<ReviewRow>();
-  if (!row) return null;
-  await syncProductReviewStatsInD1(db, row.product_id);
-  const rev = rowToReview(row);
-  if (updates.status) rev.status = updates.status;
-  return rev;
-}
-
-/**
- * Synchronizes products.rating and products.reviews_count strictly from approved reviews in D1.
- * Ensures approved review records are the only source of truth for public review statistics.
- */
-export async function syncProductReviewStatsInD1(
-  db: D1Database,
-  productId: string
-): Promise<{ rating: number; reviewsCount: number }> {
-  try {
-    const stats = await db
-      .prepare(`
-        SELECT 
-          COUNT(*) as approved_count,
-          AVG(CAST(rating AS REAL)) as approved_avg
-        FROM reviews
-        WHERE product_id = ? AND status = 'approved'
-      `)
-      .bind(productId)
-      .first<{ approved_count: number; approved_avg: number | null }>();
-
-    const reviewsCount = stats && stats.approved_count != null ? Math.max(0, Number(stats.approved_count)) : 0;
-    const rating = reviewsCount > 0 && stats?.approved_avg != null
-      ? Math.min(5, Math.max(1, Math.round(Number(stats.approved_avg) * 10) / 10))
-      : 0;
-
-    await db
-      .prepare('UPDATE products SET rating = ?, reviews_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-      .bind(rating, reviewsCount, productId)
-      .run();
-
-    return { rating, reviewsCount };
-  } catch (err) {
-    console.warn(`[D1] Failed to sync product review stats for ${productId}:`, err);
-    return { rating: 0, reviewsCount: 0 };
-  }
 }
 
 // ==============================================================

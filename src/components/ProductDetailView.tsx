@@ -208,9 +208,10 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
   }, [product?.id, currentUser]);
 
   const canDeleteReview = Boolean(
+    isAdminLoggedIn ||
     currentUser?.role === 'super_admin' ||
-    hasPermission('reviews.delete') ||
-    hasPermission('review.delete')
+    currentUser?.role === 'admin' ||
+    (currentUser?.role === 'sub_admin' && hasPermission('canManageProducts'))
   );
 
   const handleBackToHome = () => {
@@ -336,13 +337,15 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
   const activeImage = imageList[selectedImageIdx] || product.imageUrl;
   const isSavedInWishlist = wishlist.includes(product.id);
   const productReviews = Array.isArray(reviews)
-    ? reviews.filter((r) => r && r.productId === product.id && r.status === 'approved')
+    ? reviews.filter((r) => r && r.productId === product.id)
     : [];
 
-  const totalReviewsCount = productReviews.length;
-  const approvedAvgRating = totalReviewsCount > 0
-    ? Math.round((productReviews.reduce((acc, r) => acc + (Number(r.rating) || 0), 0) / totalReviewsCount) * 10) / 10
-    : 0;
+  const backendReviewsCount =
+    typeof product.reviewsCount === 'number'
+      ? product.reviewsCount
+      : (Number(product.reviewsCount) || 0);
+
+  const totalReviewsCount = Math.max(backendReviewsCount, productReviews.length);
 
   const discountPercent =
     product.originalPrice && product.originalPrice > product.price
@@ -414,10 +417,11 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
       authorName: reviewAuthor.trim() || 'Verified Shopper',
       rating: reviewRating,
       comment: reviewComment.trim(),
+      verifiedPurchase: true,
     });
 
     setReviewComment('');
-    setReviewSuccessMsg('Thank you! Your review has been submitted and is pending administrator approval before appearing in the store.');
+    setReviewSuccessMsg('Thank you! Your verified review has been submitted.');
     setTimeout(() => setReviewSuccessMsg(''), 4000);
   };
 
@@ -686,7 +690,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
                       <Star
                         key={i}
                         className={`w-4 h-4 ${
-                          i < Math.floor(approvedAvgRating)
+                          i < Math.floor(product.rating)
                             ? 'fill-amber-400 text-amber-400'
                             : 'text-slate-300'
                         }`}
@@ -694,7 +698,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
                     ))}
                   </div>
                   <span className="text-sm font-bold text-slate-800">
-                    {approvedAvgRating.toFixed(1)}
+                    {typeof product.rating === 'number' ? product.rating.toFixed(1) : product.rating}
                   </span>
                   <button
                     type="button"

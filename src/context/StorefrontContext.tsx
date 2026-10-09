@@ -681,39 +681,8 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     }
   }, [reviews]);
 
-  useEffect(() => {
-    reviewsApi
-      .getAll()
-      .then((serverRevs) => {
-        if (Array.isArray(serverRevs)) {
-          // Public review API strictly returns approved reviews
-          const approvedRevs = serverRevs.filter((r) => r.status === 'approved');
-          setReviews(approvedRevs);
-
-          // Synchronize product ratings and review counts strictly with approved reviews
-          setProducts((prev) =>
-            prev.map((p) => {
-              const pApproved = approvedRevs.filter((r) => r.productId === p.id);
-              const count = pApproved.length;
-              const rating = count > 0
-                ? Number((pApproved.reduce((acc, r) => acc + (Number(r.rating) || 0), 0) / count).toFixed(1))
-                : 0;
-              return {
-                ...p,
-                rating,
-                reviewsCount: count,
-              };
-            })
-          );
-        }
-      })
-      .catch((err) => {
-        console.warn('[Reviews] Could not load server reviews:', err);
-      });
-  }, []);
-
   const getProductReviews = useCallback((productId: string) => {
-    return reviews.filter((r) => r.productId === productId && r.status === 'approved');
+    return reviews.filter((r) => r.productId === productId);
   }, [reviews]);
 
   const addProductReview = useCallback((reviewData: Omit<ProductReview, 'id' | 'createdAt'>) => {
@@ -723,16 +692,10 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     crypto.getRandomValues(revBuf);
     const revRand = 100 + (revBuf[0] % 900);
     const newReview: ProductReview = {
-      productId: reviewData.productId,
+      ...reviewData,
       author: authorName,
       authorName: authorName,
-      rating: Math.min(5, Math.max(1, Number(reviewData.rating) || 5)),
-      comment: String(reviewData.comment || '').trim(),
       id: `rev-${Date.now()}-${revRand}`,
-      status: 'pending',
-      approvedAt: null,
-      approvedBy: null,
-      verifiedPurchase: false,
       createdAt: new Date().toISOString(),
       date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
     };
@@ -740,8 +703,20 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setReviews(updatedReviews);
     reviewsApi.create(newReview).catch(console.error);
 
-    // Customer-submitted reviews strictly default to 'pending'
-    // Pending reviews must never affect public ratings or review counts until approved by an admin
+    const productRevs = updatedReviews.filter((r) => r.productId === reviewData.productId);
+    const avgRating = productRevs.reduce((acc, r) => acc + r.rating, 0) / productRevs.length;
+
+    setProducts((prev) =>
+      prev.map((p) =>
+        p.id === reviewData.productId
+          ? {
+              ...p,
+              rating: Number(avgRating.toFixed(1)),
+              reviewsCount: Math.max((p.reviewsCount ?? 0) + 1, productRevs.length),
+            }
+          : p
+      )
+    );
   }, [reviews]);
 
   const deleteProductReview = useCallback((reviewId: string) => {
@@ -750,15 +725,12 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     const prodId = target.productId;
     const updatedReviews = reviews.filter((r) => r.id !== reviewId);
     setReviews(updatedReviews);
-    reviewsApi.delete(reviewId).catch(console.error);
 
-    const remainingApproved = updatedReviews.filter(
-      (r) => r.productId === prodId && r.status === 'approved'
-    );
+    const remainingForProduct = updatedReviews.filter((r) => r.productId === prodId);
     const avgRating =
-      remainingApproved.length > 0
-        ? remainingApproved.reduce((acc, r) => acc + (Number(r.rating) || 0), 0) / remainingApproved.length
-        : 0;
+      remainingForProduct.length > 0
+        ? remainingForProduct.reduce((acc, r) => acc + r.rating, 0) / remainingForProduct.length
+        : 5.0;
 
     setProducts((prev) =>
       prev.map((p) =>
@@ -766,7 +738,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           ? {
               ...p,
               rating: Number(avgRating.toFixed(1)),
-              reviewsCount: remainingApproved.length,
+              reviewsCount: Math.max(0, Math.max((p.reviewsCount ?? 0) - 1, remainingForProduct.length)),
             }
           : p
       )
@@ -1433,7 +1405,6 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         {
           ...meta,
           category: cat,
-          reviews,
           breadcrumbs: [
             { name: 'Home', url: `${SITE_DOMAIN}/` },
             ...(cat

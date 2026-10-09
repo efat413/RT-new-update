@@ -15,8 +15,8 @@ export interface Product {
   stock: number;
   featured: boolean;
   featuredSortOrder?: number;
-  rating?: number;
-  reviewsCount?: number;
+  rating: number;
+  reviewsCount: number;
   specs?: string[];
   sizes?: string[];
   colors?: string[];
@@ -147,23 +147,6 @@ export interface DbblPaymentDetails {
   depositSlipUrl?: string;
 }
 
-export type ReviewSource =
-  | 'Customer Submitted'
-  | 'Facebook'
-  | 'Messenger'
-  | 'WhatsApp'
-  | 'Instagram'
-  | 'Manual';
-
-export const REVIEW_SOURCES: ReviewSource[] = [
-  'Customer Submitted',
-  'Facebook',
-  'Messenger',
-  'WhatsApp',
-  'Instagram',
-  'Manual',
-];
-
 export interface ProductReview {
   id: string;
   productId: string;
@@ -174,15 +157,6 @@ export interface ProductReview {
   createdAt: string;
   date?: string;
   verifiedPurchase?: boolean;
-  status?: 'approved' | 'pending' | 'rejected' | string;
-  approvedAt?: string | null;
-  approvedBy?: string | null;
-  source?: ReviewSource | string;
-  customerImage?: string | null;
-  screenshotAttachment?: string | null;
-  // Verification helpers
-  orderNumber?: string;
-  customerPhone?: string;
 }
 
 export interface Coupon {
@@ -403,12 +377,6 @@ export interface AdminPermissions {
   canManageCategories?: boolean;
   canManageAccounts?: boolean;
   canManageSettings?: boolean;
-  canManageReviews?: boolean;
-  'reviews.view'?: boolean;
-  'reviews.approve'?: boolean;
-  'reviews.delete'?: boolean;
-  'reviews.create'?: boolean;
-  'reviews.edit'?: boolean;
   [key: string]: any;
 }
 

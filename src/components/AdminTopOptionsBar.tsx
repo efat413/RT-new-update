@@ -12,7 +12,6 @@ import {
   Users,
   Activity,
   TicketPercent,
-  MessageSquare,
   Bug,
   AlertTriangle,
   CheckCircle2,
@@ -31,7 +30,6 @@ export interface AdminTopOptionsBarProps {
   usersCount: number;
   pendingOrdersCount: number;
   warningsCount: number;
-  pendingReviewsCount?: number;
   hasPermission?: (permission: any) => boolean;
 }
 
@@ -47,7 +45,6 @@ export const AdminTopOptionsBar: React.FC<AdminTopOptionsBarProps> = ({
   usersCount,
   pendingOrdersCount,
   warningsCount,
-  pendingReviewsCount = 0,
   hasPermission = (_perm?: any) => true,
 }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -134,14 +131,6 @@ export const AdminTopOptionsBar: React.FC<AdminTopOptionsBarProps> = ({
       badge: `${couponsCount}`,
       badgeColor: 'bg-slate-700 text-slate-300',
       permission: 'canManageSettings',
-    },
-    {
-      id: 'reviews',
-      label: 'Reviews',
-      icon: MessageSquare,
-      badge: pendingReviewsCount > 0 ? `${pendingReviewsCount}` : null,
-      badgeColor: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
-      permission: 'reviews.view',
     },
     {
       id: 'debug',

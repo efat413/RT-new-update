@@ -656,6 +656,20 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, [products, setProducts, showNotification]);
 
+  const adjustProductRating = useCallback(async (productId: string, rating: number, reviewsCount?: number): Promise<void> => {
+    const clampedRating = Math.max(1, Math.min(5, Number(rating.toFixed(1))));
+    try {
+      const canonical = await productsApi.update(productId, {
+        rating: clampedRating,
+        ...(reviewsCount !== undefined ? { reviewsCount } : {}),
+      });
+      setProducts((prev) => prev.map((prod) => (prod.id === productId ? canonical : prod)));
+      showNotification('success', 'Rating Updated', 'Product rating score updated in D1 database.');
+    } catch (err: any) {
+      showNotification('error', 'Rating Update Failed', err?.message || 'Failed to update rating in D1');
+    }
+  }, [setProducts, showNotification]);
+
   // Category CRUD
   const addCategory = useCallback(async (
     catData: Omit<Category, 'id' | 'slug'>
@@ -1411,6 +1425,7 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     updateProduct,
     deleteProduct,
     increaseStock,
+    adjustProductRating,
     toggleProductFeatured,
     loadAdminAllProducts,
     addCategory,
@@ -1486,6 +1501,7 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     updateProduct,
     deleteProduct,
     increaseStock,
+    adjustProductRating,
     toggleProductFeatured,
     loadAdminAllProducts,
     addCategory,

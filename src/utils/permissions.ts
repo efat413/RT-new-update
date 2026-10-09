@@ -163,14 +163,6 @@ export function hasUserPermission(
         user.permissions['courier.configure']
       );
     }
-    if (permStr === 'canManageReviews') {
-      return Boolean(
-        user.permissions.canManageReviews ||
-        user.permissions['reviews.view'] ||
-        user.permissions['reviews.approve'] ||
-        user.permissions['reviews.delete']
-      );
-    }
 
     return false;
   }

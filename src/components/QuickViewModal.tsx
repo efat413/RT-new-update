@@ -126,9 +126,10 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
 
   // Permission to manage/delete reviews
   const canDeleteReview = Boolean(
+    isAdminLoggedIn ||
     currentUser?.role === 'super_admin' ||
-    hasPermission('reviews.delete') ||
-    hasPermission('review.delete')
+    currentUser?.role === 'admin' ||
+    (currentUser?.role === 'sub_admin' && hasPermission('canManageProducts'))
   );
 
   // Extract all images (primary + any gallery photos)
@@ -210,13 +211,15 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
   const activeImage = imageList[selectedImageIdx] || product.imageUrl;
   const isSavedInWishlist = wishlist.includes(product.id);
   const productReviews = Array.isArray(reviews)
-    ? reviews.filter((r) => r && r.productId === product.id && r.status === 'approved')
+    ? reviews.filter((r) => r && r.productId === product.id)
     : [];
 
-  const totalReviewsCount = productReviews.length;
-  const approvedAvgRating = totalReviewsCount > 0
-    ? Math.round((productReviews.reduce((acc, r) => acc + (Number(r.rating) || 0), 0) / totalReviewsCount) * 10) / 10
-    : 0;
+  const backendReviewsCount =
+    typeof product.reviewsCount === 'number'
+      ? product.reviewsCount
+      : (Number(product.reviewsCount) || 0);
+
+  const totalReviewsCount = Math.max(backendReviewsCount, productReviews.length);
 
   const discountPercent =
     product.originalPrice && product.originalPrice > product.price
@@ -289,10 +292,11 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
       authorName: reviewAuthor.trim() || 'Verified Shopper',
       rating: reviewRating,
       comment: reviewComment.trim(),
+      verifiedPurchase: true,
     });
 
     setReviewComment('');
-    setReviewSuccessMsg('Thank you! Your review has been submitted and is pending administrator approval before appearing in the store.');
+    setReviewSuccessMsg('Thank you! Your verified review has been submitted.');
     setTimeout(() => setReviewSuccessMsg(''), 4000);
   };
 
@@ -579,7 +583,7 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
                         <Star
                           key={i}
                           className={`w-3.5 h-3.5 ${
-                            i < Math.floor(approvedAvgRating)
+                            i < Math.floor(product.rating)
                               ? 'fill-amber-400 text-amber-400'
                               : 'text-slate-300'
                           }`}
@@ -587,7 +591,7 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
                       ))}
                     </div>
                     <span className="text-xs font-bold text-slate-700">
-                      {approvedAvgRating.toFixed(1)}
+                      {typeof product.rating === 'number' ? product.rating.toFixed(1) : product.rating}
                     </span>
                     <span className="text-xs text-rose-600 underline font-semibold">
                       ({totalReviewsCount} {totalReviewsCount === 1 ? 'review' : 'reviews'})
@@ -977,10 +981,14 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
                     {productReviews.length === 0 ? (
                       <div className="text-center py-4 bg-slate-50/80 rounded-xl border border-slate-200/60 p-4 space-y-1">
                         <p className="text-xs font-semibold text-slate-700">
-                          No customer reviews yet
+                          {totalReviewsCount > 0
+                            ? `${totalReviewsCount} Verified Customer Rating${totalReviewsCount === 1 ? '' : 's'} (${typeof product.rating === 'number' ? product.rating.toFixed(1) : product.rating}★)`
+                            : 'No customer reviews yet'}
                         </p>
                         <p className="text-[11px] text-slate-500">
-                          Be the first to review this product!
+                          {totalReviewsCount > 0
+                            ? 'Ratings have been verified. Be the first to share your feedback below!'
+                            : 'Be the first to review this product!'}
                         </p>
                       </div>
                     ) : (

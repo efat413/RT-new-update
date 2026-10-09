@@ -175,17 +175,6 @@ function localApiDevPlugin(): Plugin {
   let devCoupons: any[] = [...INITIAL_COUPONS];
   let devReviews: any[] = [...INITIAL_REVIEWS];
 
-  function syncDevProductReviewStats(productId: string) {
-    const prod = devProducts.find((p) => p.id === productId);
-    if (!prod) return;
-    const approved = devReviews.filter((r) => r.productId === productId && r.status === 'approved');
-    prod.reviewsCount = approved.length;
-    prod.rating = approved.length > 0
-      ? Number((approved.reduce((acc, r) => acc + (Number(r.rating) || 0), 0) / approved.length).toFixed(1))
-      : 0;
-  }
-  devProducts.forEach((p) => syncDevProductReviewStats(p.id));
-
   // Resolve Super Admin identities server-side from environment variables
   // Real production Super Admin identities must NEVER be hardcoded into source code fallbacks
   const configuredSuperAdminEmails: string[] = (
@@ -2713,8 +2702,10 @@ function localApiDevPlugin(): Plugin {
                 images: Array.isArray(product.images) ? product.images : [product.imageUrl].filter(Boolean),
                 stock: Number(product.stock) || 0,
                 featured: Boolean(product.featured),
-                rating: 0,
-                reviewsCount: 0,
+                rating: Number(product.rating) || 5.0,
+                reviewsCount: (product.reviewsCount !== undefined && product.reviewsCount !== null && product.reviewsCount !== '')
+                  ? (Number.isFinite(Number(product.reviewsCount)) ? Math.max(0, Math.floor(Number(product.reviewsCount))) : 0)
+                  : 0,
                 specs: product.specs || [],
                 sizes: product.sizes || [],
                 colors: product.colors || [],
@@ -2878,9 +2869,14 @@ function localApiDevPlugin(): Plugin {
                 if ('videoUrl' in updates) {
                   updates.videoUrl = updates.videoUrl ? String(updates.videoUrl).trim() : undefined;
                 }
-                delete updates.rating;
-                delete updates.reviewsCount;
-                delete (updates as any).reviews_count;
+                if (updates.reviewsCount !== undefined) {
+                  const parsedRev = updates.reviewsCount !== null && updates.reviewsCount !== '' ? Number(updates.reviewsCount) : 0;
+                  updates.reviewsCount = Number.isFinite(parsedRev) ? Math.max(0, Math.floor(parsedRev)) : 0;
+                }
+                if (updates.rating !== undefined) {
+                  const parsedRating = Number(updates.rating);
+                  updates.rating = Number.isFinite(parsedRating) ? Math.max(1, Math.min(5, Number(parsedRating.toFixed(1)))) : 5.0;
+                }
                 // Handle slug updates or stabilization
                 const oldSlug = devProducts[idx].slug;
                 let slugChanged = false;
@@ -3288,230 +3284,11 @@ function localApiDevPlugin(): Plugin {
           }
         }
 
-        // 6. REVIEWS CRUD & MODERATION (GRANULAR RBAC)
-        if (url.pathname === '/api/admin/reviews') {
-          if (method === 'GET') {
-            const authResult = requireDevAuth(req);
-            if (authResult.error) return sendDevError(res, authResult.error);
-            if (!hasDevPermission(authResult.auth!, 'reviews.view')) {
-              return sendDevError(res, {
-                status: 403,
-                body: { success: false, error: 'Forbidden: You do not have the "reviews.view" permission required to perform this action.' },
-              });
-            }
-
-            const productId = url.searchParams.get('productId') || undefined;
-            const status = url.searchParams.get('status') || undefined;
-            let list = [...devReviews];
-            if (productId) list = list.filter((r) => r.productId === productId);
-            if (status) list = list.filter((r) => (r.status || 'approved').toLowerCase() === status.toLowerCase());
-            res.statusCode = 200;
-            return res.end(JSON.stringify({ success: true, count: list.length, reviews: list }));
-          }
-
-          if (method === 'POST') {
-            const authResult = requireDevAuth(req);
-            if (authResult.error) return sendDevError(res, authResult.error);
-            if (!hasDevPermission(authResult.auth!, 'reviews.create')) {
-              return sendDevError(res, {
-                status: 403,
-                body: { success: false, error: 'Forbidden: You do not have the "reviews.create" permission required to perform this action.' },
-              });
-            }
-
-            return readBody((body) => {
-              const r = body.review || body;
-              const productId = String(r.productId || '').trim();
-              const authorName = String(r.authorName || r.author || authResult.auth!.user?.name || 'Store Admin').trim();
-              const comment = String(r.comment || '').trim();
-              const rating = Math.min(5, Math.max(1, Math.round(Number(r.rating) || 5)));
-
-              if (!productId || !authorName || !comment) {
-                res.statusCode = 400;
-                return res.end(JSON.stringify({ success: false, error: 'Product, author name, and comment are required.' }));
-              }
-
-              // Security rule: Admin-created reviews: status = approved
-              const adminStatus = 'approved';
-
-              // Security rule: Server controls approved_at and approved_by
-              const approvedAt = new Date().toISOString();
-              const approvedBy = authResult.auth!.user?.email || authResult.auth!.user?.id || 'admin';
-
-              // Security rule: verifiedPurchase = false UNLESS server independently verifies purchase
-              let serverVerifiedPurchase = false;
-              const orderNumber = String(r.orderNumber || r.order_number || '').trim();
-              const phone = String(r.phone || r.customerPhone || '').replace(/\D/g, '');
-              const userEmail = String(r.userEmail || r.email || '').trim().toLowerCase();
-              const userId = String(r.userId || '').trim();
-
-              if (orderNumber || phone || userEmail || userId) {
-                const matchOrder = devOrders.find((ord) => {
-                  if (ord.shippingStatus === 'Cancelled') return false;
-                  const hasProd = (ord.items || []).some((it: any) => it.product?.id === productId || it.id === productId || it.productId === productId);
-                  if (!hasProd) return false;
-                  if (userId && (ord.userId === userId || ord.user_id === userId)) return true;
-                  if (userEmail && (ord.userEmail || ord.customer?.email || '').toLowerCase() === userEmail) return true;
-                  if (orderNumber && phone.length === 11 && ord.orderNumber === orderNumber && (ord.customer?.phone || '').includes(phone)) return true;
-                  return false;
-                });
-                serverVerifiedPurchase = Boolean(matchOrder);
-              }
-
-              const VALID_SOURCES = ['Customer Submitted', 'Facebook', 'Messenger', 'WhatsApp', 'Instagram', 'Manual'];
-              let source = String(r.source || 'Manual').trim();
-              if (!VALID_SOURCES.includes(source)) {
-                source = 'Manual';
-              }
-
-              const customerImage = r.customerImage ? String(r.customerImage).trim() : null;
-              const screenshotAttachment = r.screenshotAttachment ? String(r.screenshotAttachment).trim() : null;
-
-              const newR = {
-                id: r.id || `rev-${Date.now()}`,
-                productId,
-                authorName,
-                rating,
-                comment,
-                verifiedPurchase: serverVerifiedPurchase,
-                status: adminStatus,
-                approvedAt,
-                approvedBy,
-                source,
-                customerImage,
-                screenshotAttachment,
-                createdAt: r.createdAt || new Date().toISOString(),
-              };
-              devReviews.unshift(newR);
-              syncDevProductReviewStats(newR.productId);
-              res.statusCode = 201;
-              return res.end(JSON.stringify({ success: true, review: newR }));
-            });
-          }
-        }
-
-        // Review Approval Endpoint (/api/admin/reviews/:id/approve or /api/reviews/:id/approve)
-        const devApproveMatch = url.pathname.match(/^\/api\/(?:admin\/)?reviews\/([^/]+)\/approve\/?$/);
-        if (devApproveMatch && (method === 'POST' || method === 'PATCH' || method === 'PUT')) {
-          const authResult = requireDevAuth(req);
-          if (authResult.error) return sendDevError(res, authResult.error);
-          if (!hasDevPermission(authResult.auth!, 'reviews.approve')) {
-            return sendDevError(res, {
-              status: 403,
-              body: { success: false, error: 'Forbidden: You do not have the "reviews.approve" permission required to perform this action.' },
-            });
-          }
-
-          const targetId = decodeURIComponent(devApproveMatch[1]);
-          const target = devReviews.find((r) => r.id === targetId);
-          if (!target) {
-            res.statusCode = 404;
-            return res.end(JSON.stringify({ success: false, error: 'Review not found.' }));
-          }
-
-          target.status = 'approved';
-          target.approvedAt = new Date().toISOString();
-          target.approvedBy = authResult.auth!.user?.email || authResult.auth!.user?.id || 'admin';
-          syncDevProductReviewStats(target.productId);
-          res.statusCode = 200;
-          return res.end(JSON.stringify({ success: true, message: 'Review approved successfully.', review: target }));
-        }
-
-        // Review Status Moderation Endpoint (/api/admin/reviews/:id/status or /api/reviews/:id/status)
-        const devStatusMatch = url.pathname.match(/^\/api\/(?:admin\/)?reviews\/([^/]+)\/status\/?$/);
-        if (devStatusMatch && (method === 'PATCH' || method === 'PUT')) {
-          const authResult = requireDevAuth(req);
-          if (authResult.error) return sendDevError(res, authResult.error);
-          if (!hasDevPermission(authResult.auth!, 'reviews.approve')) {
-            return sendDevError(res, {
-              status: 403,
-              body: { success: false, error: 'Forbidden: You do not have the "reviews.approve" permission required to perform this action.' },
-            });
-          }
-
-          const targetId = decodeURIComponent(devStatusMatch[1]);
-          const target = devReviews.find((r) => r.id === targetId);
-          if (!target) {
-            res.statusCode = 404;
-            return res.end(JSON.stringify({ success: false, error: 'Review not found.' }));
-          }
-
-          return readBody((body) => {
-            const newStatus = String(body?.status || 'approved').toLowerCase();
-            if (!['approved', 'pending', 'rejected'].includes(newStatus)) {
-              res.statusCode = 400;
-              return res.end(JSON.stringify({ success: false, error: 'Invalid status. Expected "approved", "pending", or "rejected".' }));
-            }
-            target.status = newStatus;
-            target.approvedAt = newStatus === 'approved' ? new Date().toISOString() : null;
-            target.approvedBy = newStatus === 'approved' ? (authResult.auth!.user?.email || authResult.auth!.user?.id || 'admin') : null;
-            syncDevProductReviewStats(target.productId);
-            res.statusCode = 200;
-            return res.end(JSON.stringify({ success: true, message: `Review status updated to ${newStatus}.`, review: target }));
-          });
-        }
-
-        // Single Review Update/Edit (/api/admin/reviews/:id or /api/reviews/:id)
-        const devSingleReviewMatch = url.pathname.match(/^\/api\/(?:admin\/)?reviews\/([^/]+)\/?$/);
-        if (devSingleReviewMatch && (method === 'PUT' || method === 'PATCH')) {
-          const authResult = requireDevAuth(req);
-          if (authResult.error) return sendDevError(res, authResult.error);
-          if (!hasDevPermission(authResult.auth!, 'reviews.edit')) {
-            return sendDevError(res, {
-              status: 403,
-              body: { success: false, error: 'Forbidden: You do not have the "reviews.edit" permission required to perform this action.' },
-            });
-          }
-
-          const targetId = decodeURIComponent(devSingleReviewMatch[1]);
-          const target = devReviews.find((r) => r.id === targetId);
-          if (!target) {
-            res.statusCode = 404;
-            return res.end(JSON.stringify({ success: false, error: 'Review not found.' }));
-          }
-
-          return readBody((body) => {
-            const r = body?.review || body;
-            if (r.rating !== undefined) target.rating = Math.min(5, Math.max(1, Math.round(Number(r.rating) || 5)));
-            if (r.comment !== undefined) target.comment = String(r.comment).trim();
-            if (r.authorName !== undefined || r.author !== undefined) target.authorName = String(r.authorName || r.author).trim();
-            if (r.status !== undefined) target.status = String(r.status).trim();
-            syncDevProductReviewStats(target.productId);
-
-            res.statusCode = 200;
-            return res.end(JSON.stringify({ success: true, message: 'Review updated successfully.', review: target }));
-          });
-        }
-
-        // Single Review Deletion (/api/admin/reviews/:id or /api/reviews/:id)
-        if (devSingleReviewMatch && method === 'DELETE') {
-          const authResult = requireDevAuth(req);
-          if (authResult.error) return sendDevError(res, authResult.error);
-          if (!hasDevPermission(authResult.auth!, 'reviews.delete')) {
-            return sendDevError(res, {
-              status: 403,
-              body: { success: false, error: 'Forbidden: You do not have the "reviews.delete" permission required to perform this action.' },
-            });
-          }
-
-          const targetId = decodeURIComponent(devSingleReviewMatch[1]);
-          const targetIdx = devReviews.findIndex((r) => r.id === targetId);
-          const delProdId = targetIdx >= 0 ? devReviews[targetIdx].productId : null;
-          if (targetIdx >= 0) {
-            devReviews.splice(targetIdx, 1);
-          }
-          if (delProdId) {
-            syncDevProductReviewStats(delProdId);
-          }
-          res.statusCode = 200;
-          return res.end(JSON.stringify({ success: true, message: 'Review deleted successfully.' }));
-        }
-
+        // 6. REVIEWS
         if (url.pathname === '/api/reviews') {
           if (method === 'GET') {
             const productId = url.searchParams.get('productId') || undefined;
-            const approvedReviews = devReviews.filter((r) => r.status === 'approved');
-            const filteredReviews = productId ? approvedReviews.filter((r) => r.productId === productId) : approvedReviews;
+            const filteredReviews = productId ? devReviews.filter((r) => r.productId === productId) : devReviews;
             res.setHeader('Cache-Control', 'public, max-age=30, s-maxage=60, stale-while-revalidate=30');
             res.setHeader('Vary', 'Origin');
             res.statusCode = 200;
@@ -3633,9 +3410,6 @@ function localApiDevPlugin(): Plugin {
                 }
               }
 
-              // Customer reviews: status = pending ALWAYS!
-              // Even verified purchases must remain pending until approved by admin.
-              // Never trust status, approved_at, approved_by, or client verifiedPurchase.
               const newR = {
                 id: r.id || `rev-${Date.now()}`,
                 productId: targetProductId,
@@ -3643,18 +3417,11 @@ function localApiDevPlugin(): Plugin {
                 rating,
                 comment,
                 verifiedPurchase: isVerifiedPurchase,
-                status: 'pending',
-                approvedAt: null,
-                approvedBy: null,
                 createdAt: r.createdAt || new Date().toISOString(),
               };
               devReviews.unshift(newR);
               res.statusCode = 201;
-              return res.end(JSON.stringify({
-                success: true,
-                message: 'Thank you! Your review has been submitted and is pending administrator approval before appearing in the store.',
-                review: newR,
-              }));
+              return res.end(JSON.stringify({ success: true, review: newR }));
             });
           }
         }
