@@ -4675,12 +4675,6 @@ const AdminPanelContent: React.FC = () => {
                           <h4 className="font-bold text-sm text-slate-800 line-clamp-1">
                             {product.title}
                           </h4>
-                          <span className="inline-block font-mono text-[10px] text-slate-400">
-                            slug: /product/{product.slug || product.id}
-                          </span>
-                          <p className="text-xs text-slate-500 line-clamp-2 leading-relaxed">
-                            {product.description}
-                          </p>
                           <div className="flex items-baseline gap-2 pt-1">
                             <span className="text-base font-bold font-display text-slate-900">
                               ৳ {product.price.toLocaleString()}
