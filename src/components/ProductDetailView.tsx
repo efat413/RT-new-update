@@ -27,6 +27,7 @@ import {
   ExternalLink,
   AlertTriangle,
   X,
+  UploadCloud,
 } from 'lucide-react';
 import { Product } from '../types';
 import { useStore } from '../context/StoreContext';
@@ -37,6 +38,7 @@ import { parseColorOption } from '../utils/productVariants';
 import { getYouTubeThumbnailUrl } from '../utils/youtube';
 import { getResponsiveImageProps, getResponsiveImageUrl } from '../utils/responsiveImage';
 import { formatWhatsAppLink } from '../utils/phone';
+import { uploadApi } from '../services/storeApi';
 
 interface ProductDetailViewProps {
   productId: string;
@@ -90,7 +92,11 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
   const [reviewRating, setReviewRating] = useState(5);
   const [reviewAuthor, setReviewAuthor] = useState('');
   const [reviewComment, setReviewComment] = useState('');
+  const [reviewPhotos, setReviewPhotos] = useState<string[]>([]);
+  const [isUploadingReviewPhotos, setIsUploadingReviewPhotos] = useState(false);
+  const [reviewPhotoError, setReviewPhotoError] = useState<string | null>(null);
   const [reviewSuccessMsg, setReviewSuccessMsg] = useState('');
+  const reviewFileInputRef = useRef<HTMLInputElement>(null);
   const [confirmDialog, setConfirmDialog] = useState<{
     isOpen: boolean;
     title: string;
@@ -413,6 +419,73 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
     quickBuy(product, size, color);
   };
 
+  const MAX_REVIEW_PHOTO_BYTES = 2097152; // 2 MB (2,097,152 bytes)
+
+  const handleReviewPhotoSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    setReviewPhotoError(null);
+
+    if (reviewPhotos.length + files.length > 5) {
+      setReviewPhotoError('You can attach a maximum of 5 photos per review.');
+      if (reviewFileInputRef.current) reviewFileInputRef.current.value = '';
+      return;
+    }
+
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
+    const validFiles: File[] = [];
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (file.size > MAX_REVIEW_PHOTO_BYTES) {
+        setReviewPhotoError(`"${file.name}" exceeds the 2 MB limit (max 2,097,152 bytes). Please select a smaller photo.`);
+        if (reviewFileInputRef.current) reviewFileInputRef.current.value = '';
+        return;
+      }
+      if (!allowedTypes.includes(file.type.toLowerCase())) {
+        setReviewPhotoError(`"${file.name}" is not a supported format. Please select JPEG, PNG, or WebP.`);
+        if (reviewFileInputRef.current) reviewFileInputRef.current.value = '';
+        return;
+      }
+      validFiles.push(file);
+    }
+
+    setIsUploadingReviewPhotos(true);
+    try {
+      const newPhotos: string[] = [];
+      for (const file of validFiles) {
+        try {
+          const uploadRes = await uploadApi.upload(file);
+          if (uploadRes.success && uploadRes.url) {
+            newPhotos.push(uploadRes.url);
+            continue;
+          }
+        } catch {}
+
+        // Fallback: convert to base64 Data URL so photo is securely attached
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => reject(new Error('Failed to read photo file.'));
+          reader.readAsDataURL(file);
+        });
+        newPhotos.push(dataUrl);
+      }
+      setReviewPhotos((prev) => [...prev, ...newPhotos]);
+    } catch (err: any) {
+      setReviewPhotoError(err.message || 'Failed to process selected photos.');
+    } finally {
+      setIsUploadingReviewPhotos(false);
+      if (reviewFileInputRef.current) reviewFileInputRef.current.value = '';
+    }
+  };
+
+  const handleRemoveReviewPhoto = (indexToRemove: number) => {
+    setReviewPhotos((prev) => prev.filter((_, idx) => idx !== indexToRemove));
+    setReviewPhotoError(null);
+  };
+
   const handleReviewSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!product || !reviewComment.trim()) return;
@@ -423,10 +496,13 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
         authorName: reviewAuthor.trim() || 'Verified Shopper',
         rating: reviewRating,
         comment: reviewComment.trim(),
+        images: reviewPhotos,
       });
 
       setReviewComment('');
       setReviewAuthor('');
+      setReviewPhotos([]);
+      setReviewPhotoError(null);
       setReviewSuccessMsg(res?.message || 'Thank you! Your review has been submitted for moderation.');
       setTimeout(() => setReviewSuccessMsg(''), 6000);
     } catch (err: any) {
@@ -1163,8 +1239,79 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
                       />
                     </div>
 
+                    {/* Optional Upload Review Photos Field */}
+                    <div className="space-y-2 pt-1">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                          <Images className="w-3.5 h-3.5 text-slate-500" />
+                          <span>Upload Review Photos (Optional)</span>
+                        </label>
+                        <span className="text-[10px] text-slate-400">Max 2 MB each (JPEG, PNG, WebP)</span>
+                      </div>
+
+                      {reviewPhotoError && (
+                        <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-1.5 animate-in fade-in">
+                          <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-rose-600" />
+                          <span>{reviewPhotoError}</span>
+                        </div>
+                      )}
+
+                      {reviewPhotos.length < 5 && (
+                        <div
+                          onClick={() => reviewFileInputRef.current?.click()}
+                          className={`border-2 border-dashed border-slate-300 hover:border-rose-400 bg-slate-50/60 hover:bg-slate-50 rounded-xl p-3 text-center cursor-pointer transition-colors ${
+                            isUploadingReviewPhotos ? 'opacity-50 pointer-events-none' : ''
+                          }`}
+                        >
+                          <input
+                            ref={reviewFileInputRef}
+                            type="file"
+                            accept="image/jpeg,image/png,image/webp"
+                            multiple
+                            onChange={handleReviewPhotoSelect}
+                            className="hidden"
+                          />
+                          <UploadCloud className="w-4 h-4 text-slate-400 mx-auto mb-1" />
+                          <span className="text-xs font-semibold text-slate-700 block">
+                            {isUploadingReviewPhotos ? 'Processing photos...' : 'Click to select photos'}
+                          </span>
+                          <span className="text-[10px] text-slate-400">
+                            Up to 5 images • Max 2 MB per image
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Photo Previews with Remove Buttons */}
+                      {reviewPhotos.length > 0 && (
+                        <div className="flex items-center gap-2 flex-wrap pt-1">
+                          {reviewPhotos.map((photoUrl, idx) => (
+                            <div
+                              key={idx}
+                              className="relative w-14 h-14 rounded-xl overflow-hidden border border-slate-200 bg-slate-100 group shrink-0 shadow-2xs"
+                            >
+                              <img
+                                src={photoUrl}
+                                alt={`Selected review photo ${idx + 1}`}
+                                className="w-full h-full object-cover"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveReviewPhoto(idx)}
+                                className="absolute top-1 right-1 p-0.5 rounded-full bg-rose-600 text-white hover:bg-rose-700 transition-colors shadow-xs cursor-pointer"
+                                title="Remove photo"
+                                aria-label={`Remove photo ${idx + 1}`}
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
                     <button
                       type="submit"
+                      disabled={isUploadingReviewPhotos}
                       className="w-full py-2.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-xs active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
                     >
                       <Send className="w-3.5 h-3.5" />
