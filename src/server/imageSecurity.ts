@@ -7,6 +7,9 @@
 export const MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024; // 10 Megabytes for general site media
 export const REVIEW_MAX_IMAGE_SIZE = 2 * 1024 * 1024; // 2 Megabytes strictly for review photos
 export const MIN_IMAGE_SIZE_BYTES = 12; // Minimum bytes to verify magic headers
+export const D1_SAFE_BLOB_CHUNK_BYTES = 768 * 1024; // 768 KB safe ceiling per D1 statement/row to avoid SQLite row limits
+export const MAX_IMAGE_DIMENSION = 4096; // 4096px maximum dimension ceiling for site media
+export const MAX_REVIEW_IMAGE_DIMENSION = 2560; // 2560px maximum dimension ceiling for customer review photos
 
 export type SupportedImageFormat = 'jpeg' | 'png' | 'webp' | 'gif' | 'ico';
 
@@ -16,7 +19,116 @@ export interface ImageValidationResult {
   mime?: string;
   extension?: string;
   size?: number;
+  width?: number;
+  height?: number;
   error?: string;
+}
+
+/**
+ * Memory-efficient conversion from Uint8Array to Base64 string without millions of string allocations.
+ * Uses 16KB batch chunks with String.fromCharCode.apply, or Buffer if present in the runtime.
+ */
+export function uint8ArrayToBase64(bytes: Uint8Array): string {
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64');
+  }
+  const CHUNK_SIZE = 16384;
+  const chunks: string[] = [];
+  for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
+    const chunk = bytes.subarray(i, i + CHUNK_SIZE);
+    chunks.push(String.fromCharCode.apply(null, chunk as unknown as number[]));
+  }
+  return btoa(chunks.join(''));
+}
+
+/**
+ * Memory-efficient conversion from Base64 string to Uint8Array without single-character string iteration.
+ */
+export function base64ToUint8Array(base64: string): Uint8Array {
+  if (typeof Buffer !== 'undefined') {
+    const buf = Buffer.from(base64, 'base64');
+    return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  }
+  const binary = atob(base64);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i += 4096) {
+    const end = Math.min(i + 4096, len);
+    for (let j = i; j < end; j++) {
+      bytes[j] = binary.charCodeAt(j);
+    }
+  }
+  return bytes;
+}
+
+/**
+ * Extracts width and height directly from image binary headers before full buffer processing.
+ * Supports PNG, GIF, WebP (VP8, VP8L, VP8X), and JPEG (SOF markers).
+ */
+export function getImageDimensions(bytes: Uint8Array): { width: number; height: number } | null {
+  if (bytes.length < 16) return null;
+
+  // 1. PNG: Dimensions stored in IHDR chunk (bytes 16-23)
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47 && bytes.length >= 24) {
+    const width = (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19];
+    const height = (bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23];
+    return { width: Math.abs(width), height: Math.abs(height) };
+  }
+
+  // 2. GIF: Width (bytes 6-7), Height (bytes 8-9) in little-endian
+  if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes.length >= 10) {
+    const width = bytes[6] | (bytes[7] << 8);
+    const height = bytes[8] | (bytes[9] << 8);
+    return { width, height };
+  }
+
+  // 3. WebP: RIFF ... WEBP
+  if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes.length >= 30) {
+    const type = String.fromCharCode(bytes[12], bytes[13], bytes[14], bytes[15]);
+    if (type === 'VP8 ' && bytes.length >= 30) {
+      const width = (bytes[26] | (bytes[27] << 8)) & 0x3fff;
+      const height = (bytes[28] | (bytes[29] << 8)) & 0x3fff;
+      return { width, height };
+    }
+    if (type === 'VP8L' && bytes.length >= 25) {
+      const b0 = bytes[21];
+      const b1 = bytes[22];
+      const b2 = bytes[23];
+      const b3 = bytes[24];
+      const width = 1 + (((b1 & 0x3f) << 8) | b0);
+      const height = 1 + (((b3 & 0x0f) << 10) | (b2 << 2) | ((b1 & 0xc0) >> 6));
+      return { width, height };
+    }
+    if (type === 'VP8X' && bytes.length >= 30) {
+      const width = 1 + (bytes[24] | (bytes[25] << 8) | (bytes[26] << 16));
+      const height = 1 + (bytes[27] | (bytes[28] << 8) | (bytes[29] << 16));
+      return { width, height };
+    }
+  }
+
+  // 4. JPEG: Scan through markers looking for SOF (Start of Frame)
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    let offset = 2;
+    const maxScan = Math.min(bytes.length, 65536);
+    while (offset < maxScan - 8) {
+      if (bytes[offset] !== 0xff) {
+        offset++;
+        continue;
+      }
+      const marker = bytes[offset + 1];
+      // Baseline / Progressive / Extended SOF markers
+      if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf)) {
+        const height = (bytes[offset + 5] << 8) | bytes[offset + 6];
+        const width = (bytes[offset + 7] << 8) | bytes[offset + 8];
+        return { width, height };
+      }
+      const len = (bytes[offset + 2] << 8) | bytes[offset + 3];
+      if (len <= 0) break;
+      offset += 2 + len;
+    }
+  }
+
+  return null;
 }
 
 // Disallowed executable / script / markup tags that must never appear in raw image data
@@ -108,6 +220,15 @@ export function validateImageBuffer(buffer: ArrayBuffer | Uint8Array): ImageVali
     return {
       valid: false,
       error: 'Disallowed file content detected: Vector graphics (SVG), XML, HTML, and executable scripts are strictly prohibited.',
+    };
+  }
+
+  // 1.1 Enforce maximum image dimensions ceiling before processing
+  const dims = getImageDimensions(bytes);
+  if (dims && (dims.width > MAX_IMAGE_DIMENSION || dims.height > MAX_IMAGE_DIMENSION)) {
+    return {
+      valid: false,
+      error: `Image dimensions (${dims.width}x${dims.height}px) exceed maximum allowed limit of ${MAX_IMAGE_DIMENSION}px.`,
     };
   }
 
@@ -260,6 +381,13 @@ export function validateReviewPhotoBuffer(buffer: ArrayBuffer | Uint8Array): {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
   if (bytes.byteLength > MAX_REVIEW_PHOTO_BYTES) {
     return { valid: false, error: 'Review photo exceeds maximum allowed limit of 2 MB.' };
+  }
+  const dims = getImageDimensions(bytes);
+  if (dims && (dims.width > MAX_REVIEW_IMAGE_DIMENSION || dims.height > MAX_REVIEW_IMAGE_DIMENSION)) {
+    return {
+      valid: false,
+      error: `Review photo dimensions (${dims.width}x${dims.height}px) exceed maximum allowed ceiling of ${MAX_REVIEW_IMAGE_DIMENSION}px.`,
+    };
   }
   const result = validateImageBuffer(bytes);
   if (!result.valid || !result.format || !ALLOWED_REVIEW_PHOTO_FORMATS.includes(result.format as any)) {

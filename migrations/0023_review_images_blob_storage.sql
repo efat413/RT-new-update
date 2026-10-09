@@ -4,6 +4,7 @@
 --
 -- Safe additive table for storing customer & admin review photos directly
 -- in Cloudflare D1 as binary BLOBs up to 2MB per image.
+-- Respects Cloudflare D1 ~1MB single-row size limits via atomic 768KB chunking.
 -- ==============================================================
 
 CREATE TABLE IF NOT EXISTS review_images (

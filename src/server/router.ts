@@ -85,6 +85,10 @@ import {
   getPaginatedAuditLogsFromD1,
   findOrderByCourierIdentifier,
   checkAndRecordWebhookFingerprint,
+  // Review Image Binary Blobs
+  saveReviewImageBlobInD1,
+  getReviewImageBlobFromD1,
+  deleteReviewImageFromD1,
 } from './db';
 import {
   Order,
@@ -145,6 +149,11 @@ import {
   sanitizeReviewImageReference,
   MAX_IMAGE_SIZE_BYTES,
   REVIEW_MAX_IMAGE_SIZE,
+  uint8ArrayToBase64,
+  base64ToUint8Array,
+  D1_SAFE_BLOB_CHUNK_BYTES,
+  MAX_IMAGE_DIMENSION,
+  MAX_REVIEW_IMAGE_DIMENSION,
 } from './imageSecurity';
 
 let activeApiRequest: Request | null = null;
@@ -3438,9 +3447,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         }
         const matches = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
         if (matches) {
-          const raw = atob(matches[2]);
+          const base64Str = matches[2];
+          const approxSize = Math.ceil((base64Str.length * 3) / 4);
           const maxLimit = uploadPurpose === 'review' ? REVIEW_MAX_IMAGE_SIZE : MAX_IMAGE_SIZE_BYTES;
-          if (raw.length > maxLimit) {
+          if (approxSize > maxLimit) {
             return jsonResponse({
               success: false,
               error: uploadPurpose === 'review'
@@ -3448,9 +3458,14 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
                 : 'File size exceeds maximum allowed 10MB limit.',
             }, 413);
           }
-          const u8 = new Uint8Array(raw.length);
-          for (let i = 0; i < raw.length; i++) {
-            u8[i] = raw.charCodeAt(i);
+          const u8 = base64ToUint8Array(base64Str);
+          if (u8.byteLength > maxLimit) {
+            return jsonResponse({
+              success: false,
+              error: uploadPurpose === 'review'
+                ? 'File size exceeds maximum allowed 2MB limit for review photos.'
+                : 'File size exceeds maximum allowed 10MB limit.',
+            }, 413);
           }
           fileBuffer = u8.buffer;
         } else {
@@ -3478,12 +3493,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
       // 3. Store asset in Cloudflare D1 with strictly verified MIME type
       if (env.DB) {
-        const bytes = new Uint8Array(fileBuffer);
-        let binary = '';
-        for (let i = 0; i < bytes.byteLength; i++) {
-          binary += String.fromCharCode(bytes[i]);
-        }
-        const base64Data = btoa(binary);
+        const base64Data = uint8ArrayToBase64(new Uint8Array(fileBuffer));
         await saveMediaAssetInD1(env.DB, key, verifiedMime, base64Data, fileBuffer.byteLength);
       }
 
@@ -3632,11 +3642,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       if (env.DB) {
         const asset = await getMediaAssetFromD1(env.DB, key);
         if (asset) {
-          const raw = atob(asset.dataBase64);
-          rawBuffer = new Uint8Array(raw.length);
-          for (let i = 0; i < raw.length; i++) {
-            rawBuffer[i] = raw.charCodeAt(i);
-          }
+          rawBuffer = base64ToUint8Array(asset.dataBase64);
           contentType = asset.contentType || 'image/jpeg';
         }
       }
@@ -3729,44 +3735,16 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     }
 
     try {
-      const row = await env.DB.prepare(
-        'SELECT id, mime_type, file_size, data FROM review_images WHERE id = ? LIMIT 1'
-      ).bind(imageId).first<{
-        id: string;
-        mime_type: string;
-        file_size: number;
-        data: any;
-      }>();
-
-      if (!row || !row.data) {
+      const asset = await getReviewImageBlobFromD1(env.DB, imageId);
+      if (!asset || !asset.data || asset.data.byteLength === 0) {
         return jsonResponse({ success: false, error: 'Review image not found.' }, 404);
       }
 
-      const mimeType = row.mime_type || 'image/jpeg';
-      let bodyData: BodyInit;
-
-      if (row.data instanceof ArrayBuffer) {
-        bodyData = row.data;
-      } else if (row.data instanceof Uint8Array) {
-        bodyData = row.data;
-      } else if (Array.isArray(row.data)) {
-        bodyData = new Uint8Array(row.data);
-      } else if (typeof row.data === 'string') {
-        const raw = atob(row.data);
-        const u8 = new Uint8Array(raw.length);
-        for (let i = 0; i < raw.length; i++) {
-          u8[i] = raw.charCodeAt(i);
-        }
-        bodyData = u8;
-      } else {
-        bodyData = row.data as any;
-      }
-
-      return new Response(bodyData, {
+      return new Response(asset.data.buffer, {
         status: 200,
         headers: {
-          'Content-Type': mimeType,
-          'Content-Length': String(row.file_size || (bodyData as any).byteLength || 0),
+          'Content-Type': asset.mimeType,
+          'Content-Length': String(asset.fileSize || asset.data.byteLength),
           'Cache-Control': 'public, max-age=31536000, immutable',
           'X-Content-Type-Options': 'nosniff',
           'Content-Security-Policy': "default-src 'none'",
@@ -3946,6 +3924,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     }
 
     if (method === 'POST') {
+      const createdReviewImageIds: string[] = [];
       try {
         const isDev = isDevEnvironment(env);
         const clientIp = getClientIp(request, isDev);
@@ -4108,28 +4087,31 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         }
 
         // 5. Sanitize and validate photos metadata (Strictly 2 MB per image, JPEG/PNG/WebP, max 5 photos)
-        let reviewImages: string[] = [];
-        if (Array.isArray(reviewData.images)) {
-          for (const rawImg of reviewData.images.slice(0, 5)) {
-            if (typeof rawImg !== 'string') continue;
+        const reviewImages: string[] = [];
 
-            // Handle Base64 Data URLs (e.g. from customer review upload)
-            const base64Match = rawImg.match(/^data:image\/(jpeg|png|webp);base64,(.+)$/i);
-            if (base64Match) {
-              const base64Content = base64Match[2];
-              const approxBinaryLength = Math.floor((base64Content.length * 3) / 4);
-              if (approxBinaryLength > 2 * 1024 * 1024) {
-                return jsonResponse({
-                  success: false,
-                  error: 'Attached review photo exceeds maximum allowed limit of 2 MB.',
-                }, 400);
-              }
+        try {
+          if (Array.isArray(reviewData.images)) {
+            for (const rawImg of reviewData.images.slice(0, 5)) {
+              if (typeof rawImg !== 'string') continue;
 
-              try {
-                const rawBinary = atob(base64Content);
-                const u8 = new Uint8Array(rawBinary.length);
-                for (let i = 0; i < rawBinary.length; i++) {
-                  u8[i] = rawBinary.charCodeAt(i);
+              // Handle Base64 Data URLs (e.g. from customer review upload)
+              const base64Match = rawImg.match(/^data:image\/(jpeg|png|webp);base64,(.+)$/i);
+              if (base64Match) {
+                const base64Content = base64Match[2];
+                const approxBinaryLength = Math.floor((base64Content.length * 3) / 4);
+                if (approxBinaryLength > 2 * 1024 * 1024) {
+                  return jsonResponse({
+                    success: false,
+                    error: 'Attached review photo exceeds maximum allowed limit of 2 MB.',
+                  }, 400);
+                }
+
+                const u8 = base64ToUint8Array(base64Content);
+                if (u8.byteLength > 2 * 1024 * 1024) {
+                  return jsonResponse({
+                    success: false,
+                    error: 'Attached review photo exceeds maximum allowed limit of 2 MB.',
+                  }, 400);
                 }
 
                 const validation = validateReviewPhotoBuffer(u8);
@@ -4142,33 +4124,47 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
                 const imageId = `rev-img-${Date.now()}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`;
                 if (env.DB) {
-                  await env.DB.prepare(
-                    `INSERT INTO review_images (id, review_id, product_id, mime_type, file_size, data)
-                     VALUES (?, ?, ?, ?, ?, ?)`
-                  ).bind(imageId, null, targetProductId, validation.mime, u8.byteLength, u8.buffer).run();
+                  await saveReviewImageBlobInD1(
+                    env.DB,
+                    imageId,
+                    null,
+                    targetProductId,
+                    validation.mime,
+                    u8
+                  );
+                  createdReviewImageIds.push(imageId);
                 }
                 reviewImages.push(`/api/reviews/images/${imageId}`);
-              } catch (b64Err) {
-                console.warn('[Review Upload Error] Failed to process base64 photo:', b64Err);
+                continue;
               }
-              continue;
-            }
 
-            // Internal media references / safe URL references (arbitrary external URLs are rejected)
-            const sanitized = sanitizeReviewImageReference(rawImg);
-            if (sanitized) {
-              const mediaKeyMatch = sanitized.match(/(?:^\/api\/media\/|^)([a-zA-Z0-9_\-.]+)$/);
-              if (mediaKeyMatch && isValidMediaKey(mediaKeyMatch[1]) && env.DB) {
-                try {
-                  const exists = await mediaAssetExistsInD1(env.DB, mediaKeyMatch[1]);
-                  if (!exists) {
-                    continue; // Skip invalid or nonexistent internal media assets
-                  }
-                } catch {}
+              // Internal media references / safe URL references (arbitrary external URLs are rejected)
+              const sanitized = sanitizeReviewImageReference(rawImg);
+              if (sanitized) {
+                const mediaKeyMatch = sanitized.match(/(?:^\/api\/media\/|^)([a-zA-Z0-9_\-.]+)$/);
+                if (mediaKeyMatch && isValidMediaKey(mediaKeyMatch[1]) && env.DB) {
+                  try {
+                    const exists = await mediaAssetExistsInD1(env.DB, mediaKeyMatch[1]);
+                    if (!exists) {
+                      continue; // Skip invalid or nonexistent internal media assets
+                    }
+                  } catch {}
+                }
+                reviewImages.push(sanitized);
               }
-              reviewImages.push(sanitized);
             }
           }
+        } catch (photoErr: any) {
+          if (env.DB && createdReviewImageIds.length > 0) {
+            for (const rollId of createdReviewImageIds) {
+              await deleteReviewImageFromD1(env.DB, rollId).catch(() => {});
+            }
+          }
+          console.error('[Review Photo Persist Error]:', photoErr);
+          return jsonResponse({
+            success: false,
+            error: 'Failed to persist review photo asset in storage.',
+          }, 500);
         }
 
         // 6. Security Rule: Customer-submitted reviews default strictly to 'pending' on the server.
@@ -4198,33 +4194,45 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           ? (reqSrc as ReviewSource)
           : (isAdminCreation ? 'admin' : 'customer');
 
-        const created = await insertReview(env.DB, {
-          productId: targetProductId,
-          authorName,
-          comment,
-          rating,
-          verifiedPurchase: isVerifiedPurchase,
-          status: initialStatus,
-          source: initialSource,
-          approvedAt,
-          approvedBy,
-          images: reviewImages,
-        });
+        let created;
+        try {
+          created = await insertReview(env.DB, {
+            productId: targetProductId,
+            authorName,
+            comment,
+            rating,
+            verifiedPurchase: isVerifiedPurchase,
+            status: initialStatus,
+            source: initialSource,
+            approvedAt,
+            approvedBy,
+            images: reviewImages,
+          });
 
-        // Link stored binary review_images to created review ID
-        if (env.DB && reviewImages.length > 0) {
-          for (const imgUrl of reviewImages) {
-            const m = imgUrl.match(/^\/api\/reviews\/images\/([^/]+)$/);
-            if (m) {
-              await env.DB.prepare('UPDATE review_images SET review_id = ? WHERE id = ?')
-                .bind(created.id, m[1])
+          // Link stored binary review_images to created review ID (including chunk rows)
+          if (env.DB && createdReviewImageIds.length > 0) {
+            for (const imgId of createdReviewImageIds) {
+              await env.DB.prepare('UPDATE review_images SET review_id = ? WHERE id = ? OR id LIKE ?')
+                .bind(created.id, imgId, `${imgId}_chunk_%`)
                 .run();
             }
           }
+        } catch (insertErr) {
+          if (env.DB && createdReviewImageIds.length > 0) {
+            for (const rollId of createdReviewImageIds) {
+              await deleteReviewImageFromD1(env.DB, rollId).catch(() => {});
+            }
+          }
+          throw insertErr;
         }
 
         return jsonResponse({ success: true, review: created }, 201);
       } catch (err: any) {
+        if (env.DB && createdReviewImageIds.length > 0) {
+          for (const rollId of createdReviewImageIds) {
+            await deleteReviewImageFromD1(env.DB, rollId).catch(() => {});
+          }
+        }
         console.error('Error creating review:', err);
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
       }

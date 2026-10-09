@@ -2250,13 +2250,16 @@ export async function saveMediaAssetInD1(
   dataBase64: string,
   size: number
 ): Promise<void> {
-  await db
+  const res = await db
     .prepare(`
       INSERT OR REPLACE INTO media_assets (id, content_type, data, size, created_at)
       VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
     `)
     .bind(id, contentType, dataBase64, size)
     .run();
+  if (res.success === false) {
+    throw new Error(res.error || 'Failed to save media asset in D1.');
+  }
 }
 
 export async function getMediaAssetFromD1(
@@ -2294,6 +2297,178 @@ export async function mediaAssetExistsInD1(
   } catch {
     return false;
   }
+}
+
+export const D1_BLOB_CHUNK_SIZE = 768 * 1024; // 768 KB safe ceiling per D1 statement/row
+
+/**
+ * High-performance, zero-OOM binary-to-base64 encoder.
+ * Eliminates character-by-character string concatenations causing Worker memory spikes.
+ */
+export function uint8ArrayToBase64(bytes: Uint8Array): string {
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64');
+  }
+  const CHUNK_SIZE = 0x8000; // 32 KB chunking avoids stack overflow & V8 GC spikes
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
+    const chunk = bytes.subarray(i, Math.min(i + CHUNK_SIZE, bytes.length));
+    binary += String.fromCharCode.apply(null, chunk as unknown as number[]);
+  }
+  return btoa(binary);
+}
+
+/**
+ * High-performance, memory-efficient base64-to-Uint8Array decoder.
+ */
+export function base64ToUint8Array(base64: string): Uint8Array {
+  if (typeof Buffer !== 'undefined') {
+    const buf = Buffer.from(base64, 'base64');
+    return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  }
+  const binary = atob(base64);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+/**
+ * Persists customer & admin review photos directly in Cloudflare D1 as binary BLOBs.
+ * Atomically chunks blobs exceeding 768KB into indexed sub-rows to respect SQLite D1 limits.
+ * Catches and rolls back partially inserted chunks if any write fails.
+ */
+export async function saveReviewImageBlobInD1(
+  db: D1Database,
+  id: string,
+  reviewId: string | null,
+  productId: string,
+  mimeType: string,
+  buffer: ArrayBuffer | Uint8Array
+): Promise<void> {
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  const totalSize = bytes.byteLength;
+  const numChunks = Math.max(1, Math.ceil(totalSize / D1_BLOB_CHUNK_SIZE));
+  const insertedIds: string[] = [];
+
+  try {
+    if (numChunks === 1) {
+      const payloadBuffer =
+        bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+          ? bytes.buffer
+          : bytes.slice().buffer;
+      const res = await db
+        .prepare(
+          `INSERT INTO review_images (id, review_id, product_id, mime_type, file_size, data)
+           VALUES (?, ?, ?, ?, ?, ?)`
+        )
+        .bind(id, reviewId, productId, mimeType, totalSize, payloadBuffer)
+        .run();
+      if (res.success === false) {
+        throw new Error(res.error || 'Failed to insert review image blob into D1.');
+      }
+      insertedIds.push(id);
+    } else {
+      for (let i = 0; i < numChunks; i++) {
+        const chunkId = i === 0 ? id : `${id}_chunk_${i}`;
+        const start = i * D1_BLOB_CHUNK_SIZE;
+        const end = Math.min(start + D1_BLOB_CHUNK_SIZE, totalSize);
+        const chunkBytes = bytes.slice(start, end);
+        const res = await db
+          .prepare(
+            `INSERT INTO review_images (id, review_id, product_id, mime_type, file_size, data)
+             VALUES (?, ?, ?, ?, ?, ?)`
+          )
+          .bind(chunkId, reviewId, productId, mimeType, totalSize, chunkBytes.buffer)
+          .run();
+        if (res.success === false) {
+          throw new Error(res.error || `Failed to insert chunk ${i} of review image.`);
+        }
+        insertedIds.push(chunkId);
+      }
+    }
+  } catch (err: any) {
+    if (insertedIds.length > 0) {
+      try {
+        for (const inserted of insertedIds) {
+          await db.prepare('DELETE FROM review_images WHERE id = ?').bind(inserted).run();
+        }
+      } catch (rollbackErr) {
+        console.error('[D1 Rollback Error] Failed to delete orphaned chunks:', rollbackErr);
+      }
+    }
+    throw err;
+  }
+}
+
+/**
+ * Retrieves and reassembles a review image from D1 binary BLOB storage.
+ * Supports transparent single-row retrieval and multi-chunk reassembly.
+ */
+export async function getReviewImageBlobFromD1(
+  db: D1Database,
+  id: string
+): Promise<{ mimeType: string; fileSize: number; data: Uint8Array } | null> {
+  try {
+    const rows = await db
+      .prepare('SELECT id, mime_type, file_size, data FROM review_images WHERE id = ? OR id LIKE ? ORDER BY id ASC')
+      .bind(id, `${id}_chunk_%`)
+      .all<{ id: string; mime_type: string; file_size: number; data: any }>();
+
+    if (!rows.results || rows.results.length === 0) return null;
+
+    const first = rows.results[0];
+    const mimeType = first.mime_type || 'image/jpeg';
+    const totalFileSize = Number(first.file_size) || 0;
+
+    const toUint8Array = (raw: any): Uint8Array => {
+      if (raw instanceof Uint8Array) return raw;
+      if (raw instanceof ArrayBuffer) return new Uint8Array(raw);
+      if (Array.isArray(raw)) return new Uint8Array(raw);
+      if (typeof raw === 'string') {
+        return base64ToUint8Array(raw);
+      }
+      return new Uint8Array(0);
+    };
+
+    if (rows.results.length === 1) {
+      const data = toUint8Array(first.data);
+      return { mimeType, fileSize: totalFileSize || data.byteLength, data };
+    }
+
+    const sorted = rows.results.slice().sort((a, b) => {
+      if (a.id === id) return -1;
+      if (b.id === id) return 1;
+      const numA = parseInt(a.id.replace(`${id}_chunk_`, ''), 10) || 0;
+      const numB = parseInt(b.id.replace(`${id}_chunk_`, ''), 10) || 0;
+      return numA - numB;
+    });
+
+    const chunkArrays = sorted.map((r) => toUint8Array(r.data));
+    const combinedLength = chunkArrays.reduce((sum, c) => sum + c.byteLength, 0);
+    const combined = new Uint8Array(combinedLength);
+    let offset = 0;
+    for (const c of chunkArrays) {
+      combined.set(c, offset);
+      offset += c.byteLength;
+    }
+
+    return { mimeType, fileSize: totalFileSize || combined.byteLength, data: combined };
+  } catch (err) {
+    console.warn('[D1 Review Image Fetch Error]:', err);
+    return null;
+  }
+}
+
+export async function deleteReviewImageFromD1(
+  db: D1Database,
+  id: string
+): Promise<void> {
+  try {
+    await db.prepare('DELETE FROM review_images WHERE id = ? OR id LIKE ?').bind(id, `${id}_chunk_%`).run();
+  } catch {}
 }
 
 // ==============================================================
