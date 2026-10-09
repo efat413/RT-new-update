@@ -308,10 +308,14 @@ export function sanitizeReviewImageReference(img: any): string | null {
   const mediaMatch = trimmed.match(/^\/api\/media\/([a-zA-Z0-9_\-.]+)$/);
   if (mediaMatch && isValidMediaKey(mediaMatch[1])) return trimmed;
 
-  // 3. Safe relative image filename (for existing seed & test data support)
+  // 3. Authoritative internal review image URL: /api/reviews/images/<id>
+  const revImgMatch = trimmed.match(/^\/api\/reviews\/images\/([a-zA-Z0-9_\-]+)$/);
+  if (revImgMatch) return trimmed;
+
+  // 4. Safe relative image filename (for existing seed & test data support)
   if (/^[a-zA-Z0-9_\-]+\.(jpg|jpeg|png|webp|gif|ico)$/i.test(trimmed)) return trimmed;
 
-  // 4. Safe HTTPS URL to trusted image hosts
+  // 5. Safe HTTPS URL to trusted image hosts
   try {
     const parsed = new URL(trimmed);
     if (parsed.protocol !== 'https:') return null;

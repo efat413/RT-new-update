@@ -3762,6 +3762,73 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
   }
 
   // ==========================================
+  // 4C. REVIEW IMAGES BLOB SERVING (D1 BINARY BLOB)
+  // ==========================================
+  const reviewImageBlobMatch = path.match(/^\/api\/reviews\/images\/([^/]+)$/);
+  if (reviewImageBlobMatch && method === 'GET') {
+    const imageId = decodeURIComponent(reviewImageBlobMatch[1]).trim();
+    // Validate ID format to prevent unauthenticated ID tampering / path traversal / SQL injection
+    if (!imageId || !/^[a-zA-Z0-9_\-]+$/.test(imageId)) {
+      return jsonResponse({ success: false, error: 'Invalid review image ID format.' }, 400);
+    }
+
+    if (!env.DB) {
+      return jsonResponse({ success: false, error: 'Database service unavailable.' }, 503);
+    }
+
+    try {
+      const row = await env.DB.prepare(
+        'SELECT id, mime_type, file_size, data FROM review_images WHERE id = ? LIMIT 1'
+      ).bind(imageId).first<{
+        id: string;
+        mime_type: string;
+        file_size: number;
+        data: any;
+      }>();
+
+      if (!row || !row.data) {
+        return jsonResponse({ success: false, error: 'Review image not found.' }, 404);
+      }
+
+      const mimeType = row.mime_type || 'image/jpeg';
+      let bodyData: BodyInit;
+
+      if (row.data instanceof ArrayBuffer) {
+        bodyData = row.data;
+      } else if (row.data instanceof Uint8Array) {
+        bodyData = row.data;
+      } else if (Array.isArray(row.data)) {
+        bodyData = new Uint8Array(row.data);
+      } else if (typeof row.data === 'string') {
+        const raw = atob(row.data);
+        const u8 = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) {
+          u8[i] = raw.charCodeAt(i);
+        }
+        bodyData = u8;
+      } else {
+        bodyData = row.data as any;
+      }
+
+      return new Response(bodyData, {
+        status: 200,
+        headers: {
+          'Content-Type': mimeType,
+          'Content-Length': String(row.file_size || (bodyData as any).byteLength || 0),
+          'Cache-Control': 'public, max-age=31536000, immutable',
+          'X-Content-Type-Options': 'nosniff',
+          'Content-Security-Policy': "default-src 'none'",
+          'Vary': 'Accept',
+          ...getCorsHeaders(request, env),
+        },
+      });
+    } catch (err: any) {
+      logServerError({ route: path, method, error: err, action: 'review_image.serve' });
+      return jsonResponse({ success: false, error: 'Failed to retrieve review image.' }, 500);
+    }
+  }
+
+  // ==========================================
   // 5. COUPONS CRUD ROUTES
   // ==========================================
   if (path === '/api/coupons') {
