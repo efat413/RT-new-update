@@ -5134,6 +5134,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       //   Client-supplied userId, customerId, role, and authentication status are NEVER trusted and are stripped.
       verifiedTokenUser = null;
       let authenticatedDbUser: any = null;
+      let isAdminSession = false;
 
       const token = extractTokenFromRequest(request);
       if (token) {
@@ -5150,6 +5151,12 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         }
         authenticatedDbUser = authRes.auth.dbUser;
         verifiedTokenUser = authRes.auth.tokenUser;
+        isAdminSession = Boolean(
+          authRes.auth.role === 'super_admin' ||
+          authRes.auth.role === 'admin' ||
+          authRes.auth.role === 'sub_admin' ||
+          hasPermission(authRes.auth, 'order.manage')
+        );
       }
 
       // Security hardening: Client-provided userId, customerId, role, and auth status are NEVER trusted
@@ -5164,6 +5171,22 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         delete (orderData.customer as any).customerId;
         delete (orderData.customer as any).isAuthenticated;
         delete (orderData.customer as any).authenticated;
+      }
+
+      // Security hardening: Advance payment spoofing protection (Bug #2)
+      // Force advancePayment = 0 for unauthenticated guest or non-admin checkout.
+      // Strictly preserve client-supplied advancePayment ONLY for authenticated admin sessions.
+      if (!isAdminSession) {
+        orderData.advancePayment = 0;
+        delete (orderData as any).advance_payment;
+        orderData.advancePaymentMethod = undefined;
+        delete (orderData as any).advance_payment_method;
+        orderData.advancePaymentNote = undefined;
+        delete (orderData as any).advance_payment_note;
+        orderData.advancePaymentUpdatedAt = undefined;
+        delete (orderData as any).advance_payment_updated_at;
+        orderData.advancePaymentUpdatedBy = undefined;
+        delete (orderData as any).advance_payment_updated_by;
       }
 
       if (verifiedTokenUser) {
@@ -5355,7 +5378,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       }
 
       // 5. Server-side authoritative validation, pricing calculation & stock deduction via insertOrder
-      const saved = await insertOrder(env.DB, orderData);
+      const saved = await insertOrder(env.DB, orderData, { isPrivilegedAdmin: isAdminSession });
 
       // Record rate limit attempt for hourly phone throttling (no 60s cooldown)
       await recordFailedAttempt(`order_ph_hour:${cleanPhone}`, 6, 3600, env.DB);

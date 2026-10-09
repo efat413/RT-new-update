@@ -3733,7 +3733,11 @@ export function generateSecureOrderNumber(year: number = new Date().getFullYear(
   return `RT-${year}-${randNum}`;
 }
 
-export async function insertOrder(db: D1Database, order: Order): Promise<Order> {
+export async function insertOrder(
+  db: D1Database,
+  order: Order,
+  options?: { isPrivilegedAdmin?: boolean }
+): Promise<Order> {
   if (!order) {
     throw new Error('Invalid order payload: order object is required.');
   }
@@ -3941,12 +3945,13 @@ export async function insertOrder(db: D1Database, order: Order): Promise<Order> 
   // 9. Construct atomic D1 batch transaction (order insertion + stock deductions)
   await ensureOrderTableSchema(db);
 
-  const rawAdvance = order.advancePayment != null ? Number(order.advancePayment) : 0;
+  const isPrivilegedAdmin = options?.isPrivilegedAdmin === true || (order as any)._isPrivilegedAdmin === true;
+  const rawAdvance = isPrivilegedAdmin && order.advancePayment != null ? Number(order.advancePayment) : 0;
   const initialAdvance = Number.isFinite(rawAdvance) && rawAdvance > 0
     ? Math.min(authoritativeTotalAmount, Math.max(0, rawAdvance))
     : 0;
-  const advanceMethod = order.advancePaymentMethod ? String(order.advancePaymentMethod).trim() : null;
-  const advanceNote = order.advancePaymentNote ? String(order.advancePaymentNote).trim() : null;
+  const advanceMethod = initialAdvance > 0 && order.advancePaymentMethod ? String(order.advancePaymentMethod).trim() : null;
+  const advanceNote = initialAdvance > 0 && order.advancePaymentNote ? String(order.advancePaymentNote).trim() : null;
   const advanceUpdatedAt = initialAdvance > 0 ? (order.advancePaymentUpdatedAt || new Date().toISOString()) : null;
   const advanceUpdatedBy = initialAdvance > 0 ? (order.advancePaymentUpdatedBy || order.userId || 'system') : null;
 
@@ -4194,45 +4199,7 @@ export async function updateOrderInD1(
     ? (merged.advancePaymentUpdatedBy || null)
     : (existing.advancePaymentUpdatedBy || null);
 
-  await db
-    .prepare(updateSql)
-    .bind(
-      merged.customer.fullName,
-      merged.customer.phone,
-      merged.customer.fullAddress,
-      merged.customer.district || null,
-      merged.customer.deliveryZone || 'inside_dhaka',
-      merged.customer.notes || null,
-      JSON.stringify(merged.items || []),
-      merged.subtotal,
-      merged.deliveryFee,
-      merged.totalAmount,
-      merged.couponCode || null,
-      merged.discountAmount || 0,
-      merged.paymentMethod,
-      merged.paymentStatus,
-      merged.transactionId || null,
-      merged.shippingStatus,
-      merged.courierName || null,
-      merged.courierWaybill || null,
-      merged.consignmentId || null,
-      merged.courierStatus || null,
-      merged.courierBooking ? JSON.stringify(merged.courierBooking) : null,
-      merged.dbblDetails ? JSON.stringify(merged.dbblDetails) : null,
-      merged.cardDetails ? JSON.stringify(merged.cardDetails) : null,
-      merged.lastCourierSync || null,
-      calculatedCost != null ? calculatedCost : null,
-      calculatedProfit != null ? calculatedProfit : null,
-      advancePaymentToSave,
-      advanceMethodToSave,
-      advanceNoteToSave,
-      advanceUpdatedAtToSave,
-      advanceUpdatedByToSave,
-      id
-    )
-    .run();
-
-  // Handle atomic stock restoration on order cancellation
+  // 1. Handle atomic stock restoration on order cancellation BEFORE general updates
   if (updates.shippingStatus === 'Cancelled') {
     if (existing.shippingStatus !== 'Cancelled') {
       // Conditional atomic status transition: Only the first concurrent request transitions from non-cancelled
@@ -4280,7 +4247,7 @@ export async function updateOrderInD1(
     }
   }
 
-  // If order was uncancelled (moved back from Cancelled to active), re-deduct stock
+  // 2. If order was uncancelled (moved back from Cancelled to active), re-deduct stock BEFORE general updates
   if (existing.shippingStatus === 'Cancelled' && updates.shippingStatus && updates.shippingStatus !== 'Cancelled') {
     const uncancelTransition = await db
       .prepare(
@@ -4326,6 +4293,44 @@ export async function updateOrderInD1(
       }
     }
   }
+
+  await db
+    .prepare(updateSql)
+    .bind(
+      merged.customer.fullName,
+      merged.customer.phone,
+      merged.customer.fullAddress,
+      merged.customer.district || null,
+      merged.customer.deliveryZone || 'inside_dhaka',
+      merged.customer.notes || null,
+      JSON.stringify(merged.items || []),
+      merged.subtotal,
+      merged.deliveryFee,
+      merged.totalAmount,
+      merged.couponCode || null,
+      merged.discountAmount || 0,
+      merged.paymentMethod,
+      merged.paymentStatus,
+      merged.transactionId || null,
+      merged.shippingStatus,
+      merged.courierName || null,
+      merged.courierWaybill || null,
+      merged.consignmentId || null,
+      merged.courierStatus || null,
+      merged.courierBooking ? JSON.stringify(merged.courierBooking) : null,
+      merged.dbblDetails ? JSON.stringify(merged.dbblDetails) : null,
+      merged.cardDetails ? JSON.stringify(merged.cardDetails) : null,
+      merged.lastCourierSync || null,
+      calculatedCost != null ? calculatedCost : null,
+      calculatedProfit != null ? calculatedProfit : null,
+      advancePaymentToSave,
+      advanceMethodToSave,
+      advanceNoteToSave,
+      advanceUpdatedAtToSave,
+      advanceUpdatedByToSave,
+      id
+    )
+    .run();
 
   const updated = await getOrderById(db, id);
   if (!updated) throw new Error('Failed to retrieve updated order from D1');
