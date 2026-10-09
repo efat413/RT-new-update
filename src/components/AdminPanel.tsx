@@ -33,6 +33,7 @@ import {
   User,
   Sliders,
   Star,
+  MessageSquare,
   Users,
   Mail,
   UserPlus,
@@ -256,7 +257,6 @@ const AdminPanelContent: React.FC = () => {
     resetToDefaultSeed,
     users,
     currentUser,
-    adjustProductRating,
     fetchUsers,
     deleteUser,
     resetCustomerPassword,
@@ -365,8 +365,6 @@ const AdminPanelContent: React.FC = () => {
   const galleryFileInputRef = useRef<HTMLInputElement>(null);
   const [prodStock, setProdStock] = useState<number>(10);
   const [prodFeatured, setProdFeatured] = useState(false);
-  const [prodRating, setProdRating] = useState<number>(5.0);
-  const [prodReviewsCount, setProdReviewsCount] = useState<number>(0);
   const [prodVideoUrl, setProdVideoUrl] = useState('');
   const [productSearch, setProductSearch] = useState('');
 
@@ -390,12 +388,6 @@ const AdminPanelContent: React.FC = () => {
   const [newColorInput, setNewColorInput] = useState('');
   const [newColorHex, setNewColorHex] = useState('#1e3a8a');
   const [displaySpecificColor, setDisplaySpecificColor] = useState(true);
-
-  // Quick Rating Adjustment Modal State
-  const [ratingModalProduct, setRatingModalProduct] = useState<Product | null>(null);
-  const [customRatingValue, setCustomRatingValue] = useState<number>(5.0);
-  const [customReviewsCount, setCustomReviewsCount] = useState<number>(0);
-  const [ratingSaveSuccess, setRatingSaveSuccess] = useState<string | null>(null);
 
   // Category CRUD states
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
@@ -889,7 +881,7 @@ const AdminPanelContent: React.FC = () => {
                 Admin Management Portal
               </h2>
               <p className="text-xs text-slate-500">
-                Enter your administrative credentials (email or username) to access product controls, rating adjustments, categories & couriers.
+                Enter your administrative credentials (email or username) to access product controls, categories & couriers.
               </p>
             </div>
 
@@ -1330,8 +1322,6 @@ const AdminPanelContent: React.FC = () => {
     setIsBulkInputOpen(false);
     setProdStock(15);
     setProdFeatured(false);
-    setProdRating(5.0);
-    setProdReviewsCount(0);
     setProdVideoUrl('');
     setProdSizes([]);
     setNewSizeInput('');
@@ -1405,8 +1395,6 @@ const AdminPanelContent: React.FC = () => {
 
     setProdStock(product.stock);
     setProdFeatured(product.featured);
-    setProdRating(product.rating || 5.0);
-    setProdReviewsCount(product.reviewsCount ?? 0);
     setProdVideoUrl(product.videoUrl || '');
     setProdSizes(product.sizes ? [...product.sizes] : []);
     setNewSizeInput('');
@@ -1599,11 +1587,6 @@ const AdminPanelContent: React.FC = () => {
     }
 
     try {
-      const finalReviewsCount =
-        prodReviewsCount === '' || prodReviewsCount === undefined
-          ? 0
-          : Math.max(0, Math.floor(Number(prodReviewsCount)));
-
       if (editingProduct) {
         const res = await updateProduct(editingProduct.id, {
           title: prodTitle.trim(),
@@ -1617,8 +1600,8 @@ const AdminPanelContent: React.FC = () => {
           images: allImages.length > 1 ? allImages : [primaryImg],
           stock: Number(prodStock),
           featured: prodFeatured,
-          rating: Number(prodRating) || 5.0,
-          reviewsCount: finalReviewsCount,
+          rating: editingProduct.rating ?? 5.0,
+          reviewsCount: editingProduct.reviewsCount ?? 0,
           sizes: prodSizes.length > 0 ? prodSizes : undefined,
           colors: prodColors.length > 0 ? prodColors : undefined,
           videoUrl: prodVideoUrl.trim(),
@@ -1640,8 +1623,8 @@ const AdminPanelContent: React.FC = () => {
           images: allImages.length > 1 ? allImages : [primaryImg],
           stock: Number(prodStock),
           featured: prodFeatured,
-          rating: Number(prodRating) || 5.0,
-          reviewsCount: finalReviewsCount,
+          rating: 5.0,
+          reviewsCount: 0,
           specs: ['Standard 1-year authentic warranty', 'Verified Bangladeshi import'],
           sizes: prodSizes.length > 0 ? prodSizes : undefined,
           colors: prodColors.length > 0 ? prodColors : undefined,
@@ -1659,30 +1642,6 @@ const AdminPanelContent: React.FC = () => {
     } finally {
       setIsSavingProduct(false);
     }
-  };
-
-  // --- QUICK RATING ADJUSTMENT HANDLERS ---
-  const openRatingAdjustmentModal = (product: Product) => {
-    setRatingModalProduct(product);
-    setCustomRatingValue(product.rating || 5.0);
-    setCustomReviewsCount(product.reviewsCount ?? 0);
-  };
-
-  const handleSaveRatingAdjustment = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!ratingModalProduct) return;
-    const sanitizedReviewsCount =
-      customReviewsCount === '' || customReviewsCount === undefined
-        ? 0
-        : Math.max(0, Math.floor(Number(customReviewsCount)));
-    adjustProductRating(ratingModalProduct.id, customRatingValue, sanitizedReviewsCount);
-    setRatingSaveSuccess(
-      sanitizedReviewsCount > 0
-        ? `Rating for "${ratingModalProduct.title}" adjusted to ${customRatingValue}★ (${sanitizedReviewsCount} reviews)!`
-        : `Rating for "${ratingModalProduct.title}" adjusted to ${customRatingValue}★ (0 reviews / No customer reviews)!`
-    );
-    setTimeout(() => setRatingSaveSuccess(null), 3500);
-    setRatingModalProduct(null);
   };
 
   // --- CATEGORY CRUD HANDLERS ---
@@ -4367,13 +4326,6 @@ const AdminPanelContent: React.FC = () => {
               </div>
             )}
 
-            {ratingSaveSuccess && (
-              <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-amber-900 text-xs font-semibold flex items-center gap-2 animate-in fade-in">
-                <Star className="w-4 h-4 fill-amber-500 text-amber-600 shrink-0" />
-                <span>{ratingSaveSuccess}</span>
-              </div>
-            )}
-
             {/* Product Status & Category Filter Bar */}
             <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs space-y-3">
               <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
@@ -4773,29 +4725,17 @@ const AdminPanelContent: React.FC = () => {
                         )}
                       </div>
 
-                      {/* Custom Option: Product Rating & Reviews with Quick Adjust */}
-                      <div className="px-4 py-2 bg-amber-50/70 border-t border-amber-100 flex items-center justify-between text-xs">
+                      {/* Product Rating & Reviews Display */}
+                      <div className="px-4 py-2 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-xs">
                         <div className="flex items-center gap-1.5">
                           <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-500" />
                           <span className="font-bold text-slate-800">
                             {product.rating !== undefined ? product.rating.toFixed(1) : '5.0'}
                           </span>
                           <span className="text-slate-400 text-[11px]">
-                            {(product.reviewsCount ?? 0) > 0 ? `(${product.reviewsCount} revs)` : '(No reviews)'}
+                            {(product.reviewsCount ?? 0) > 0 ? `(${product.reviewsCount} reviews)` : '(No reviews)'}
                           </span>
                         </div>
-                        {hasPermission('product.update') && (
-                          <button
-                            id={`adjust-rating-${product.id}`}
-                            type="button"
-                            onClick={() => openRatingAdjustmentModal(product)}
-                            className="px-2 py-1 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-900 font-bold text-[11px] flex items-center gap-1 transition-colors shadow-2xs"
-                            title="Custom backend option to adjust product rating"
-                          >
-                            <Star className="w-3 h-3 fill-amber-500 text-amber-600" />
-                            Adjust Rating
-                          </button>
-                        )}
                       </div>
 
                       {(hasPermission('product.update') || hasPermission('product.delete')) && (
@@ -4809,6 +4749,19 @@ const AdminPanelContent: React.FC = () => {
                               >
                                 <Edit2 className="w-3.5 h-3.5 text-blue-600" />
                                 <span>Edit Details</span>
+                              </button>
+                              <button
+                                id={`manage-reviews-${product.id}`}
+                                type="button"
+                                onClick={() => {
+                                  showNotification('info', 'Customer Reviews', `Customer reviews management for "${product.title}" will be activated in the next phase.`);
+                                }}
+                                className="py-1.5 px-2.5 rounded-xl bg-slate-50 border border-slate-200 text-slate-700 font-bold text-xs flex items-center justify-center gap-1 hover:bg-slate-100 transition-colors shadow-xs"
+                                title={`Customer reviews for "${product.title}" (${product.reviewsCount ?? 0})`}
+                              >
+                                <MessageSquare className="w-3.5 h-3.5 text-amber-600" />
+                                <span className="hidden sm:inline">Reviews</span>
+                                <span className="text-[10px] text-slate-500 font-normal">({product.reviewsCount ?? 0})</span>
                               </button>
                               <button
                                 id={`toggle-featured-card-${product.id}`}
@@ -8723,207 +8676,6 @@ const AdminPanelContent: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Product Review Rating & Reviews Adjustment Section */}
-                <div className="p-4 bg-amber-50/70 border border-amber-200 rounded-2xl space-y-3.5">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5">
-                      <div className="w-6 h-6 rounded-lg bg-amber-500 text-white flex items-center justify-center shadow-xs">
-                        <Star className="w-3.5 h-3.5 fill-white" />
-                      </div>
-                      <span className="text-xs font-bold text-amber-950 uppercase tracking-wider">
-                        Product Review Rating Controls
-                      </span>
-                    </div>
-                    <span className="text-[11px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-full border border-amber-200">
-                      Storefront Display
-                    </span>
-                  </div>
-
-                  {/* Rating Stepper with - / + buttons and Live Star Visualizer */}
-                  <div>
-                    <label className="block text-xs font-bold text-amber-900 mb-1.5 flex items-center justify-between">
-                      <span>Rating Score (1.0 to 5.0)</span>
-                      <span className="text-sm font-extrabold text-amber-900 font-mono">
-                        {prodRating.toFixed(1)} ★
-                      </span>
-                    </label>
-
-                    <div className="flex items-center gap-2">
-                      {/* Decrease button */}
-                      <button
-                        type="button"
-                        id="product-rating-decrease-btn"
-                        onClick={() =>
-                          setProdRating((prev) =>
-                            Math.max(1.0, Math.round((prev - 0.1) * 10) / 10)
-                          )
-                        }
-                        className="w-10 h-10 rounded-xl bg-white hover:bg-amber-100 active:scale-95 border border-amber-300 text-amber-900 font-extrabold text-base flex items-center justify-center shadow-2xs transition-all shrink-0"
-                        title="Decrease rating by 0.1"
-                      >
-                        <Minus className="w-4 h-4 text-amber-800" />
-                      </button>
-
-                      {/* Interactive Slider */}
-                      <div className="flex-1 px-1">
-                        <input
-                          id="product-modal-rating-slider"
-                          type="range"
-                          min="1.0"
-                          max="5.0"
-                          step="0.1"
-                          value={prodRating}
-                          onChange={(e) => setProdRating(parseFloat(e.target.value))}
-                          className="w-full accent-amber-600 cursor-pointer h-2 bg-amber-200 rounded-lg"
-                        />
-                      </div>
-
-                      {/* Increase button */}
-                      <button
-                        type="button"
-                        id="product-rating-increase-btn"
-                        onClick={() =>
-                          setProdRating((prev) =>
-                            Math.min(5.0, Math.round((prev + 0.1) * 10) / 10)
-                          )
-                        }
-                        className="w-10 h-10 rounded-xl bg-white hover:bg-amber-100 active:scale-95 border border-amber-300 text-amber-900 font-extrabold text-base flex items-center justify-center shadow-2xs transition-all shrink-0"
-                        title="Increase rating by 0.1"
-                      >
-                        <Plus className="w-4 h-4 text-amber-800" />
-                      </button>
-                    </div>
-
-                    {/* Quick Preset Buttons */}
-                    <div className="flex flex-wrap items-center gap-1.5 mt-2">
-                      <span className="text-[10px] font-bold text-amber-800 uppercase mr-1">
-                        Presets:
-                      </span>
-                      {[5.0, 4.9, 4.8, 4.7, 4.5, 4.0].map((preset) => (
-                        <button
-                          key={preset}
-                          type="button"
-                          onClick={() => setProdRating(preset)}
-                          className={`px-2 py-0.5 rounded-lg text-[11px] font-bold transition-all ${
-                            Math.abs(prodRating - preset) < 0.05
-                              ? 'bg-amber-600 text-white shadow-2xs'
-                              : 'bg-white text-amber-800 hover:bg-amber-100 border border-amber-200'
-                          }`}
-                        >
-                          {preset.toFixed(1)} ★
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Reviews Count Section */}
-                  <div className="pt-2 border-t border-amber-200/70">
-                    <label className="block text-xs font-bold text-amber-900 mb-1.5 flex items-center justify-between">
-                      <div className="flex items-center gap-1.5">
-                        <span>Customer Reviews</span>
-                        <span className="text-[10px] font-semibold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded-md border border-amber-200">
-                          Optional
-                        </span>
-                      </div>
-                      <span className="font-mono font-bold text-amber-900 text-xs">
-                        {prodReviewsCount > 0 ? `${prodReviewsCount} reviews` : '0 reviews (No reviews)'}
-                      </span>
-                    </label>
-
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setProdReviewsCount(0)}
-                        className={`px-2 py-1.5 rounded-xl border text-xs font-bold transition-colors ${
-                          prodReviewsCount === 0
-                            ? 'bg-amber-800 text-white border-amber-900 shadow-2xs'
-                            : 'bg-white hover:bg-amber-100 border-amber-300 text-amber-800'
-                        }`}
-                        title="Set to 0 reviews (No customer reviews)"
-                      >
-                        0 (None)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setProdReviewsCount((prev) => Math.max(0, prev - 5))}
-                        className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-amber-100 border border-amber-300 text-amber-800 text-xs font-bold transition-colors"
-                        title="Decrease 5 reviews"
-                      >
-                        -5
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setProdReviewsCount((prev) => Math.max(0, prev - 1))}
-                        className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-amber-100 border border-amber-300 text-amber-800 text-xs font-bold transition-colors"
-                        title="Decrease 1 review"
-                      >
-                        -1
-                      </button>
-                      <input
-                        id="product-modal-reviews-count"
-                        type="number"
-                        min="0"
-                        value={prodReviewsCount}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setProdReviewsCount(val === '' ? 0 : Math.max(0, parseInt(val, 10) || 0));
-                        }}
-                        className="flex-1 px-3 py-1.5 bg-white border border-amber-300 rounded-xl text-xs font-bold text-center text-slate-800 focus:ring-2 focus:ring-amber-500"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setProdReviewsCount((prev) => prev + 1)}
-                        className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-amber-100 border border-amber-300 text-amber-800 text-xs font-bold transition-colors"
-                        title="Increase 1 review"
-                      >
-                        +1
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setProdReviewsCount((prev) => prev + 5)}
-                        className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-amber-100 border border-amber-300 text-amber-800 text-xs font-bold transition-colors"
-                        title="Increase 5 reviews"
-                      >
-                        +5
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Storefront Badge Preview */}
-                  <div className="p-2.5 bg-white/90 rounded-xl border border-amber-200 flex items-center justify-between text-xs">
-                    <span className="text-slate-500 text-[11px] font-medium">
-                      Storefront preview:
-                    </span>
-                    {prodReviewsCount > 0 ? (
-                      <div className="flex items-center gap-1.5">
-                        <div className="flex items-center text-amber-500">
-                          {[1, 2, 3, 4, 5].map((starIdx) => (
-                            <Star
-                              key={starIdx}
-                              className={`w-3.5 h-3.5 ${
-                                starIdx <= Math.round(prodRating)
-                                  ? 'fill-amber-400 text-amber-500'
-                                  : 'text-slate-200'
-                              }`}
-                            />
-                          ))}
-                        </div>
-                        <span className="font-bold text-slate-800 text-xs font-mono">
-                          {prodRating.toFixed(1)}
-                        </span>
-                        <span className="text-slate-400 text-[11px]">
-                          ({prodReviewsCount} {prodReviewsCount === 1 ? 'review' : 'reviews'})
-                        </span>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-1.5 text-slate-500 text-[11px] font-medium">
-                        <span className="inline-block w-1.5 h-1.5 rounded-full bg-slate-300" />
-                        <span>No customer reviews yet</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
                 {/* Custom Product Size & Color Options (Variants) */}
                 <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-4">
                   <div className="flex items-center justify-between">
@@ -9489,202 +9241,6 @@ const AdminPanelContent: React.FC = () => {
                   ) : (
                     editingProduct ? 'Update Product' : 'Create Product'
                   )}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* ============================================================ */}
-      {/* MODAL: QUICK ADJUST PRODUCT RATING                           */}
-      {/* ============================================================ */}
-      {ratingModalProduct && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm overflow-y-auto animate-in fade-in duration-200">
-          <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden border border-slate-200">
-            <div className="h-2 w-full rainbow-gradient-bg" />
-
-            <form onSubmit={handleSaveRatingAdjustment} className="p-6 space-y-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="w-9 h-9 rounded-xl bg-amber-100 flex items-center justify-center text-amber-600">
-                    <Star className="w-5 h-5 fill-amber-500 text-amber-600" />
-                  </div>
-                  <div>
-                    <h3 className="font-display font-bold text-base text-slate-900">
-                      Adjust Product Rating
-                    </h3>
-                    <p className="text-[11px] text-slate-500">Custom admin option for social proof & ratings</p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setRatingModalProduct(null)}
-                  className="p-1 rounded-full hover:bg-slate-100 text-slate-400"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              {/* Target Product Summary */}
-              <div className="flex items-center gap-3 p-3 bg-slate-50 border border-slate-200 rounded-2xl">
-                <img
-                  src={ratingModalProduct.imageUrl}
-                  alt={ratingModalProduct.title}
-                  className="w-12 h-12 rounded-xl object-cover border border-slate-200 shrink-0"
-                />
-                <div className="min-w-0 flex-1">
-                  <h4 className="font-bold text-xs text-slate-900 truncate">
-                    {ratingModalProduct.title}
-                  </h4>
-                  <p className="text-[11px] text-slate-500">
-                    Current: <strong className="text-amber-600">{ratingModalProduct.rating ? ratingModalProduct.rating.toFixed(1) : '5.0'}★</strong> ({(ratingModalProduct.reviewsCount ?? 0) > 0 ? `${ratingModalProduct.reviewsCount} reviews` : 'No customer reviews'})
-                  </p>
-                </div>
-              </div>
-
-              {/* Rating Slider & Number */}
-              <div className="space-y-3 p-4 bg-amber-50/50 border border-amber-200 rounded-2xl">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                    <Star className="w-4 h-4 fill-amber-400 text-amber-500" />
-                    New Rating Score
-                  </label>
-                  <div className="flex items-baseline gap-1 bg-white px-3 py-1 rounded-xl border border-amber-300 shadow-2xs font-mono font-extrabold text-base text-amber-700">
-                    <span>{customRatingValue.toFixed(1)}</span>
-                    <span className="text-xs text-slate-400">/ 5.0</span>
-                  </div>
-                </div>
-
-                {/* Stepper with - / + buttons and Range Slider */}
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setCustomRatingValue((prev) =>
-                        Math.max(1.0, Math.round((prev - 0.1) * 10) / 10)
-                      )
-                    }
-                    className="w-9 h-9 rounded-xl bg-white hover:bg-amber-100 active:scale-95 border border-amber-300 text-amber-900 font-extrabold flex items-center justify-center shadow-2xs transition-all shrink-0"
-                    title="Decrease rating by 0.1"
-                  >
-                    <Minus className="w-4 h-4 text-amber-800" />
-                  </button>
-
-                  <div className="flex-1 px-1">
-                    <input
-                      id="rating-slider-input"
-                      type="range"
-                      min="1.0"
-                      max="5.0"
-                      step="0.1"
-                      value={customRatingValue}
-                      onChange={(e) => setCustomRatingValue(parseFloat(e.target.value))}
-                      className="w-full accent-amber-500 cursor-pointer h-2 bg-amber-200 rounded-lg"
-                    />
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setCustomRatingValue((prev) =>
-                        Math.min(5.0, Math.round((prev + 0.1) * 10) / 10)
-                      )
-                    }
-                    className="w-9 h-9 rounded-xl bg-white hover:bg-amber-100 active:scale-95 border border-amber-300 text-amber-900 font-extrabold flex items-center justify-center shadow-2xs transition-all shrink-0"
-                    title="Increase rating by 0.1"
-                  >
-                    <Plus className="w-4 h-4 text-amber-800" />
-                  </button>
-                </div>
-
-                {/* Quick Rating Presets */}
-                <div className="flex items-center gap-1.5 pt-1">
-                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Presets:</span>
-                  {[5.0, 4.9, 4.8, 4.7, 4.5, 4.0].map((r) => (
-                    <button
-                      key={r}
-                      type="button"
-                      onClick={() => setCustomRatingValue(r)}
-                      className={`flex-1 py-1 rounded-lg text-xs font-bold transition-all ${
-                        customRatingValue === r
-                          ? 'bg-amber-500 text-white shadow-xs'
-                          : 'bg-white border border-slate-200 text-slate-700 hover:bg-amber-100'
-                      }`}
-                    >
-                      {r}★
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Reviews Count */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1 flex items-center justify-between">
-                  <div className="flex items-center gap-1.5">
-                    <span>Total Reviews Count</span>
-                    <span className="text-[10px] font-semibold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-md border border-slate-200">
-                      Optional
-                    </span>
-                  </div>
-                  <span className="text-[11px] text-slate-500 font-mono">
-                    {customReviewsCount > 0 ? `${customReviewsCount} reviews` : '0 (No reviews)'}
-                  </span>
-                </label>
-                <div className="flex gap-2">
-                  <input
-                    id="rating-reviews-count-input"
-                    type="number"
-                    min="0"
-                    value={customReviewsCount}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      setCustomReviewsCount(val === '' ? 0 : Math.max(0, parseInt(val, 10) || 0));
-                    }}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-amber-500"
-                  />
-                  <div className="flex gap-1 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => setCustomReviewsCount(0)}
-                      className={`px-2 py-1 ${
-                        customReviewsCount === 0
-                          ? 'bg-slate-900 text-white'
-                          : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-                      } font-bold text-xs rounded-lg transition-colors`}
-                      title="Set to 0 reviews"
-                    >
-                      0 (None)
-                    </button>
-                    {[10, 50, 128, 250].map((rc) => (
-                      <button
-                        key={rc}
-                        type="button"
-                        onClick={() => setCustomReviewsCount(rc)}
-                        className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-lg transition-colors"
-                      >
-                        +{rc}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setRatingModalProduct(null)}
-                  className="flex-1 py-2.5 px-4 rounded-xl border border-slate-300 text-slate-700 font-bold text-xs hover:bg-slate-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  id="save-rating-adjustment-submit-btn"
-                  type="submit"
-                  className="flex-1 py-2.5 px-4 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs shadow-md hover:shadow-lg active:scale-95 transition-all flex items-center justify-center gap-1.5"
-                >
-                  <Check className="w-4 h-4" />
-                  Apply Rating
                 </button>
               </div>
             </form>

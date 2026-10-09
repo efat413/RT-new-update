@@ -131,8 +131,8 @@ async function runTests() {
   }
   console.log(`✅ TEST 5 PASSED: reviewsCount preserved as ${data5.product.reviewsCount}`);
 
-  // TEST 6: Adjust rating feature with Reviews = 0
-  console.log('\n[TEST 6] Testing Adjust Rating to rating=4.5, reviewsCount=0...');
+  // TEST 6: Product updates API with Rating = 4.5 and Reviews = 0
+  console.log('\n[TEST 6] Testing product updates API to rating=4.5, reviewsCount=0...');
   const res6 = await fetch(`${baseUrl}/api/products/${prod2Id}`, {
     method: 'PATCH',
     headers: adminHeaders,
@@ -147,7 +147,7 @@ async function runTests() {
   if (!res6.ok || !data6.success || data6.product.reviewsCount !== 0 || data6.product.rating !== 4.5) {
     throw new Error(`TEST 6 FAILED: Expected reviewsCount=0, rating=4.5, got ${JSON.stringify(data6)}`);
   }
-  console.log(`✅ TEST 6 PASSED: Adjust Rating saved reviewsCount = ${data6.product.reviewsCount}, rating = ${data6.product.rating}`);
+  console.log(`✅ TEST 6 PASSED: Product updates API saved reviewsCount = ${data6.product.reviewsCount}, rating = ${data6.product.rating}`);
 
   // TEST 7 & 8: Fetch single product from public GET /api/products/:id
   console.log('\n[TEST 7 & 8] Fetching 0-review product as public user...');

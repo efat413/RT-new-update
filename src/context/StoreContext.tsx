@@ -66,7 +66,6 @@ const defaultAdminStubs: AdminContextType = {
   updateProduct: async () => ({ success: false, error: 'Admin context not loaded' }),
   deleteProduct: async () => ({ success: false, error: 'Admin context not loaded' }),
   increaseStock: async () => {},
-  adjustProductRating: async () => {},
   toggleProductFeatured: async () => ({ success: false, error: 'Admin context not loaded' }),
   loadAdminAllProducts: async () => {},
 
