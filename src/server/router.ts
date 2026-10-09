@@ -3740,12 +3740,40 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         return jsonResponse({ success: false, error: 'Review image not found.' }, 404);
       }
 
+      const isApproved = asset.reviewStatus === 'approved';
+
+      // If review is pending/rejected/deleted/unapproved, allow access ONLY if the request
+      // contains valid admin authentication with review view permission; otherwise return 404.
+      if (!isApproved) {
+        const authRes = await requireAuth(request, env);
+        if (authRes.errorResponse || !authRes.auth) {
+          return jsonResponse({ success: false, error: 'Review image not found.' }, 404);
+        }
+
+        const canView =
+          hasPermission(authRes.auth, 'reviews.view') ||
+          hasPermission(authRes.auth, 'review.view') ||
+          hasPermission(authRes.auth, 'review.manage') ||
+          authRes.auth.role === 'super_admin';
+
+        if (!canView) {
+          return jsonResponse({ success: false, error: 'Review image not found.' }, 404);
+        }
+      }
+
+      // Cache-Control headers:
+      // - public, max-age=86400 only for approved images
+      // - private, no-store for admin moderation views to prevent stale edge/browser caching after status changes
+      const cacheControl = isApproved
+        ? 'public, max-age=86400, immutable'
+        : 'private, no-store';
+
       return new Response(asset.data.buffer, {
         status: 200,
         headers: {
           'Content-Type': asset.mimeType,
           'Content-Length': String(asset.fileSize || asset.data.byteLength),
-          'Cache-Control': 'public, max-age=31536000, immutable',
+          'Cache-Control': cacheControl,
           'X-Content-Type-Options': 'nosniff',
           'Content-Security-Policy': "default-src 'none'",
           'Vary': 'Accept',

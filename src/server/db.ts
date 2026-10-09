@@ -2405,23 +2405,45 @@ export async function saveReviewImageBlobInD1(
 
 /**
  * Retrieves and reassembles a review image from D1 binary BLOB storage.
+ * Performs a LEFT JOIN on the parent reviews table to verify review moderation status.
  * Supports transparent single-row retrieval and multi-chunk reassembly.
  */
 export async function getReviewImageBlobFromD1(
   db: D1Database,
   id: string
-): Promise<{ mimeType: string; fileSize: number; data: Uint8Array } | null> {
+): Promise<{
+  mimeType: string;
+  fileSize: number;
+  data: Uint8Array;
+  reviewStatus: string | null;
+  reviewId: string | null;
+} | null> {
   try {
     const rows = await db
-      .prepare('SELECT id, mime_type, file_size, data FROM review_images WHERE id = ? OR id LIKE ? ORDER BY id ASC')
+      .prepare(
+        `SELECT ri.id, ri.review_id, ri.mime_type, ri.file_size, ri.data, r.status AS review_status
+         FROM review_images ri
+         LEFT JOIN reviews r ON ri.review_id = r.id
+         WHERE ri.id = ? OR ri.id LIKE ?
+         ORDER BY ri.id ASC`
+      )
       .bind(id, `${id}_chunk_%`)
-      .all<{ id: string; mime_type: string; file_size: number; data: any }>();
+      .all<{
+        id: string;
+        review_id: string | null;
+        mime_type: string;
+        file_size: number;
+        data: any;
+        review_status: string | null;
+      }>();
 
     if (!rows.results || rows.results.length === 0) return null;
 
     const first = rows.results[0];
     const mimeType = first.mime_type || 'image/jpeg';
     const totalFileSize = Number(first.file_size) || 0;
+    const reviewStatus = first.review_status ?? null;
+    const reviewId = first.review_id ?? null;
 
     const toUint8Array = (raw: any): Uint8Array => {
       if (raw instanceof Uint8Array) return raw;
@@ -2435,7 +2457,7 @@ export async function getReviewImageBlobFromD1(
 
     if (rows.results.length === 1) {
       const data = toUint8Array(first.data);
-      return { mimeType, fileSize: totalFileSize || data.byteLength, data };
+      return { mimeType, fileSize: totalFileSize || data.byteLength, data, reviewStatus, reviewId };
     }
 
     const sorted = rows.results.slice().sort((a, b) => {
@@ -2455,7 +2477,7 @@ export async function getReviewImageBlobFromD1(
       offset += c.byteLength;
     }
 
-    return { mimeType, fileSize: totalFileSize || combined.byteLength, data: combined };
+    return { mimeType, fileSize: totalFileSize || combined.byteLength, data: combined, reviewStatus, reviewId };
   } catch (err) {
     console.warn('[D1 Review Image Fetch Error]:', err);
     return null;
