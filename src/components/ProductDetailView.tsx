@@ -26,6 +26,7 @@ import {
   HelpCircle,
   ExternalLink,
   AlertTriangle,
+  X,
 } from 'lucide-react';
 import { Product } from '../types';
 import { useStore } from '../context/StoreContext';
@@ -83,6 +84,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
   const [selectedImageIdx, setSelectedImageIdx] = useState(0);
   const [activeTab, setActiveTab] = useState<'overview' | 'reviews'>('overview');
   const [isFullscreenOpen, setIsFullscreenOpen] = useState(false);
+  const [lightboxImage, setLightboxImage] = useState<string | null>(null);
 
   // Review Form State
   const [reviewRating, setReviewRating] = useState(5);
@@ -336,16 +338,19 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
   // 3. Normal Product Display
   const activeImage = imageList[selectedImageIdx] || product.imageUrl;
   const isSavedInWishlist = wishlist.includes(product.id);
-  const productReviews = Array.isArray(reviews)
-    ? reviews.filter((r) => r && r.productId === product.id)
-    : [];
+  const approvedReviews = useMemo(() => {
+    return Array.isArray(reviews)
+      ? reviews.filter((r) => r && (r.productId === product.id || (product.slug && r.productId === product.slug)) && r.status === 'approved')
+      : [];
+  }, [reviews, product.id, product.slug]);
 
-  const backendReviewsCount =
-    typeof product.reviewsCount === 'number'
-      ? product.reviewsCount
-      : (Number(product.reviewsCount) || 0);
+  const approvedReviewsCount = reviews && reviews.length > 0
+    ? approvedReviews.length
+    : (typeof product.reviewsCount === 'number' && product.reviewsCount > 0 ? product.reviewsCount : 0);
 
-  const totalReviewsCount = Math.max(backendReviewsCount, productReviews.length);
+  const approvedRating = approvedReviews.length > 0
+    ? approvedReviews.reduce((sum, r) => sum + (Number(r.rating) || 5), 0) / approvedReviews.length
+    : (typeof product.rating === 'number' ? product.rating : 5.0);
 
   const discountPercent =
     product.originalPrice && product.originalPrice > product.price
@@ -688,14 +693,14 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
               </div>
 
               {/* Star Rating & Reviews Summary */}
-              {totalReviewsCount > 0 ? (
+              {approvedReviewsCount > 0 ? (
                 <div className="flex items-center gap-3">
                   <div className="flex items-center text-amber-400">
                     {[...Array(5)].map((_, i) => (
                       <Star
                         key={i}
                         className={`w-4 h-4 ${
-                          i < Math.floor(product.rating)
+                          i < Math.floor(approvedRating)
                             ? 'fill-amber-400 text-amber-400'
                             : 'text-slate-300'
                         }`}
@@ -703,7 +708,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
                     ))}
                   </div>
                   <span className="text-sm font-bold text-slate-800">
-                    {typeof product.rating === 'number' ? product.rating.toFixed(1) : product.rating}
+                    {approvedRating.toFixed(1)}
                   </span>
                   <button
                     type="button"
@@ -714,7 +719,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
                     }}
                     className="text-xs text-rose-600 hover:text-rose-700 font-semibold underline cursor-pointer"
                   >
-                    ({totalReviewsCount} {totalReviewsCount === 1 ? 'verified review' : 'verified reviews'})
+                    ({approvedReviewsCount} {approvedReviewsCount === 1 ? 'verified review' : 'verified reviews'})
                   </button>
                 </div>
               ) : (
@@ -724,7 +729,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
                       <Star key={i} className="w-4 h-4 text-slate-200" />
                     ))}
                   </div>
-                  <span className="font-semibold text-slate-600">No customer reviews yet</span>
+                  <span className="font-semibold text-slate-600">0 customer reviews</span>
                   <span className="text-slate-300">•</span>
                   <button
                     type="button"
@@ -968,7 +973,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
                   : 'bg-white text-slate-600 hover:text-slate-900 border border-slate-200'
               }`}
             >
-              Reviews ({totalReviewsCount})
+              Reviews ({approvedReviewsCount})
             </button>
           </div>
 
@@ -985,10 +990,10 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
               {/* Existing Reviews List */}
               <div className="lg:col-span-7 space-y-4">
                 <h3 className="font-bold text-sm text-slate-800">
-                  Customer Reviews ({productReviews.length})
+                  Customer Reviews ({approvedReviews.length})
                 </h3>
 
-                {productReviews.length === 0 ? (
+                {approvedReviews.length === 0 ? (
                   <div className="p-6 rounded-2xl bg-white border border-slate-200 text-center space-y-2">
                     <p className="text-xs font-bold text-slate-700">No customer reviews yet.</p>
                     <p className="text-xs text-slate-400">
@@ -997,7 +1002,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    {productReviews.map((rev) => (
+                    {approvedReviews.map((rev) => (
                       <div
                         key={rev.id}
                         className="p-4 rounded-2xl bg-white border border-slate-200 shadow-2xs space-y-2"
@@ -1005,11 +1010,11 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
                             <div className="w-7 h-7 rounded-full bg-slate-100 flex items-center justify-center text-slate-600 font-bold text-xs">
-                              {rev.authorName ? rev.authorName.charAt(0).toUpperCase() : 'U'}
+                              {rev.authorName ? rev.authorName.charAt(0).toUpperCase() : (rev.author ? rev.author.charAt(0).toUpperCase() : 'U')}
                             </div>
                             <div>
                               <p className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                                <span>{rev.authorName || 'Verified Shopper'}</span>
+                                <span>{rev.authorName || rev.author || 'Verified Shopper'}</span>
                                 {rev.verifiedPurchase && (
                                   <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded-full">
                                     <CheckCircle2 className="w-2.5 h-2.5" /> Verified
@@ -1059,8 +1064,31 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
                         </div>
 
                         <p className="text-xs text-slate-600 leading-relaxed">{rev.comment}</p>
+
+                        {/* Review Image Thumbnails */}
+                        {rev.images && rev.images.length > 0 && (
+                          <div className="flex flex-wrap items-center gap-2 pt-1">
+                            {rev.images.map((imgUrl, imgIdx) => (
+                              <button
+                                key={imgIdx}
+                                type="button"
+                                onClick={() => setLightboxImage(imgUrl)}
+                                className="relative w-14 h-14 sm:w-16 sm:h-16 rounded-xl overflow-hidden border border-slate-200 bg-slate-100 hover:ring-2 hover:ring-rose-500 transition-all cursor-pointer group"
+                                title="Click to view photo"
+                              >
+                                <img
+                                  src={imgUrl}
+                                  alt={`Review photo by ${rev.authorName || rev.author || 'Customer'}`}
+                                  className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                                  loading="lazy"
+                                />
+                              </button>
+                            ))}
+                          </div>
+                        )}
+
                         <span className="text-[10px] text-slate-400 block">
-                          {rev.createdAt ? new Date(rev.createdAt).toLocaleDateString('en-GB') : ''}
+                          {rev.createdAt ? new Date(rev.createdAt).toLocaleDateString('en-GB') : (rev.date || '')}
                         </span>
                       </div>
                     ))}
@@ -1229,6 +1257,33 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
                 </button>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Review Image Lightbox Modal */}
+      {lightboxImage && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-xs animate-scaleUp"
+          onClick={() => setLightboxImage(null)}
+        >
+          <div
+            className="relative max-w-3xl max-h-[90vh] bg-slate-950 rounded-2xl overflow-hidden shadow-2xl border border-slate-800 flex flex-col items-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={() => setLightboxImage(null)}
+              className="absolute top-3 right-3 z-10 w-8 h-8 rounded-full bg-slate-900/80 hover:bg-slate-800 text-white flex items-center justify-center transition-colors cursor-pointer border border-slate-700"
+              aria-label="Close photo preview"
+            >
+              <X className="w-4 h-4" />
+            </button>
+            <img
+              src={lightboxImage}
+              alt="Customer review photo"
+              className="max-h-[80vh] w-auto max-w-full object-contain"
+            />
           </div>
         </div>
       )}

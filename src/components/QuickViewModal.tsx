@@ -210,16 +210,17 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
 
   const activeImage = imageList[selectedImageIdx] || product.imageUrl;
   const isSavedInWishlist = wishlist.includes(product.id);
-  const productReviews = Array.isArray(reviews)
-    ? reviews.filter((r) => r && r.productId === product.id)
+  const approvedReviews = Array.isArray(reviews)
+    ? reviews.filter((r) => r && (r.productId === product.id || (product.slug && r.productId === product.slug)) && r.status === 'approved')
     : [];
 
-  const backendReviewsCount =
-    typeof product.reviewsCount === 'number'
-      ? product.reviewsCount
-      : (Number(product.reviewsCount) || 0);
+  const approvedReviewsCount = reviews && reviews.length > 0
+    ? approvedReviews.length
+    : (typeof product.reviewsCount === 'number' && product.reviewsCount > 0 ? product.reviewsCount : 0);
 
-  const totalReviewsCount = Math.max(backendReviewsCount, productReviews.length);
+  const approvedRating = approvedReviews.length > 0
+    ? approvedReviews.reduce((sum, r) => sum + (Number(r.rating) || 5), 0) / approvedReviews.length
+    : (typeof product.rating === 'number' ? product.rating : 5.0);
 
   const discountPercent =
     product.originalPrice && product.originalPrice > product.price
@@ -580,14 +581,14 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
                 onClick={() => setActiveTab('reviews')}
                 className="flex items-center gap-2 cursor-pointer group hover:opacity-80 transition-opacity"
               >
-                {totalReviewsCount > 0 ? (
+                {approvedReviewsCount > 0 ? (
                   <>
                     <div className="flex items-center text-amber-400">
                       {[...Array(5)].map((_, i) => (
                         <Star
                           key={i}
                           className={`w-3.5 h-3.5 ${
-                            i < Math.floor(product.rating)
+                            i < Math.floor(approvedRating)
                               ? 'fill-amber-400 text-amber-400'
                               : 'text-slate-300'
                           }`}
@@ -595,10 +596,10 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
                       ))}
                     </div>
                     <span className="text-xs font-bold text-slate-700">
-                      {typeof product.rating === 'number' ? product.rating.toFixed(1) : product.rating}
+                      {approvedRating.toFixed(1)}
                     </span>
                     <span className="text-xs text-rose-600 underline font-semibold">
-                      ({totalReviewsCount} {totalReviewsCount === 1 ? 'review' : 'reviews'})
+                      ({approvedReviewsCount} {approvedReviewsCount === 1 ? 'review' : 'reviews'})
                     </span>
                   </>
                 ) : (
@@ -608,7 +609,7 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
                         <Star key={i} className="w-3.5 h-3.5 text-slate-200" />
                       ))}
                     </div>
-                    <span className="text-xs font-medium text-slate-500">No reviews yet</span>
+                    <span className="text-xs font-medium text-slate-400">0 reviews</span>
                   </>
                 )}
               </div>
@@ -859,7 +860,7 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
                 }`}
               >
                 <MessageSquare className="w-3.5 h-3.5" />
-                Customer Reviews ({totalReviewsCount})
+                Customer Reviews ({approvedReviewsCount})
               </button>
             </div>
 
@@ -982,21 +983,21 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
 
                   {/* Reviews List */}
                   <div className="space-y-2">
-                    {productReviews.length === 0 ? (
+                    {approvedReviews.length === 0 ? (
                       <div className="text-center py-4 bg-slate-50/80 rounded-xl border border-slate-200/60 p-4 space-y-1">
                         <p className="text-xs font-semibold text-slate-700">
-                          {totalReviewsCount > 0
-                            ? `${totalReviewsCount} Verified Customer Rating${totalReviewsCount === 1 ? '' : 's'} (${typeof product.rating === 'number' ? product.rating.toFixed(1) : product.rating}★)`
+                          {approvedReviewsCount > 0
+                            ? `${approvedReviewsCount} Verified Customer Rating${approvedReviewsCount === 1 ? '' : 's'} (${approvedRating.toFixed(1)}★)`
                             : 'No customer reviews yet'}
                         </p>
                         <p className="text-[11px] text-slate-500">
-                          {totalReviewsCount > 0
+                          {approvedReviewsCount > 0
                             ? 'Ratings have been verified. Be the first to share your feedback below!'
                             : 'Be the first to review this product!'}
                         </p>
                       </div>
                     ) : (
-                      productReviews.map((r) => (
+                      approvedReviews.map((r) => (
                         <div
                           key={r.id}
                           className="p-2.5 rounded-lg bg-white border border-slate-100 shadow-2xs space-y-1"
@@ -1004,7 +1005,7 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-1.5">
                               <span className="text-xs font-bold text-slate-800">
-                                {r.author}
+                                {r.authorName || r.author || 'Shopper'}
                               </span>
                               {r.verifiedPurchase && (
                                 <span className="text-[9px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.2 rounded-full">
@@ -1026,6 +1027,19 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
                             </div>
                           </div>
                           <p className="text-xs text-slate-600">{r.comment}</p>
+                          {r.images && r.images.length > 0 && (
+                            <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                              {r.images.map((imgUrl, imgIdx) => (
+                                <img
+                                  key={imgIdx}
+                                  src={imgUrl}
+                                  alt="Customer review photo"
+                                  className="w-12 h-12 rounded-lg object-cover border border-slate-200"
+                                  loading="lazy"
+                                />
+                              ))}
+                            </div>
+                          )}
                           <div className="flex items-center justify-between pt-1 border-t border-slate-100/60">
                             <span className="text-[10px] text-slate-400 block font-mono">
                               {r.date || (r.createdAt ? new Date(r.createdAt).toLocaleDateString() : '')}
