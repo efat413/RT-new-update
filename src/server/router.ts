@@ -3456,15 +3456,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const verifiedExt = validation.extension;
       const key = generateSafeMediaKey(verifiedExt);
 
-      // 3. Store asset in Cloudflare R2 or fallback to D1 with strictly verified MIME type
-      const r2Bucket = env.R2 || env.BUCKET;
-      if (r2Bucket) {
-        await r2Bucket.put(key, fileBuffer, {
-          httpMetadata: {
-            contentType: verifiedMime,
-          },
-        });
-      } else {
+      // 3. Store asset in Cloudflare D1 with strictly verified MIME type
+      if (env.DB) {
         const bytes = new Uint8Array(fileBuffer);
         let binary = '';
         for (let i = 0; i < bytes.byteLength; i++) {
@@ -3484,9 +3477,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           for (const w of standardWidths) {
             const webpBuf = await sharp(Buffer.from(fileBuffer)).resize(w, null, { withoutEnlargement: true, fit: 'inside' }).webp({ quality: 82 }).toBuffer();
             const varKey = `${baseKeyWithoutExt}_w${w}.webp`;
-            if (r2Bucket) {
-              await r2Bucket.put(varKey, webpBuf, { httpMetadata: { contentType: 'image/webp' } });
-            } else {
+            if (env.DB) {
               const b64 = Buffer.from(webpBuf).toString('base64');
               await saveMediaAssetInD1(env.DB, varKey, 'image/webp', b64, webpBuf.byteLength);
             }
@@ -3534,7 +3525,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const qualityParam = urlObj.searchParams.get('q') || urlObj.searchParams.get('quality');
       const targetQuality = qualityParam ? parseInt(qualityParam, 10) : 82;
 
-      const r2Bucket = env.R2 || env.BUCKET;
       const standardWidths = [240, 360, 480, 720, 1080];
       const matchedWidth = targetWidth
         ? (standardWidths.find((sw) => sw >= targetWidth) || 1080)
@@ -3558,34 +3548,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
         for (const variantKey of candidateKeys) {
           let variantBuffer: Uint8Array | null = null;
-          if (r2Bucket) {
-            const varObj = await r2Bucket.get(variantKey);
-            if (varObj) {
-              if (typeof (varObj as any).arrayBuffer === 'function') {
-                const ab = await (varObj as any).arrayBuffer();
-                variantBuffer = new Uint8Array(ab);
-              } else if ((varObj as any).body) {
-                const reader = ((varObj as any).body as ReadableStream).getReader();
-                const chunks: Uint8Array[] = [];
-                let total = 0;
-                while (true) {
-                  const { done, value } = await reader.read();
-                  if (done) break;
-                  if (value) {
-                    chunks.push(value);
-                    total += value.length;
-                  }
-                }
-                variantBuffer = new Uint8Array(total);
-                let offset = 0;
-                for (const chunk of chunks) {
-                  variantBuffer.set(chunk, offset);
-                  offset += chunk.length;
-                }
-              }
-            }
-          }
-          if (!variantBuffer && env.DB) {
+          if (env.DB) {
             const varAsset = await getMediaAssetFromD1(env.DB, variantKey);
             if (varAsset) {
               const raw = atob(varAsset.dataBase64);
@@ -3645,37 +3608,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       let rawBuffer: Uint8Array | null = null;
       let contentType = 'image/jpeg';
 
-      if (r2Bucket) {
-        const obj = await r2Bucket.get(key);
-        if (obj) {
-          contentType = obj.httpMetadata?.contentType || 'image/jpeg';
-          if (typeof (obj as any).arrayBuffer === 'function') {
-            const ab = await (obj as any).arrayBuffer();
-            rawBuffer = new Uint8Array(ab);
-          } else if (obj.body) {
-            const reader = (obj.body as ReadableStream).getReader();
-            const chunks: Uint8Array[] = [];
-            let total = 0;
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              if (value) {
-                chunks.push(value);
-                total += value.length;
-              }
-            }
-            rawBuffer = new Uint8Array(total);
-            let offset = 0;
-            for (const chunk of chunks) {
-              rawBuffer.set(chunk, offset);
-              offset += chunk.length;
-            }
-          }
-        }
-      }
-
       // Check D1 media_assets table
-      if (!rawBuffer && env.DB) {
+      if (env.DB) {
         const asset = await getMediaAssetFromD1(env.DB, key);
         if (asset) {
           const raw = atob(asset.dataBase64);
@@ -3712,9 +3646,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
               const baseKeyWithoutExt = key.replace(/\.[^.]+$/, '');
               const varKey = `${baseKeyWithoutExt}_w${effectiveWidth}.webp`;
               try {
-                if (r2Bucket) {
-                  await r2Bucket.put(varKey, webpBuffer, { httpMetadata: { contentType: 'image/webp' } });
-                } else if (env.DB) {
+                if (env.DB) {
                   const b64 = Buffer.from(webpBuffer).toString('base64');
                   await saveMediaAssetInD1(env.DB, varKey, 'image/webp', b64, webpBuffer.byteLength);
                 }

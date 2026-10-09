@@ -29,23 +29,8 @@ export interface D1Database {
   exec(query: string): Promise<any>;
 }
 
-export interface R2ObjectBody {
-  body: ReadableStream;
-  httpMetadata?: {
-    contentType?: string;
-  };
-}
-
-export interface R2Bucket {
-  get(key: string): Promise<R2ObjectBody | null>;
-  put(key: string, value: any, options?: any): Promise<any>;
-  delete(key: string): Promise<void>;
-}
-
 export interface Env {
   DB?: D1Database;
-  R2?: R2Bucket;
-  BUCKET?: R2Bucket;
   ASSETS?: {
     fetch: (request: Request) => Promise<Response>;
   };
