@@ -16,6 +16,7 @@ import {
   Lock,
   Bug,
   TrendingUp,
+  Star,
 } from 'lucide-react';
 
 interface AdminSidebarProps {
@@ -31,6 +32,8 @@ interface AdminSidebarProps {
   couriersCount: number;
   couponsCount: number;
   usersCount: number;
+  reviewsCount?: number;
+  pendingReviewsCount?: number;
   pendingOrdersCount: number;
   lowStockProductsCount: number;
   hasPermission: (perm: string) => boolean;
@@ -60,6 +63,8 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
   couriersCount,
   couponsCount,
   usersCount,
+  reviewsCount = 0,
+  pendingReviewsCount = 0,
   pendingOrdersCount,
   lowStockProductsCount,
   hasPermission,
@@ -113,6 +118,14 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
       badge: productsCount,
       color: 'amber',
       permission: 'product.view',
+    },
+    {
+      id: 'reviews',
+      label: 'Review Moderation',
+      icon: Star,
+      badge: pendingReviewsCount > 0 ? `${pendingReviewsCount} pending` : (reviewsCount > 0 ? reviewsCount : null),
+      color: 'amber',
+      permission: 'review.manage',
     },
     {
       id: 'categories',
@@ -200,9 +213,16 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
         </span>
       </div>
 
-      {/* Vertical list of the 10 menu options */}
+      {/* Vertical list of menu options */}
       <nav className="space-y-1.5 flex-1" aria-label="Admin Navigation Menu">
-        {menuItems.map((item) => {
+        {menuItems
+          .filter((item) => {
+            if (item.id === 'reviews') {
+              return hasPermission('review.manage');
+            }
+            return true;
+          })
+          .map((item) => {
           const Icon = item.icon;
           const isActive = activeTab === item.id;
           const isPermitted = !item.permission || hasPermission(item.permission);
@@ -352,6 +372,23 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
                   >
                     • Low Stock ({lowStockProductsCount})
                   </button>
+                </div>
+              )}
+
+              {isActive && item.id === 'reviews' && (
+                <div className="pl-9 pr-2 py-1 space-y-1 text-[11px] animate-in slide-in-from-top-1 duration-150">
+                  <div className="px-2 py-1 text-slate-400 font-medium">
+                    {pendingReviewsCount > 0 ? (
+                      <span className="text-amber-400 font-bold flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                        {pendingReviewsCount} Pending Moderation
+                      </span>
+                    ) : (
+                      <span className="text-emerald-400 font-semibold">
+                        ✓ All Reviews Moderated
+                      </span>
+                    )}
+                  </div>
                 </div>
               )}
 

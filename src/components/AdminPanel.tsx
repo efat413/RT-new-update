@@ -135,6 +135,10 @@ const AdminDebugTab = React.lazy(() =>
 const AdminProfitAnalyticsTab = React.lazy(() =>
   import('./AdminProfitAnalyticsTab').then((m) => ({ default: m.AdminProfitAnalyticsTab }))
 );
+const AdminReviewsTab = React.lazy(() =>
+  import('./AdminReviewsTab').then((m) => ({ default: m.AdminReviewsTab }))
+);
+import { useAdmin } from '../context/AdminContextDefinition';
 
 const AdminTabFallback: React.FC = () => (
   <div className="py-24 flex flex-col items-center justify-center space-y-3 text-slate-400">
@@ -309,9 +313,11 @@ const AdminPanelContent: React.FC = () => {
   const [permissionsModalUser, setPermissionsModalUser] = useState<UserAccount | null>(null);
   const [selectedStaffUserId, setSelectedStaffUserId] = useState<string>('');
 
+  const admin = useAdmin();
+
   // Active Tab
   const [activeTab, setActiveTab] = useState<
-    'overview' | 'profit' | 'orders' | 'products' | 'categories' | 'slides' | 'couriers' | 'settings' | 'users' | 'pixels' | 'vouchers' | 'debug'
+    'overview' | 'profit' | 'orders' | 'products' | 'reviews' | 'categories' | 'slides' | 'couriers' | 'settings' | 'users' | 'pixels' | 'vouchers' | 'debug'
   >((adminActiveTab as any) || 'overview');
 
   const handleSelectTab = useCallback((tabId: string) => {
@@ -1685,6 +1691,69 @@ const AdminPanelContent: React.FC = () => {
     setRatingModalProduct(null);
   };
 
+  // --- ADMIN ADD REVIEW DIRECT HANDLERS ---
+  const [adminReviewModalProduct, setAdminReviewModalProduct] = useState<Product | null>(null);
+  const [adminReviewAuthor, setAdminReviewAuthor] = useState('Verified Customer');
+  const [adminReviewRating, setAdminReviewRating] = useState(5);
+  const [adminReviewComment, setAdminReviewComment] = useState('');
+  const [adminReviewStatus, setAdminReviewStatus] = useState<'approved' | 'pending'>('approved');
+  const [adminReviewNote, setAdminReviewNote] = useState('Staff Added');
+  const [adminReviewSubmitting, setAdminReviewSubmitting] = useState(false);
+  const [adminReviewError, setAdminReviewError] = useState<string | null>(null);
+
+  const openAdminAddReviewModal = (product: Product) => {
+    setAdminReviewModalProduct(product);
+    setAdminReviewAuthor('Verified Customer');
+    setAdminReviewRating(5);
+    setAdminReviewComment('');
+    setAdminReviewStatus('approved');
+    setAdminReviewNote('Staff Added');
+    setAdminReviewError(null);
+  };
+
+  const handleSaveAdminReview = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!adminReviewModalProduct || !adminReviewComment.trim()) return;
+
+    if (adminReviewAuthor.trim().length < 2 || adminReviewAuthor.trim().length > 60) {
+      setAdminReviewError('Author name must be between 2 and 60 characters.');
+      return;
+    }
+
+    if (adminReviewComment.trim().length < 3 || adminReviewComment.trim().length > 1000) {
+      setAdminReviewError('Review comment must be between 3 and 1000 characters.');
+      return;
+    }
+
+    setAdminReviewSubmitting(true);
+    setAdminReviewError(null);
+
+    try {
+      if (!admin?.adminCreateReview) {
+        throw new Error('Review management is not available.');
+      }
+
+      const res = await admin.adminCreateReview({
+        productId: adminReviewModalProduct.id,
+        authorName: adminReviewAuthor.trim() || 'Verified Customer',
+        rating: adminReviewRating,
+        comment: adminReviewComment.trim(),
+        status: adminReviewStatus,
+        moderationNote: adminReviewNote.trim() || undefined,
+      });
+
+      if (res.success) {
+        setAdminReviewModalProduct(null);
+      } else {
+        setAdminReviewError(res.error || 'Failed to create review.');
+      }
+    } catch (err: any) {
+      setAdminReviewError(err?.message || 'Failed to create review.');
+    } finally {
+      setAdminReviewSubmitting(false);
+    }
+  };
+
   // --- CATEGORY CRUD HANDLERS ---
   const openNewCategoryModal = () => {
     setEditingCategory(null);
@@ -2761,6 +2830,8 @@ const AdminPanelContent: React.FC = () => {
           couriersCount={courierConfigs.length}
           couponsCount={coupons.length}
           usersCount={users.length}
+          reviewsCount={admin?.adminReviewsTotal ?? 0}
+          pendingReviewsCount={admin?.adminReviewsCounts?.pending ?? 0}
           pendingOrdersCount={pendingOrdersCount}
           lowStockProductsCount={products.filter((p) => p.stock < 5).length}
           hasPermission={hasPermission}
@@ -4784,18 +4855,32 @@ const AdminPanelContent: React.FC = () => {
                             {(product.reviewsCount ?? 0) > 0 ? `(${product.reviewsCount} revs)` : '(No reviews)'}
                           </span>
                         </div>
-                        {hasPermission('product.update') && (
-                          <button
-                            id={`adjust-rating-${product.id}`}
-                            type="button"
-                            onClick={() => openRatingAdjustmentModal(product)}
-                            className="px-2 py-1 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-900 font-bold text-[11px] flex items-center gap-1 transition-colors shadow-2xs"
-                            title="Custom backend option to adjust product rating"
-                          >
-                            <Star className="w-3 h-3 fill-amber-500 text-amber-600" />
-                            Adjust Rating
-                          </button>
-                        )}
+                        <div className="flex items-center gap-1.5">
+                          {hasPermission('review.manage') && (
+                            <button
+                              id={`admin-add-review-${product.id}`}
+                              type="button"
+                              onClick={() => openAdminAddReviewModal(product)}
+                              className="px-2 py-1 rounded-lg bg-rose-100 hover:bg-rose-200 text-rose-900 font-bold text-[11px] flex items-center gap-1 transition-colors shadow-2xs cursor-pointer"
+                              title="Add customer review directly for this product"
+                            >
+                              <Plus className="w-3 h-3 text-rose-600" />
+                              Add Review
+                            </button>
+                          )}
+                          {hasPermission('product.update') && (
+                            <button
+                              id={`adjust-rating-${product.id}`}
+                              type="button"
+                              onClick={() => openRatingAdjustmentModal(product)}
+                              className="px-2 py-1 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-900 font-bold text-[11px] flex items-center gap-1 transition-colors shadow-2xs cursor-pointer"
+                              title="Custom backend option to adjust product rating"
+                            >
+                              <Star className="w-3 h-3 fill-amber-500 text-amber-600" />
+                              Adjust Rating
+                            </button>
+                          )}
+                        </div>
                       </div>
 
                       {(hasPermission('product.update') || hasPermission('product.delete')) && (
@@ -7060,6 +7145,21 @@ const AdminPanelContent: React.FC = () => {
             <ErrorBoundary compact fallbackTitle="Profit Analytics Unavailable" fallbackMessage="Could not load profit analytics tab.">
               <React.Suspense fallback={<AdminTabFallback />}>
                 <AdminProfitAnalyticsTab />
+              </React.Suspense>
+            </ErrorBoundary>
+          )
+        )}
+
+        {/* ============================================================ */}
+        {/* TAB 13: PRODUCT REVIEWS MODERATION & MANAGEMENT             */}
+        {/* ============================================================ */}
+        {activeTab === 'reviews' && (
+          !hasPermission('review.manage') ? (
+            renderPermissionRestrictedNotice('review.manage' as any, 'Product Review Moderation')
+          ) : (
+            <ErrorBoundary compact fallbackTitle="Reviews Unavailable" fallbackMessage="Could not load review moderation tab.">
+              <React.Suspense fallback={<AdminTabFallback />}>
+                <AdminReviewsTab />
               </React.Suspense>
             </ErrorBoundary>
           )
@@ -9685,6 +9785,217 @@ const AdminPanelContent: React.FC = () => {
                 >
                   <Check className="w-4 h-4" />
                   Apply Rating
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================ */}
+      {/* MODAL: DIRECT PRODUCT REVIEW CREATION (ADMIN)                */}
+      {/* ============================================================ */}
+      {adminReviewModalProduct && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm overflow-y-auto animate-in fade-in duration-200">
+          <div className="w-full max-w-lg bg-white rounded-3xl shadow-2xl overflow-hidden border border-slate-200">
+            <div className="h-2 w-full rainbow-gradient-bg" />
+
+            <form onSubmit={handleSaveAdminReview} className="p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-9 h-9 rounded-xl bg-rose-100 flex items-center justify-center text-rose-600">
+                    <Plus className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-display font-bold text-base text-slate-900">
+                      Add Product Review
+                    </h3>
+                    <p className="text-[11px] text-slate-500">
+                      Create customer review for "{adminReviewModalProduct.title}"
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAdminReviewModalProduct(null)}
+                  className="p-1 rounded-full hover:bg-slate-100 text-slate-400"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {adminReviewError && (
+                <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span>{adminReviewError}</span>
+                </div>
+              )}
+
+              {/* Target Product Summary */}
+              <div className="flex items-center gap-3 p-3 bg-slate-50 border border-slate-200 rounded-2xl">
+                <img
+                  src={adminReviewModalProduct.imageUrl}
+                  alt={adminReviewModalProduct.title}
+                  className="w-12 h-12 rounded-xl object-cover border border-slate-200 shrink-0"
+                />
+                <div className="min-w-0 flex-1">
+                  <h4 className="font-bold text-xs text-slate-900 truncate">
+                    {adminReviewModalProduct.title}
+                  </h4>
+                  <p className="text-[11px] text-slate-500 font-mono">
+                    Current: {adminReviewModalProduct.rating ? adminReviewModalProduct.rating.toFixed(1) : '5.0'}★ ({adminReviewModalProduct.reviewsCount ?? 0} revs)
+                  </p>
+                </div>
+              </div>
+
+              {/* Author & Rating */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Customer Name *
+                  </label>
+                  <input
+                    id="admin-direct-review-author-input"
+                    type="text"
+                    value={adminReviewAuthor}
+                    onChange={(e) => setAdminReviewAuthor(e.target.value)}
+                    required
+                    placeholder="e.g. Tanvir Ahmed"
+                    className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 focus:border-rose-500 focus:ring-2 focus:ring-rose-500/20 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Rating (1 to 5) *
+                  </label>
+                  <div className="flex items-center gap-1 py-1">
+                    {[1, 2, 3, 4, 5].map((star) => (
+                      <button
+                        key={star}
+                        type="button"
+                        onClick={() => setAdminReviewRating(star)}
+                        className="p-1 hover:scale-110 transition-transform cursor-pointer"
+                      >
+                        <Star
+                          className={`w-5 h-5 ${
+                            star <= adminReviewRating
+                              ? 'fill-amber-400 text-amber-400'
+                              : 'text-slate-200'
+                          }`}
+                        />
+                      </button>
+                    ))}
+                    <span className="font-black text-slate-800 ml-1 text-sm">{adminReviewRating}★</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Review Text */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Customer Review Comment *
+                </label>
+                <textarea
+                  id="admin-direct-review-comment-input"
+                  value={adminReviewComment}
+                  onChange={(e) => setAdminReviewComment(e.target.value)}
+                  rows={3}
+                  required
+                  placeholder="Authentic feedback about quality, delivery, and customer experience..."
+                  className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 focus:border-rose-500 focus:ring-2 focus:ring-rose-500/20 focus:outline-none"
+                />
+              </div>
+
+              {/* Status Selection */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Moderation Status *
+                </label>
+                <div className="grid grid-cols-2 gap-3 text-xs">
+                  <label
+                    className={`p-3 rounded-xl border flex items-center gap-2 cursor-pointer transition-all ${
+                      adminReviewStatus === 'approved'
+                        ? 'bg-emerald-50 border-emerald-300 text-emerald-950 ring-2 ring-emerald-500/20'
+                        : 'bg-white border-slate-200 text-slate-700 hover:border-slate-300'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="adminDirectReviewStatus"
+                      value="approved"
+                      checked={adminReviewStatus === 'approved'}
+                      onChange={() => setAdminReviewStatus('approved')}
+                      className="text-emerald-600 focus:ring-emerald-500"
+                    />
+                    <div>
+                      <span className="font-bold block">Approved</span>
+                      <span className="text-[10px] text-slate-500">Live now & recalculates rating</span>
+                    </div>
+                  </label>
+
+                  <label
+                    className={`p-3 rounded-xl border flex items-center gap-2 cursor-pointer transition-all ${
+                      adminReviewStatus === 'pending'
+                        ? 'bg-amber-50 border-amber-300 text-amber-950 ring-2 ring-amber-500/20'
+                        : 'bg-white border-slate-200 text-slate-700 hover:border-slate-300'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="adminDirectReviewStatus"
+                      value="pending"
+                      checked={adminReviewStatus === 'pending'}
+                      onChange={() => setAdminReviewStatus('pending')}
+                      className="text-amber-600 focus:ring-amber-500"
+                    />
+                    <div>
+                      <span className="font-bold block">Pending</span>
+                      <span className="text-[10px] text-slate-500">Save in review queue</span>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              {/* Internal Note */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Internal Staff Note (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={adminReviewNote}
+                  onChange={(e) => setAdminReviewNote(e.target.value)}
+                  placeholder="e.g. Phone order feedback / verified WhatsApp customer"
+                  className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 focus:border-rose-500 focus:ring-2 focus:ring-rose-500/20 focus:outline-none"
+                />
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setAdminReviewModalProduct(null)}
+                  className="flex-1 py-2.5 px-4 rounded-xl border border-slate-300 text-slate-700 font-bold text-xs hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  id="admin-save-direct-review-submit-btn"
+                  type="submit"
+                  disabled={adminReviewSubmitting}
+                  className="flex-1 py-2.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-md hover:shadow-lg active:scale-95 transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
+                >
+                  {adminReviewSubmitting ? (
+                    <>
+                      <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      <span>Saving...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-4 h-4" />
+                      <span>Save Review</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>

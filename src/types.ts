@@ -147,6 +147,8 @@ export interface DbblPaymentDetails {
   depositSlipUrl?: string;
 }
 
+export type ReviewModerationStatus = 'pending' | 'approved' | 'rejected';
+
 export interface ProductReview {
   id: string;
   productId: string;
@@ -157,6 +159,11 @@ export interface ProductReview {
   createdAt: string;
   date?: string;
   verifiedPurchase?: boolean;
+  status?: ReviewModerationStatus;
+  moderatorId?: string;
+  moderatedAt?: string;
+  moderationNote?: string;
+  createdByAdmin?: boolean;
 }
 
 export interface Coupon {

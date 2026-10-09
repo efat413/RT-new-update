@@ -6,6 +6,7 @@ import {
   StoreSettings,
   Coupon,
   ProductReview,
+  ReviewModerationStatus,
   UserAccount,
 } from '../types';
 
@@ -207,6 +208,11 @@ export interface ReviewRow {
   rating: number;
   comment: string;
   verified_purchase: number;
+  status: string;
+  moderator_id: string | null;
+  moderated_at: string | null;
+  moderation_note: string | null;
+  created_by_admin: number;
   created_at: string;
 }
 
@@ -233,5 +239,6 @@ export type {
   StoreSettings,
   Coupon,
   ProductReview,
+  ReviewModerationStatus,
   UserAccount,
 };

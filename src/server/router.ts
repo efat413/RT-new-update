@@ -39,7 +39,9 @@ import {
   deleteCouponFromD1,
   // Reviews
   getAllReviews,
+  getAdminReviews,
   insertReview,
+  updateReviewStatusInD1,
   deleteReviewFromD1,
   verifyCustomerPurchaseInD1,
   // Users
@@ -3774,12 +3776,172 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
   }
 
   // ==========================================
-  // 6. REVIEWS CRUD ROUTES
+  // 6. REVIEWS CRUD & MODERATION ROUTES
   // ==========================================
+  // 6.1 Admin Review Management endpoints
+  if (path === '/api/admin/reviews' || path === '/api/admin/reviews/') {
+    if (method === 'GET') {
+      const { auth, errorResponse } = await requireAuth(request, env);
+      if (errorResponse) return errorResponse;
+      if (!hasPermission(auth!, 'review.manage')) {
+        return jsonResponse({ success: false, error: 'Forbidden: Insufficient review management permissions.' }, 403);
+      }
+
+      try {
+        const filter = {
+          status: url.searchParams.get('status') || 'all',
+          productId: url.searchParams.get('productId') || undefined,
+          rating: url.searchParams.get('rating') ? Number(url.searchParams.get('rating')) : undefined,
+          search: url.searchParams.get('search') || undefined,
+          startDate: url.searchParams.get('startDate') || undefined,
+          endDate: url.searchParams.get('endDate') || undefined,
+          page: url.searchParams.get('page') ? Number(url.searchParams.get('page')) : 1,
+          limit: url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : 20,
+        };
+
+        const result = await getAdminReviews(env.DB, filter);
+        return jsonResponse({ success: true, ...result });
+      } catch (err: any) {
+        logServerError({ route: path, method, error: err, action: 'admin.reviews.list' });
+        return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+      }
+    }
+
+    if (method === 'POST') {
+      const { auth, errorResponse } = await requireAuth(request, env);
+      if (errorResponse) return errorResponse;
+      if (!hasPermission(auth!, 'review.manage')) {
+        return jsonResponse({ success: false, error: 'Forbidden: Insufficient review management permissions.' }, 403);
+      }
+
+      try {
+        const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+        if (jsonErr) return jsonErr;
+
+        const reviewData = body?.review || body;
+        const productId = String(reviewData.productId || '').trim();
+        const authorName = String(reviewData.authorName || reviewData.author || '').trim();
+        const comment = String(reviewData.comment || '').trim();
+        const rating = Math.min(5, Math.max(1, Math.round(Number(reviewData.rating) || 5)));
+        const reqStatus = String(reviewData.status || 'approved').toLowerCase();
+        const allowedStatus = reqStatus === 'pending' ? 'pending' : 'approved';
+
+        if (!productId || !authorName || !comment) {
+          return jsonResponse({ success: false, error: 'Product, author name, and review text are required.' }, 400);
+        }
+
+        if (authorName.length < 2 || authorName.length > 60) {
+          return jsonResponse({ success: false, error: 'Author name must be between 2 and 60 characters.' }, 400);
+        }
+
+        if (comment.length < 3 || comment.length > 1000) {
+          return jsonResponse({ success: false, error: 'Review text must be between 3 and 1000 characters.' }, 400);
+        }
+
+        // Target product validation
+        const prod = await getProductById(env.DB, productId);
+        if (!prod) {
+          return jsonResponse({ success: false, error: 'Selected product does not exist.' }, 404);
+        }
+
+        const created = await insertReview(env.DB, {
+          productId: prod.id,
+          authorName,
+          comment,
+          rating,
+          verifiedPurchase: false, // Admin-created reviews are NEVER falsely marked as verified purchase
+          createdByAdmin: true,
+          status: allowedStatus,
+          moderatorId: auth!.dbUser.id,
+          moderatedAt: allowedStatus === 'approved' ? new Date().toISOString() : undefined,
+          moderationNote: reviewData.moderationNote ? String(reviewData.moderationNote).slice(0, 250) : 'Created by staff',
+        });
+
+        // Audit log entry
+        try {
+          const isDev = isDevEnvironment(env);
+          const clientIp = getClientIp(request, isDev);
+          await insertAuditLogInD1(env.DB, {
+            actorId: auth!.dbUser.id,
+            actorEmail: auth!.dbUser.email,
+            actorRole: auth!.role,
+            action: 'REVIEW_CREATED_ADMIN',
+            targetId: created.id,
+            targetType: 'review',
+            details: `Created review for product ${prod.title} (Rating: ${rating}★, Status: ${allowedStatus})`,
+            ipAddress: clientIp,
+          });
+        } catch {}
+
+        return jsonResponse({ success: true, review: created }, 201);
+      } catch (err: any) {
+        logServerError({ route: path, method, error: err, action: 'admin.reviews.create' });
+        return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+      }
+    }
+  }
+
+  // 6.2 Review status moderation endpoint (approve / reject / restore)
+  const adminReviewStatusMatch = path.match(/^\/api\/(?:admin\/)?reviews\/([^/]+)\/status$/);
+  if (adminReviewStatusMatch && (method === 'PATCH' || method === 'PUT')) {
+    const revId = decodeURIComponent(adminReviewStatusMatch[1]);
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    if (!hasPermission(auth!, 'review.manage')) {
+      return jsonResponse({ success: false, error: 'Forbidden: Insufficient review management permissions.' }, 403);
+    }
+
+    try {
+      const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+      if (jsonErr) return jsonErr;
+
+      const rawStatus = String(body?.status || '').toLowerCase().trim();
+      if (!['approved', 'rejected', 'pending'].includes(rawStatus)) {
+        return jsonResponse({ success: false, error: 'Status must be approved, rejected, or pending.' }, 400);
+      }
+
+      const note = body?.note ? String(body.note).slice(0, 250) : undefined;
+      const updated = await updateReviewStatusInD1(
+        env.DB,
+        revId,
+        rawStatus as 'pending' | 'approved' | 'rejected',
+        auth!.dbUser.id,
+        note
+      );
+
+      if (!updated) {
+        return jsonResponse({ success: false, error: 'Review not found.' }, 404);
+      }
+
+      // Record moderation action in audit log
+      try {
+        const isDev = isDevEnvironment(env);
+        const clientIp = getClientIp(request, isDev);
+        await insertAuditLogInD1(env.DB, {
+          actorId: auth!.dbUser.id,
+          actorEmail: auth!.dbUser.email,
+          actorRole: auth!.role,
+          action: rawStatus === 'approved' ? 'REVIEW_APPROVED' : rawStatus === 'rejected' ? 'REVIEW_REJECTED' : 'REVIEW_STATUS_UPDATE',
+          targetId: revId,
+          targetType: 'review',
+          details: `Changed review ${revId} status to ${rawStatus}${note ? ` (Note: ${note})` : ''}`,
+          ipAddress: clientIp,
+        });
+      } catch {}
+
+      return jsonResponse({ success: true, review: updated });
+    } catch (err: any) {
+      logServerError({ route: path, method, error: err, action: 'review.moderate' });
+      return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+    }
+  }
+
+  // 6.3 Public Reviews Endpoint (Customer listing & submission)
   if (path === '/api/reviews') {
     if (method === 'GET') {
       try {
         const productId = url.searchParams.get('productId') || undefined;
+        // Public API strictly returns approved reviews only!
         const reviews = await getAllReviews(env.DB, productId);
         return jsonResponse({ success: true, count: reviews.length, reviews }, 200, {
           'Cache-Control': 'public, max-age=30, s-maxage=60, stale-while-revalidate=30',
@@ -3797,8 +3959,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         const clientIp = getClientIp(request, isDev);
         const reviewIpKey = `rev-ip:${clientIp}`;
 
-        // 1. IP-based rate limiting (max 5 reviews per 10 minutes)
-        const ipCheck = await checkRateLimit(reviewIpKey, 5, 600, env.DB);
+        // 1. IP-based rate limiting (max 30 in dev/test, 10 in production per 10 minutes)
+        const ipLimit = isDev ? 50 : 10;
+        const ipCheck = await checkRateLimit(reviewIpKey, ipLimit, 600, env.DB);
         if (!ipCheck.allowed) {
           return jsonResponse({
             success: false,
@@ -3828,9 +3991,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           return jsonResponse({ success: false, error: 'Review comment must be between 3 and 1000 characters.' }, 400);
         }
 
-        // 2. Per-product throttling (max 2 reviews per product per IP per 10 minutes)
+        // 2. Per-product throttling (max 20 in dev/test, 5 in prod per product per IP per 10 minutes)
+        const prodLimit = isDev ? 30 : 5;
         const prodThrottleKey = `rev-prod:${clientIp}:${productId}`;
-        const prodCheck = await checkRateLimit(prodThrottleKey, 2, 600, env.DB);
+        const prodCheck = await checkRateLimit(prodThrottleKey, prodLimit, 600, env.DB);
         if (!prodCheck.allowed) {
           return jsonResponse({
             success: false,
@@ -3852,13 +4016,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         }
 
         // Record submission attempts for rate limits
-        await recordFailedAttempt(reviewIpKey, 5, 600, env.DB);
-        await recordFailedAttempt(prodThrottleKey, 2, 600, env.DB);
+        await recordFailedAttempt(reviewIpKey, ipLimit, 600, env.DB);
+        await recordFailedAttempt(prodThrottleKey, prodLimit, 600, env.DB);
 
         // 4. Server-Authoritative verifiedPurchase Verification:
         // Client cannot force verifiedPurchase: true under any circumstances.
-        // Client-provided email alone can NEVER make a review verifiedPurchase = true.
-        // Only server-authenticated users (or guests with strong multi-factor proof) can qualify.
         let isVerifiedPurchase = false;
         let targetProductId = productId;
 
@@ -3904,14 +4066,32 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           }
         }
 
+        // New customer-submitted reviews explicitly receive status = 'pending'.
+        // Pending reviews do not leak into public lists and do not change public rating.
         const created = await insertReview(env.DB, {
           productId: targetProductId,
           authorName,
           comment,
           rating,
           verifiedPurchase: isVerifiedPurchase,
+          status: 'pending',
+          createdByAdmin: false,
         });
-        return jsonResponse({ success: true, review: created }, 201);
+
+        return jsonResponse({
+          success: true,
+          message: 'Thank you! Your review has been submitted and is awaiting approval.',
+          review: {
+            id: created.id,
+            productId: created.productId,
+            authorName: created.authorName,
+            rating: created.rating,
+            comment: created.comment,
+            verifiedPurchase: created.verifiedPurchase,
+            status: 'pending',
+            createdAt: created.createdAt,
+          },
+        }, 201);
       } catch (err: any) {
         console.error('Error creating review:', err);
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
@@ -3919,17 +4099,35 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     }
   }
 
-  const reviewIdMatch = path.match(/^\/api\/reviews\/([^/]+)$/);
+  // 6.4 Delete Review Endpoint (Requires review.manage authorization)
+  const reviewIdMatch = path.match(/^\/api\/(?:admin\/)?reviews\/([^/]+)$/);
   if (reviewIdMatch && method === 'DELETE') {
     const revId = decodeURIComponent(reviewIdMatch[1]);
     const { auth, errorResponse } = await requireAuth(request, env);
     if (errorResponse) return errorResponse;
-    if (auth!.role === 'customer') {
-      return jsonResponse({ success: false, error: 'Forbidden: Customers cannot delete reviews.' }, 403);
+    if (!hasPermission(auth!, 'review.manage')) {
+      return jsonResponse({ success: false, error: 'Forbidden: Insufficient review management permissions.' }, 403);
     }
 
     try {
       await deleteReviewFromD1(env.DB, revId);
+
+      // Record deletion in audit logs
+      try {
+        const isDev = isDevEnvironment(env);
+        const clientIp = getClientIp(request, isDev);
+        await insertAuditLogInD1(env.DB, {
+          actorId: auth!.dbUser.id,
+          actorEmail: auth!.dbUser.email,
+          actorRole: auth!.role,
+          action: 'REVIEW_DELETE',
+          targetId: revId,
+          targetType: 'review',
+          details: `Deleted review ${revId}`,
+          ipAddress: clientIp,
+        });
+      } catch {}
+
       return jsonResponse({ success: true, message: `Review deleted successfully.` });
     } catch (err: any) {
       logServerError({ route: path, method, error: err, action: 'review.delete' });

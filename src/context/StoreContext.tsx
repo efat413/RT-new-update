@@ -154,6 +154,24 @@ const defaultAdminStubs: AdminContextType = {
   orderSummary: null,
   orderQueryFilters: { status: 'all', payment: 'all', search: '', sortBy: 'newest' },
   setOrderQueryFilters: () => {},
+
+  // Reviews Moderation & Management
+  adminReviews: [],
+  adminReviewsTotal: 0,
+  adminReviewsPage: 1,
+  setAdminReviewsPage: () => {},
+  adminReviewsLimit: 20,
+  setAdminReviewsLimit: () => {},
+  adminReviewsTotalPages: 1,
+  adminReviewsCounts: { all: 0, pending: 0, approved: 0, rejected: 0 },
+  isAdminReviewsLoading: false,
+  adminReviewFilters: { status: 'all', productId: 'all', search: '' },
+  setAdminReviewFilters: () => {},
+  fetchAdminReviews: async () => {},
+  adminApproveReview: async () => ({ success: false, error: 'Admin context not loaded' }),
+  adminRejectReview: async () => ({ success: false, error: 'Admin context not loaded' }),
+  adminDeleteReview: async () => ({ success: false, error: 'Admin context not loaded' }),
+  adminCreateReview: async () => ({ success: false, error: 'Admin context not loaded' }),
 };
 
 /**

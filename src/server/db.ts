@@ -672,8 +672,13 @@ export const SLIDER_COLUMNS =
 export const COUPON_COLUMNS =
   'code, discount_type, discount_value, min_spend, description, is_active';
 
-export const REVIEW_COLUMNS =
+export const PUBLIC_REVIEW_COLUMNS =
   'id, product_id, author_name, rating, comment, verified_purchase, created_at';
+
+export const ADMIN_REVIEW_COLUMNS =
+  'id, product_id, author_name, rating, comment, verified_purchase, status, moderator_id, moderated_at, moderation_note, created_by_admin, created_at';
+
+export const REVIEW_COLUMNS = ADMIN_REVIEW_COLUMNS;
 
 export interface ProductFilter {
   category?: string;
@@ -2383,37 +2388,302 @@ export async function deleteCouponFromD1(db: D1Database, code: string): Promise<
 // 6. PRODUCT REVIEWS DATABASE OPERATIONS
 // ==============================================================
 
-export function rowToReview(row: ReviewRow): ProductReview {
+export function rowToReview(row: ReviewRow | any): ProductReview {
   return {
     id: row.id,
     productId: row.product_id,
     authorName: row.author_name,
+    author: row.author_name,
     rating: Number(row.rating) || 5,
     comment: row.comment,
     verifiedPurchase: Boolean(row.verified_purchase),
+    status: (row.status || 'approved') as any,
+    moderatorId: row.moderator_id || undefined,
+    moderatedAt: row.moderated_at || undefined,
+    moderationNote: row.moderation_note || undefined,
+    createdByAdmin: Boolean(row.created_by_admin),
     createdAt: row.created_at,
+    date: row.created_at ? new Date(row.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : undefined,
   };
 }
 
+/**
+ * Maps a review row strictly for public consumption.
+ * Moderation metadata (moderatorId, moderatedAt, moderationNote, createdByAdmin)
+ * are completely omitted to prevent internal information leakage.
+ */
+export function rowToPublicReview(row: ReviewRow | any): ProductReview {
+  return {
+    id: row.id,
+    productId: row.product_id,
+    authorName: row.author_name,
+    author: row.author_name,
+    rating: Number(row.rating) || 5,
+    comment: row.comment,
+    verifiedPurchase: Boolean(row.verified_purchase),
+    status: 'approved',
+    createdAt: row.created_at,
+    date: row.created_at ? new Date(row.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : undefined,
+  };
+}
+
+/**
+ * Recalculates product rating and reviews count strictly from approved reviews in D1.
+ * Ensures consistent aggregates whenever reviews are approved, rejected, or deleted.
+ */
+export async function recalculateProductReviewAggregates(
+  db: D1Database,
+  productId: string
+): Promise<{ rating: number; reviewsCount: number } | null> {
+  if (!productId) return null;
+  try {
+    let approvedRows: Array<{ rating: number }> = [];
+    try {
+      const revRes = await db
+        .prepare(
+          "SELECT rating FROM reviews WHERE product_id = ? AND (status = 'approved' OR status IS NULL OR status = '')"
+        )
+        .bind(productId)
+        .all<{ rating: number }>();
+      approvedRows = revRes.results || [];
+    } catch {
+      const revRes = await db
+        .prepare("SELECT rating FROM reviews WHERE product_id = ?")
+        .bind(productId)
+        .all<{ rating: number }>();
+      approvedRows = revRes.results || [];
+    }
+
+    const prod = await db
+      .prepare("SELECT rating, reviews_count FROM products WHERE id = ?")
+      .bind(productId)
+      .first<{ rating: number; reviews_count: number }>();
+
+    if (!prod) return null;
+
+    const dbApprovedCount = approvedRows.length;
+    let newRating = 5.0;
+    let newReviewsCount = 0;
+
+    if (dbApprovedCount > 0) {
+      const sum = approvedRows.reduce((acc, r) => acc + (Number(r.rating) || 5), 0);
+      newRating = Math.round((sum / dbApprovedCount) * 10) / 10;
+      newReviewsCount = dbApprovedCount;
+    } else {
+      newRating = 5.0;
+      newReviewsCount = 0;
+    }
+
+    await db
+      .prepare("UPDATE products SET rating = ?, reviews_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .bind(newRating, newReviewsCount, productId)
+      .run();
+
+    return { rating: newRating, reviewsCount: newReviewsCount };
+  } catch (err) {
+    console.error('[recalculateProductReviewAggregates Error]:', err);
+    return null;
+  }
+}
+
+/**
+ * Public review retrieval: Returns ONLY approved reviews.
+ * Filtering happens on the server to prevent pending or rejected reviews from leaking.
+ */
 export async function getAllReviews(db: D1Database, productId?: string): Promise<ProductReview[]> {
-  let query = `SELECT ${REVIEW_COLUMNS} FROM reviews`;
+  let query = `SELECT ${PUBLIC_REVIEW_COLUMNS} FROM reviews WHERE (status = 'approved' OR status IS NULL OR status = '')`;
   const bindings: any[] = [];
 
   if (productId) {
-    query += ' WHERE product_id = ?';
+    query += ' AND product_id = ?';
     bindings.push(productId);
   }
   query += ' ORDER BY created_at DESC';
 
-  const stmt = db.prepare(query);
-  const bound = bindings.length > 0 ? stmt.bind(...bindings) : stmt;
-  const result = await bound.all<ReviewRow>();
+  try {
+    const stmt = db.prepare(query);
+    const bound = bindings.length > 0 ? stmt.bind(...bindings) : stmt;
+    const result = await bound.all<ReviewRow>();
+    return (result.results || []).map(rowToPublicReview);
+  } catch (err: any) {
+    // Graceful backward compatibility fallback if status column is not yet present
+    if (err?.message?.includes('no such column') || err?.message?.includes('status')) {
+      let legacyQuery = `SELECT ${PUBLIC_REVIEW_COLUMNS} FROM reviews`;
+      const legacyBindings: any[] = [];
+      if (productId) {
+        legacyQuery += ' WHERE product_id = ?';
+        legacyBindings.push(productId);
+      }
+      legacyQuery += ' ORDER BY created_at DESC';
+      const stmt = db.prepare(legacyQuery);
+      const bound = legacyBindings.length > 0 ? stmt.bind(...legacyBindings) : stmt;
+      const result = await bound.all<ReviewRow>();
+      return (result.results || []).map(rowToPublicReview);
+    }
+    throw err;
+  }
+}
 
-  return (result.results || []).map(rowToReview);
+export interface AdminReviewFilter {
+  status?: string; // 'all' | 'pending' | 'approved' | 'rejected'
+  productId?: string;
+  rating?: number;
+  search?: string;
+  startDate?: string;
+  endDate?: string;
+  page?: number;
+  limit?: number;
+}
+
+export interface AdminReviewsResult {
+  reviews: ProductReview[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+  counts: {
+    all: number;
+    pending: number;
+    approved: number;
+    rejected: number;
+  };
+}
+
+/**
+ * Privileged review retrieval for Admin Review Management panel.
+ * Authorized admins only. Retrieves pending, approved, and rejected reviews with filters and counts.
+ */
+export async function getAdminReviews(
+  db: D1Database,
+  filter?: AdminReviewFilter
+): Promise<AdminReviewsResult> {
+  const baseCounts = { all: 0, pending: 0, approved: 0, rejected: 0 };
+
+  // 1. Calculate status totals
+  try {
+    let countSql = `
+      SELECT 
+        COUNT(*) as total_all,
+        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as total_pending,
+        SUM(CASE WHEN status = 'approved' OR status IS NULL OR status = '' THEN 1 ELSE 0 END) as total_approved,
+        SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as total_rejected
+      FROM reviews
+    `;
+    const countBindings: any[] = [];
+    if (filter?.productId) {
+      countSql += ' WHERE product_id = ?';
+      countBindings.push(filter.productId);
+    }
+    const countStmt = db.prepare(countSql);
+    const countBound = countBindings.length > 0 ? countStmt.bind(...countBindings) : countStmt;
+    const countRow = await countBound.first<{
+      total_all: number;
+      total_pending: number;
+      total_approved: number;
+      total_rejected: number;
+    }>();
+
+    if (countRow) {
+      baseCounts.all = Number(countRow.total_all) || 0;
+      baseCounts.pending = Number(countRow.total_pending) || 0;
+      baseCounts.approved = Number(countRow.total_approved) || 0;
+      baseCounts.rejected = Number(countRow.total_rejected) || 0;
+    }
+  } catch (err: any) {
+    if (!err?.message?.includes('no such column')) {
+      console.warn('Error fetching review counts in D1:', err);
+    }
+  }
+
+  // 2. Build filtered query
+  let whereClauses: string[] = ['1=1'];
+  const bindings: any[] = [];
+
+  const status = (filter?.status || 'all').toLowerCase();
+  if (status === 'pending') {
+    whereClauses.push("status = 'pending'");
+  } else if (status === 'approved') {
+    whereClauses.push("(status = 'approved' OR status IS NULL OR status = '')");
+  } else if (status === 'rejected') {
+    whereClauses.push("status = 'rejected'");
+  }
+
+  if (filter?.productId) {
+    whereClauses.push('product_id = ?');
+    bindings.push(filter.productId);
+  }
+
+  if (filter?.rating && Number(filter.rating) >= 1 && Number(filter.rating) <= 5) {
+    whereClauses.push('rating = ?');
+    bindings.push(Number(filter.rating));
+  }
+
+  if (filter?.startDate) {
+    whereClauses.push('created_at >= ?');
+    bindings.push(filter.startDate);
+  }
+
+  if (filter?.endDate) {
+    whereClauses.push('created_at <= ?');
+    bindings.push(filter.endDate);
+  }
+
+  const rawSearch = (filter?.search || '').trim();
+  if (rawSearch) {
+    const term = `%${rawSearch}%`;
+    whereClauses.push('(author_name LIKE ? OR comment LIKE ?)');
+    bindings.push(term, term);
+  }
+
+  const whereSql = ` WHERE ${whereClauses.join(' AND ')}`;
+
+  // Total matching records
+  let filteredTotal = 0;
+  try {
+    const totalStmt = db.prepare(`SELECT COUNT(*) as cnt FROM reviews${whereSql}`);
+    const boundTotal = bindings.length > 0 ? totalStmt.bind(...bindings) : totalStmt;
+    const totalRow = await boundTotal.first<{ cnt: number }>();
+    filteredTotal = totalRow?.cnt || 0;
+  } catch {
+    filteredTotal = baseCounts.all;
+  }
+
+  const page = Math.max(1, Number(filter?.page) || 1);
+  const limit = Math.min(100, Math.max(1, Number(filter?.limit) || 20));
+  const offset = (page - 1) * limit;
+
+  let query = `SELECT ${ADMIN_REVIEW_COLUMNS} FROM reviews${whereSql} ORDER BY created_at DESC LIMIT ? OFFSET ?`;
+  const pagedBindings = [...bindings, limit, offset];
+
+  let rows: ReviewRow[] = [];
+  try {
+    const stmt = db.prepare(query).bind(...pagedBindings);
+    const res = await stmt.all<ReviewRow>();
+    rows = res.results || [];
+  } catch (err: any) {
+    if (err?.message?.includes('no such column') || err?.message?.includes('status')) {
+      // Fallback if status column does not exist
+      const fallbackQuery = `SELECT ${PUBLIC_REVIEW_COLUMNS} FROM reviews${whereSql} ORDER BY created_at DESC LIMIT ? OFFSET ?`;
+      const stmt = db.prepare(fallbackQuery).bind(...pagedBindings);
+      const res = await stmt.all<ReviewRow>();
+      rows = res.results || [];
+    } else {
+      throw err;
+    }
+  }
+
+  return {
+    reviews: rows.map(rowToReview),
+    total: filteredTotal,
+    page,
+    limit,
+    totalPages: Math.max(1, Math.ceil(filteredTotal / limit)),
+    counts: baseCounts,
+  };
 }
 
 export async function insertReview(db: D1Database, input: any): Promise<ProductReview> {
-  const id = input.id || `rev-${Date.now()}`;
+  const id = input.id || `rev-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
   const productId = input.productId;
   const authorName = (input.authorName || input.author || 'Customer').trim();
   const rating = Math.min(5, Math.max(1, Number(input.rating) || 5));
@@ -2422,17 +2692,111 @@ export async function insertReview(db: D1Database, input: any): Promise<ProductR
   const verifiedPurchase = input.verifiedPurchase === true ? 1 : 0;
   const createdAt = input.createdAt || new Date().toISOString();
 
+  // Explicit moderation status controls
+  const createdByAdmin = input.createdByAdmin === true ? 1 : 0;
+  const status = input.status === 'approved' ? 'approved' : (input.status === 'rejected' ? 'rejected' : 'pending');
+  const moderatorId = input.moderatorId || (createdByAdmin ? 'admin' : null);
+  const moderatedAt = input.moderatedAt || (status === 'approved' && createdByAdmin ? createdAt : null);
+  const moderationNote = input.moderationNote || null;
+
+  try {
+    await db
+      .prepare(`
+        INSERT INTO reviews (id, product_id, author_name, rating, comment, verified_purchase, status, moderator_id, moderated_at, moderation_note, created_by_admin, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .bind(id, productId, authorName, rating, comment, verifiedPurchase, status, moderatorId, moderatedAt, moderationNote, createdByAdmin, createdAt)
+      .run();
+  } catch (err: any) {
+    if (err?.message?.includes('no such column') || err?.message?.includes('status')) {
+      await db
+        .prepare(`
+          INSERT INTO reviews (id, product_id, author_name, rating, comment, verified_purchase, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `)
+        .bind(id, productId, authorName, rating, comment, verifiedPurchase, createdAt)
+        .run();
+    } else {
+      throw err;
+    }
+  }
+
+  // If immediately approved (e.g. by admin), update product aggregates
+  if (status === 'approved') {
+    try {
+      await recalculateProductReviewAggregates(db, productId);
+    } catch (aggErr) {
+      console.warn('Failed to update aggregates on review insert:', aggErr);
+    }
+  }
+
+  let row: any = null;
+  try {
+    row = await db.prepare(`SELECT ${ADMIN_REVIEW_COLUMNS} FROM reviews WHERE id = ?`).bind(id).first<ReviewRow>();
+  } catch {
+    row = await db.prepare(`SELECT ${PUBLIC_REVIEW_COLUMNS} FROM reviews WHERE id = ?`).bind(id).first<ReviewRow>();
+  }
+
+  if (!row) {
+    return {
+      id,
+      productId,
+      authorName,
+      rating,
+      comment,
+      verifiedPurchase: Boolean(verifiedPurchase),
+      status,
+      moderatorId: moderatorId || undefined,
+      moderatedAt: moderatedAt || undefined,
+      moderationNote: moderationNote || undefined,
+      createdByAdmin: Boolean(createdByAdmin),
+      createdAt,
+    };
+  }
+  return rowToReview(row);
+}
+
+/**
+ * Updates review moderation status (approve / reject / restore) with moderator tracking
+ * and automatically recalculates the product's average rating and reviews count.
+ */
+export async function updateReviewStatusInD1(
+  db: D1Database,
+  id: string,
+  newStatus: 'pending' | 'approved' | 'rejected',
+  moderatorId?: string,
+  note?: string
+): Promise<ProductReview | null> {
+  const existing = await db.prepare('SELECT * FROM reviews WHERE id = ?').bind(id).first<ReviewRow>();
+  if (!existing) return null;
+
+  const moderatedAt = new Date().toISOString();
+  const cleanNote = note !== undefined ? note : (existing.moderation_note || null);
+
   await db
-    .prepare(`
-      INSERT INTO reviews (id, product_id, author_name, rating, comment, verified_purchase, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `)
-    .bind(id, productId, authorName, rating, comment, verifiedPurchase, createdAt)
+    .prepare('UPDATE reviews SET status = ?, moderator_id = ?, moderated_at = ?, moderation_note = ? WHERE id = ?')
+    .bind(newStatus, moderatorId || null, moderatedAt, cleanNote, id)
     .run();
 
-  const row = await db.prepare(`SELECT ${REVIEW_COLUMNS} FROM reviews WHERE id = ?`).bind(id).first<ReviewRow>();
-  if (!row) throw new Error('Failed to retrieve inserted review');
-  return rowToReview(row);
+  // Recalculate aggregates for the product so public rating & counts reflect approval or rejection
+  await recalculateProductReviewAggregates(db, existing.product_id);
+
+  let updated: any = null;
+  try {
+    updated = await db.prepare(`SELECT ${ADMIN_REVIEW_COLUMNS} FROM reviews WHERE id = ?`).bind(id).first<ReviewRow>();
+  } catch {
+    updated = await db.prepare(`SELECT ${PUBLIC_REVIEW_COLUMNS} FROM reviews WHERE id = ?`).bind(id).first<ReviewRow>();
+  }
+  return updated ? rowToReview(updated) : null;
+}
+
+export async function deleteReviewFromD1(db: D1Database, id: string): Promise<boolean> {
+  const existing = await db.prepare('SELECT product_id FROM reviews WHERE id = ?').bind(id).first<{ product_id: string }>();
+  const res = await db.prepare('DELETE FROM reviews WHERE id = ?').bind(id).run();
+  if (existing?.product_id) {
+    await recalculateProductReviewAggregates(db, existing.product_id);
+  }
+  return res.success;
 }
 
 /**
@@ -2518,10 +2882,6 @@ export async function verifyCustomerPurchaseInD1(
   }
 }
 
-export async function deleteReviewFromD1(db: D1Database, id: string): Promise<boolean> {
-  const res = await db.prepare('DELETE FROM reviews WHERE id = ?').bind(id).run();
-  return res.success;
-}
 
 // ==============================================================
 // 7. USERS DATABASE OPERATIONS (SECURE HASHING & SANITIZATION)

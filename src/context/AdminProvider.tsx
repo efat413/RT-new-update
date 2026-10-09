@@ -18,6 +18,7 @@ import {
   CourierWebhookLog,
   CourierBooking,
   Coupon,
+  ProductReview,
   MIN_PASSWORD_LENGTH,
 } from '../types';
 import { AdminContext, AdminContextType } from './AdminContextDefinition';
@@ -47,6 +48,7 @@ import {
   expensesApi,
   courierWebhooksApi,
   storeHomepageApi,
+  reviewsApi,
 } from '../services/storeApi';
 
 export const SUPER_ADMIN_PERMISSIONS: AdminPermissions = {
@@ -77,6 +79,7 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setVideoModalProduct,
     showNotification,
     refreshProductsByIds,
+    refreshAllStoreData,
     setSelectedCategory,
     setCurrentView,
   } = useStorefront();
@@ -1414,6 +1417,134 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     couponsApi.update(targetCode, { isActive: newStatus }).catch(console.error);
     showNotification('info', 'Voucher Status Updated', `Voucher "${targetCode}" is now ${newStatus ? 'Active' : 'Disabled'}.`);
   }, [setCoupons, showNotification]);
+
+  // Reviews Moderation & Management
+  const [adminReviews, setAdminReviews] = useState<ProductReview[]>([]);
+  const [adminReviewsTotal, setAdminReviewsTotal] = useState(0);
+  const [adminReviewsPage, setAdminReviewsPage] = useState(1);
+  const [adminReviewsLimit, setAdminReviewsLimit] = useState(20);
+  const [adminReviewsTotalPages, setAdminReviewsTotalPages] = useState(1);
+  const [adminReviewsCounts, setAdminReviewsCounts] = useState({ all: 0, pending: 0, approved: 0, rejected: 0 });
+  const [isAdminReviewsLoading, setIsAdminReviewsLoading] = useState(false);
+  const [adminReviewFilters, setAdminReviewFilters] = useState<{
+    status: string;
+    productId: string;
+    rating?: number;
+    search: string;
+    startDate?: string;
+    endDate?: string;
+  }>({
+    status: 'all',
+    productId: 'all',
+    search: '',
+  });
+
+  const fetchAdminReviews = useCallback(async (overrideFilters?: any) => {
+    setIsAdminReviewsLoading(true);
+    try {
+      const activeFilters = { ...adminReviewFilters, ...(overrideFilters || {}) };
+      const res = await reviewsApi.adminGetAll({
+        status: activeFilters.status,
+        productId: activeFilters.productId,
+        rating: activeFilters.rating,
+        search: activeFilters.search,
+        startDate: activeFilters.startDate,
+        endDate: activeFilters.endDate,
+        page: overrideFilters?.page ?? adminReviewsPage,
+        limit: overrideFilters?.limit ?? adminReviewsLimit,
+      });
+
+      setAdminReviews(res.reviews || []);
+      setAdminReviewsTotal(res.total || 0);
+      setAdminReviewsPage(res.page || 1);
+      setAdminReviewsLimit(res.limit || 20);
+      setAdminReviewsTotalPages(res.totalPages || 1);
+      if (res.counts) {
+        setAdminReviewsCounts(res.counts);
+      }
+    } catch (err: any) {
+      console.error('Error loading admin reviews:', err);
+    } finally {
+      setIsAdminReviewsLoading(false);
+    }
+  }, [adminReviewFilters, adminReviewsPage, adminReviewsLimit]);
+
+  const adminApproveReview = useCallback(async (id: string, note?: string) => {
+    try {
+      const updated = await reviewsApi.adminUpdateStatus(id, 'approved', note);
+      setAdminReviews((prev) => prev.map((r) => r.id === id ? updated : r));
+      setAdminReviewsCounts((prev) => ({
+        ...prev,
+        pending: Math.max(0, prev.pending - 1),
+        approved: prev.approved + 1,
+      }));
+      showNotification('success', 'Review Approved', 'Customer review is now approved and visible on the storefront.');
+      refreshAllStoreData(true);
+      return { success: true, review: updated };
+    } catch (err: any) {
+      showNotification('error', 'Approval Failed', err?.message || 'Failed to approve review');
+      return { success: false, error: err?.message || 'Failed to approve review' };
+    }
+  }, [refreshAllStoreData, showNotification]);
+
+  const adminRejectReview = useCallback(async (id: string, note?: string) => {
+    try {
+      const updated = await reviewsApi.adminUpdateStatus(id, 'rejected', note);
+      setAdminReviews((prev) => prev.map((r) => r.id === id ? updated : r));
+      setAdminReviewsCounts((prev) => ({
+        ...prev,
+        pending: Math.max(0, prev.pending - 1),
+        rejected: prev.rejected + 1,
+      }));
+      showNotification('info', 'Review Rejected', 'Review has been rejected and hidden from public display.');
+      refreshAllStoreData(true);
+      return { success: true, review: updated };
+    } catch (err: any) {
+      showNotification('error', 'Rejection Failed', err?.message || 'Failed to reject review');
+      return { success: false, error: err?.message || 'Failed to reject review' };
+    }
+  }, [refreshAllStoreData, showNotification]);
+
+  const adminDeleteReview = useCallback(async (id: string) => {
+    try {
+      await reviewsApi.delete(id);
+      setAdminReviews((prev) => prev.filter((r) => r.id !== id));
+      setAdminReviewsTotal((prev) => Math.max(0, prev - 1));
+      showNotification('info', 'Review Deleted', 'Review has been permanently removed.');
+      fetchAdminReviews();
+      refreshAllStoreData(true);
+      return { success: true };
+    } catch (err: any) {
+      showNotification('error', 'Delete Failed', err?.message || 'Failed to delete review');
+      return { success: false, error: err?.message || 'Failed to delete review' };
+    }
+  }, [fetchAdminReviews, refreshAllStoreData, showNotification]);
+
+  const adminCreateReview = useCallback(async (review: {
+    productId: string;
+    authorName: string;
+    rating: number;
+    comment: string;
+    status?: 'approved' | 'pending';
+    moderationNote?: string;
+  }) => {
+    try {
+      const created = await reviewsApi.adminCreate(review);
+      setAdminReviews((prev) => [created, ...prev]);
+      setAdminReviewsTotal((prev) => prev + 1);
+      showNotification(
+        'success',
+        'Review Created',
+        `Review created successfully with status: ${created.status || 'approved'}.`
+      );
+      fetchAdminReviews();
+      refreshAllStoreData(true);
+      return { success: true, review: created };
+    } catch (err: any) {
+      showNotification('error', 'Creation Failed', err?.message || 'Failed to create review');
+      return { success: false, error: err?.message || 'Failed to create review' };
+    }
+  }, [fetchAdminReviews, refreshAllStoreData, showNotification]);
 
   const value = useMemo<AdminContextType>(() => ({
     adminActiveTab,

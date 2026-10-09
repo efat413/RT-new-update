@@ -24,6 +24,7 @@ import {
   Video,
   Tv,
   AlertTriangle,
+  AlertCircle,
 } from 'lucide-react';
 import { Product } from '../types';
 import { useStore } from '../context/StoreContext';
@@ -109,6 +110,8 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
   const [reviewAuthor, setReviewAuthor] = useState('');
   const [reviewComment, setReviewComment] = useState('');
   const [reviewSuccessMsg, setReviewSuccessMsg] = useState('');
+  const [reviewErrorMsg, setReviewErrorMsg] = useState('');
+  const [isSubmittingReview, setIsSubmittingReview] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<{
     isOpen: boolean;
     title: string;
@@ -283,21 +286,52 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
     onClose();
   };
 
-  const handleReviewSubmit = (e: React.FormEvent) => {
+  const handleReviewSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!product || !reviewComment.trim()) return;
+    if (!product) return;
 
-    addProductReview({
-      productId: product.id,
-      authorName: reviewAuthor.trim() || 'Verified Shopper',
-      rating: reviewRating,
-      comment: reviewComment.trim(),
-      verifiedPurchase: true,
-    });
+    const author = reviewAuthor.trim() || (currentUser?.name ? currentUser.name : 'Customer');
+    const comment = reviewComment.trim();
 
-    setReviewComment('');
-    setReviewSuccessMsg('Thank you! Your verified review has been submitted.');
-    setTimeout(() => setReviewSuccessMsg(''), 4000);
+    if (!comment) {
+      setReviewErrorMsg('Please write a review comment.');
+      return;
+    }
+
+    if (author.length < 2 || author.length > 60) {
+      setReviewErrorMsg('Your name must be between 2 and 60 characters.');
+      return;
+    }
+
+    if (comment.length < 3 || comment.length > 1000) {
+      setReviewErrorMsg('Review text must be between 3 and 1000 characters.');
+      return;
+    }
+
+    setIsSubmittingReview(true);
+    setReviewErrorMsg('');
+    setReviewSuccessMsg('');
+
+    try {
+      const res = await addProductReview({
+        productId: product.id,
+        authorName: author,
+        rating: reviewRating,
+        comment,
+      });
+
+      if (res.success) {
+        setReviewComment('');
+        setReviewSuccessMsg(res.message || 'Thank you! Your review has been submitted and is awaiting approval.');
+        setTimeout(() => setReviewSuccessMsg(''), 7000);
+      } else {
+        setReviewErrorMsg(res.error || res.message || 'Failed to submit review.');
+      }
+    } catch (err: any) {
+      setReviewErrorMsg(err?.message || 'Failed to submit review.');
+    } finally {
+      setIsSubmittingReview(false);
+    }
   };
 
   return createPortal(
@@ -937,6 +971,20 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
                       </div>
                     </div>
 
+                    {reviewSuccessMsg && (
+                      <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-semibold flex items-center gap-1.5">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        <span>{reviewSuccessMsg}</span>
+                      </div>
+                    )}
+
+                    {reviewErrorMsg && (
+                      <div className="p-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-[11px] font-semibold flex items-center gap-1.5">
+                        <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                        <span>{reviewErrorMsg}</span>
+                      </div>
+                    )}
+
                     <div className="grid grid-cols-1 gap-2">
                       <input
                         type="text"
@@ -956,22 +1004,25 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
                     </div>
 
                     <div className="flex items-center justify-between">
-                      {reviewSuccessMsg ? (
-                        <span className="text-[11px] text-emerald-600 font-bold flex items-center gap-1">
-                          <CheckCircle2 className="w-3.5 h-3.5" />
-                          {reviewSuccessMsg}
-                        </span>
-                      ) : (
-                        <span className="text-[10px] text-slate-400">
-                          Your review will help other Bangladeshi shoppers.
-                        </span>
-                      )}
+                      <span className="text-[10px] text-slate-400">
+                        Submitted reviews are moderated before appearing publicly.
+                      </span>
                       <button
                         type="submit"
-                        className="px-3 py-1 bg-slate-900 hover:bg-black text-white rounded-lg text-xs font-bold transition-colors flex items-center gap-1"
+                        disabled={isSubmittingReview}
+                        className="px-3 py-1 bg-slate-900 hover:bg-black text-white rounded-lg text-xs font-bold transition-colors flex items-center gap-1 disabled:opacity-50 cursor-pointer"
                       >
-                        <Send className="w-3 h-3" />
-                        Submit
+                        {isSubmittingReview ? (
+                          <>
+                            <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                            <span>Submitting...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Send className="w-3 h-3" />
+                            <span>Submit</span>
+                          </>
+                        )}
                       </button>
                     </div>
                   </form>
