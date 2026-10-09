@@ -4858,8 +4858,8 @@ const AdminPanelContent: React.FC = () => {
         {/* TAB: CUSTOMER REVIEWS MODERATION                             */}
         {/* ============================================================ */}
         {activeTab === 'reviews' && (
-          !hasPermission('review.view') ? (
-            renderPermissionRestrictedNotice('review.view', 'Customer Reviews Moderation')
+          !(hasPermission('reviews.view') || hasPermission('review.view')) ? (
+            renderPermissionRestrictedNotice('reviews.view', 'Customer Reviews Moderation')
           ) : (
             <React.Suspense fallback={<AdminTabFallback />}>
               <AdminReviewsTab

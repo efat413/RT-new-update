@@ -199,9 +199,9 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
   const editFileInputRef = useRef<HTMLInputElement>(null);
 
   const canView = currentUser ? (hasUserPermission(currentUser, 'reviews.view') || hasUserPermission(currentUser, 'review.view')) : false;
-  const canCreate = currentUser ? (hasUserPermission(currentUser, 'reviews.create') || hasUserPermission(currentUser, 'review.create') || hasUserPermission(currentUser, 'review.manage')) : false;
-  const canEdit = currentUser ? (hasUserPermission(currentUser, 'reviews.edit') || hasUserPermission(currentUser, 'review.edit') || hasUserPermission(currentUser, 'review.manage')) : false;
-  const canApprove = currentUser ? (hasUserPermission(currentUser, 'reviews.approve') || hasUserPermission(currentUser, 'review.approve') || hasUserPermission(currentUser, 'review.manage')) : false;
+  const canCreate = currentUser ? (hasUserPermission(currentUser, 'reviews.create') || hasUserPermission(currentUser, 'review.create') || hasUserPermission(currentUser, 'review.manage') || hasUserPermission(currentUser, 'reviews.manage')) : false;
+  const canEdit = currentUser ? (hasUserPermission(currentUser, 'reviews.edit') || hasUserPermission(currentUser, 'review.edit') || hasUserPermission(currentUser, 'review.manage') || hasUserPermission(currentUser, 'reviews.manage')) : false;
+  const canApprove = currentUser ? (hasUserPermission(currentUser, 'reviews.approve') || hasUserPermission(currentUser, 'review.approve') || hasUserPermission(currentUser, 'review.manage') || hasUserPermission(currentUser, 'reviews.manage')) : false;
   const canDelete = currentUser ? (hasUserPermission(currentUser, 'reviews.delete') || hasUserPermission(currentUser, 'review.delete')) : false;
   const canManage = canApprove;
 
@@ -1959,7 +1959,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
       {/* 3. Image Preview Lightbox Modal */}
       {previewImage && (
         <div
-          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 backdrop-blur-xs"
+          className="fixed inset-0 z-[70] bg-black/80 flex items-center justify-center p-4 backdrop-blur-xs"
           onClick={() => setPreviewImage(null)}
         >
           <div
@@ -2089,11 +2089,11 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                         <select
                           value={formProductId}
                           onChange={(e) => setFormProductId(e.target.value)}
-                          className="py-1 px-2 rounded-lg bg-white border border-slate-300 text-xs font-semibold text-slate-700 cursor-pointer"
+                          className="py-1 px-2 rounded-lg bg-white border border-slate-300 text-xs font-semibold text-slate-700 cursor-pointer max-w-[200px] truncate"
                         >
                           {products.map((p) => (
                             <option key={p.id} value={p.id}>
-                              Change...
+                              {p.title}
                             </option>
                           ))}
                         </select>
