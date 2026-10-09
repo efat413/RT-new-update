@@ -12,10 +12,12 @@ import {
   type PermissionKey,
   type GranularPermissions,
   type PermissionMetadata,
+  PERMISSIONS_METADATA,
   SUPER_ADMIN_ONLY_PERMISSIONS,
   isValidPermissionKey,
   isSuperAdminOnlyPermission,
   mapLegacyPermissionsToGranular,
+  resolveUserPermissions,
   getCanonicalPermissionKey,
   LEGACY_PERMISSION_MAPPINGS,
   type LegacyPermissionMapping,
@@ -27,9 +29,12 @@ export {
   type PermissionKey,
   type GranularPermissions,
   type PermissionMetadata,
+  PERMISSIONS_METADATA,
   SUPER_ADMIN_ONLY_PERMISSIONS,
   isValidPermissionKey,
   isSuperAdminOnlyPermission,
+  mapLegacyPermissionsToGranular,
+  resolveUserPermissions,
   getCanonicalPermissionKey,
   LEGACY_PERMISSION_MAPPINGS,
   type LegacyPermissionMapping,
@@ -100,10 +105,49 @@ export function hasUserPermission(
       return Boolean(user.permissions['product.update']);
     }
     if (permStr === 'review.manage' || permStr === 'canManageReviews' || permStr === 'review.moderate') {
-      return Boolean(user.permissions['review.manage'] || user.permissions['canManageReviews']);
+      return Boolean(
+        user.permissions['review.manage'] ||
+        user.permissions['canManageReviews'] ||
+        (user.permissions['reviews.approve'] && user.permissions['reviews.edit'])
+      );
     }
-    if (permStr === 'review.view') {
-      return Boolean(user.permissions['review.view'] || user.permissions['review.manage'] || user.permissions['canManageReviews']);
+    if (permStr === 'reviews.view' || permStr === 'review.view') {
+      return Boolean(
+        user.permissions['reviews.view'] ||
+        user.permissions['review.view'] ||
+        user.permissions['review.manage'] ||
+        user.permissions['canManageReviews']
+      );
+    }
+    if (permStr === 'reviews.create' || permStr === 'review.create') {
+      return Boolean(
+        user.permissions['reviews.create'] ||
+        user.permissions['review.create'] ||
+        user.permissions['review.manage'] ||
+        user.permissions['canManageReviews']
+      );
+    }
+    if (permStr === 'reviews.edit' || permStr === 'review.edit') {
+      return Boolean(
+        user.permissions['reviews.edit'] ||
+        user.permissions['review.edit'] ||
+        user.permissions['review.manage'] ||
+        user.permissions['canManageReviews']
+      );
+    }
+    if (permStr === 'reviews.approve' || permStr === 'review.approve') {
+      return Boolean(
+        user.permissions['reviews.approve'] ||
+        user.permissions['review.approve'] ||
+        user.permissions['review.manage'] ||
+        user.permissions['canManageReviews']
+      );
+    }
+    if (permStr === 'reviews.delete' || permStr === 'review.delete') {
+      return Boolean(
+        user.permissions['reviews.delete'] ||
+        user.permissions['review.delete']
+      );
     }
 
     // Direct match on user.permissions

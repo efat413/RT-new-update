@@ -42,6 +42,11 @@ export const PERMISSION_KEYS = [
   'review.view',
   'review.manage',
   'review.delete',
+  'reviews.view',
+  'reviews.create',
+  'reviews.edit',
+  'reviews.approve',
+  'reviews.delete',
 
   // Courier Permissions
   'courier.configure',
@@ -344,8 +349,53 @@ export const PERMISSIONS_METADATA: Record<PermissionKey, PermissionMetadata> = {
   'review.delete': {
     key: 'review.delete',
     group: 'Review',
-    displayName: 'Delete Reviews',
+    displayName: 'Delete Reviews (Legacy)',
     description: 'Permanently remove reviews from database.',
+    superAdminOnly: false,
+    sensitive: false,
+    dangerous: true,
+  },
+  'reviews.view': {
+    key: 'reviews.view',
+    group: 'Review',
+    displayName: 'View Reviews',
+    description: 'Browse customer reviews, inspect review details, photos, and access moderation queue.',
+    superAdminOnly: false,
+    sensitive: false,
+    dangerous: false,
+  },
+  'reviews.create': {
+    key: 'reviews.create',
+    group: 'Review',
+    displayName: 'Create Reviews',
+    description: 'Create and submit official staff reviews with custom sources and photos.',
+    superAdminOnly: false,
+    sensitive: false,
+    dangerous: false,
+  },
+  'reviews.edit': {
+    key: 'reviews.edit',
+    group: 'Review',
+    displayName: 'Edit Reviews',
+    description: 'Edit customer review ratings, comments, author names, photos, and purchase verification.',
+    superAdminOnly: false,
+    sensitive: false,
+    dangerous: false,
+  },
+  'reviews.approve': {
+    key: 'reviews.approve',
+    group: 'Review',
+    displayName: 'Approve & Moderate Reviews',
+    description: 'Approve, reject, or hold reviews in the moderation queue, and publish reviews directly.',
+    superAdminOnly: false,
+    sensitive: false,
+    dangerous: false,
+  },
+  'reviews.delete': {
+    key: 'reviews.delete',
+    group: 'Review',
+    displayName: 'Delete Reviews',
+    description: 'Permanently remove customer reviews from the database.',
     superAdminOnly: false,
     sensitive: false,
     dangerous: true,
@@ -523,6 +573,11 @@ export const DEFAULT_ADMIN_1_PERMISSIONS: Readonly<Record<PermissionKey, boolean
   'review.view': true,
   'review.manage': true,
   'review.delete': true,
+  'reviews.view': true,
+  'reviews.create': true,
+  'reviews.edit': true,
+  'reviews.approve': true,
+  'reviews.delete': true,
 
   'courier.configure': true,
   'courier.booking': true,
@@ -580,6 +635,11 @@ export const DEFAULT_ADMIN_2_PERMISSIONS: Readonly<Record<PermissionKey, boolean
   'review.view': true,
   'review.manage': false,
   'review.delete': false,
+  'reviews.view': true,
+  'reviews.create': false,
+  'reviews.edit': false,
+  'reviews.approve': false,
+  'reviews.delete': false,
 
   'courier.configure': false,
   'courier.booking': true,
@@ -635,6 +695,11 @@ export const DEFAULT_SUB_ADMIN_PERMISSIONS: Readonly<Record<PermissionKey, boole
   'review.view': false,
   'review.manage': false,
   'review.delete': false,
+  'reviews.view': false,
+  'reviews.create': false,
+  'reviews.edit': false,
+  'reviews.approve': false,
+  'reviews.delete': false,
 
   'courier.configure': false,
   'courier.booking': false,
@@ -940,15 +1005,57 @@ export const LEGACY_PERMISSION_MAPPINGS: Record<string, LegacyPermissionMapping>
   },
   'review.moderate': {
     legacyKey: 'review.moderate',
-    canonicalKey: 'review.manage',
+    canonicalKey: 'reviews.approve',
     sensitivity: 'operational',
     description: 'Review moderation alias.',
   },
+  'review.approve': {
+    legacyKey: 'review.approve',
+    canonicalKey: 'reviews.approve',
+    sensitivity: 'operational',
+    description: 'Review approval alias.',
+  },
+  'review.create': {
+    legacyKey: 'review.create',
+    canonicalKey: 'reviews.create',
+    sensitivity: 'operational',
+    description: 'Review creation alias.',
+  },
+  'review.edit': {
+    legacyKey: 'review.edit',
+    canonicalKey: 'reviews.edit',
+    sensitivity: 'operational',
+    description: 'Review editing alias.',
+  },
+  'review.view': {
+    legacyKey: 'review.view',
+    canonicalKey: 'reviews.view',
+    sensitivity: 'operational',
+    description: 'Review viewing alias.',
+  },
+  'review.delete': {
+    legacyKey: 'review.delete',
+    canonicalKey: 'reviews.delete',
+    sensitivity: 'operational',
+    description: 'Review deletion alias.',
+  },
   'canManageReviews': {
     legacyKey: 'canManageReviews',
-    canonicalKey: 'review.manage',
+    canonicalKey: 'reviews.approve',
     sensitivity: 'operational',
     description: 'Legacy boolean flag for review management.',
+  },
+  'moderate_reviews': {
+    legacyKey: 'moderate_reviews',
+    canonicalKey: 'reviews.approve',
+    sensitivity: 'operational',
+    description: 'Snake_case review moderation alias.',
+  },
+  'moderateReviews': {
+    legacyKey: 'moderateReviews',
+    canonicalKey: 'reviews.approve',
+    sensitivity: 'operational',
+    description: 'CamelCase review moderation alias.',
   },
 };
 
@@ -1018,6 +1125,11 @@ export function mapLegacyPermissionsToGranular(legacy: Record<string, any>): Rec
     mapped['review.view'] = true;
     mapped['review.manage'] = true;
     mapped['review.delete'] = true;
+    mapped['reviews.view'] = true;
+    mapped['reviews.create'] = true;
+    mapped['reviews.edit'] = true;
+    mapped['reviews.approve'] = true;
+    mapped['reviews.delete'] = true;
   }
 
   return mapped;
@@ -1071,7 +1183,8 @@ export function resolveUserPermissions(
     'canManageOrders' in parsed ||
     'canManageCategories' in parsed ||
     'canManageAccounts' in parsed ||
-    'canManageSettings' in parsed;
+    'canManageSettings' in parsed ||
+    'canManageReviews' in parsed;
 
   if (hasLegacyFlags) {
     base = { ...base, ...mapLegacyPermissionsToGranular(parsed) };
@@ -1105,6 +1218,54 @@ export function resolveUserPermissions(
     base['product.view_profit'] = hasProfit;
   }
 
+  // Cross-alias synchronization for review permissions
+  if ('reviews.view' in parsed || 'review.view' in parsed) {
+    const hasRevView = Boolean(parsed['reviews.view'] ?? parsed['review.view']);
+    base['reviews.view'] = hasRevView;
+    base['review.view'] = hasRevView;
+  }
+  if ('reviews.create' in parsed || 'review.create' in parsed) {
+    const hasRevCreate = Boolean(parsed['reviews.create'] ?? parsed['review.create']);
+    base['reviews.create'] = hasRevCreate;
+  }
+  if ('reviews.edit' in parsed || 'review.edit' in parsed) {
+    const hasRevEdit = Boolean(parsed['reviews.edit'] ?? parsed['review.edit']);
+    base['reviews.edit'] = hasRevEdit;
+  }
+  if ('reviews.approve' in parsed || 'review.approve' in parsed) {
+    const hasRevApprove = Boolean(parsed['reviews.approve'] ?? parsed['review.approve']);
+    base['reviews.approve'] = hasRevApprove;
+  }
+  if ('reviews.delete' in parsed || 'review.delete' in parsed) {
+    const hasRevDelete = Boolean(parsed['reviews.delete'] ?? parsed['review.delete']);
+    base['reviews.delete'] = hasRevDelete;
+    base['review.delete'] = hasRevDelete;
+  }
+  if ('review.manage' in parsed) {
+    const hasManage = Boolean(parsed['review.manage']);
+    base['review.manage'] = hasManage;
+    if (hasManage) {
+      if (!('reviews.view' in parsed)) base['reviews.view'] = true;
+      if (!('review.view' in parsed)) base['review.view'] = true;
+      if (!('reviews.create' in parsed)) base['reviews.create'] = true;
+      if (!('reviews.edit' in parsed)) base['reviews.edit'] = true;
+      if (!('reviews.approve' in parsed)) base['reviews.approve'] = true;
+    } else {
+      if (!('reviews.create' in parsed)) base['reviews.create'] = false;
+      if (!('reviews.edit' in parsed)) base['reviews.edit'] = false;
+      if (!('reviews.approve' in parsed)) base['reviews.approve'] = false;
+    }
+  }
+  if ('canManageReviews' in parsed) {
+    const hasLegacyManage = Boolean(parsed.canManageReviews);
+    if (!hasLegacyManage) {
+      if (!('review.manage' in parsed)) base['review.manage'] = false;
+      if (!('reviews.approve' in parsed)) base['reviews.approve'] = false;
+      if (!('reviews.edit' in parsed)) base['reviews.edit'] = false;
+      if (!('reviews.create' in parsed)) base['reviews.create'] = false;
+    }
+  }
+
   // STRICT PRIVILEGE RESTRICTION:
   // For non-super_admin accounts, Super Admin-only permissions CAN NEVER be true!
   for (const superKey of SUPER_ADMIN_ONLY_PERMISSIONS) {
@@ -1124,7 +1285,13 @@ export function generateLegacyPermissionFlags(perms: Record<PermissionKey, boole
     canManageCategories: Boolean(perms['category.manage']),
     canManageAccounts: Boolean(perms['user.view'] || perms['customer.manage']),
     canManageSettings: Boolean(perms['slider.manage'] || perms['coupon.manage'] || perms['courier.configure']),
-    canManageReviews: Boolean(perms['review.manage'] || perms['review.view']),
+    canManageReviews: Boolean(
+      perms['reviews.approve'] ||
+      perms['reviews.edit'] ||
+      perms['review.manage'] ||
+      perms['reviews.view'] ||
+      perms['review.view']
+    ),
   };
 }
 

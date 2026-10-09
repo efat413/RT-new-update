@@ -196,9 +196,12 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
   const [editError, setEditError] = useState<string | null>(null);
   const editFileInputRef = useRef<HTMLInputElement>(null);
 
-  const canView = currentUser ? hasUserPermission(currentUser, 'review.view') : false;
-  const canManage = currentUser ? hasUserPermission(currentUser, 'review.manage') : false;
-  const canDelete = currentUser ? hasUserPermission(currentUser, 'review.delete') : false;
+  const canView = currentUser ? (hasUserPermission(currentUser, 'reviews.view') || hasUserPermission(currentUser, 'review.view')) : false;
+  const canCreate = currentUser ? (hasUserPermission(currentUser, 'reviews.create') || hasUserPermission(currentUser, 'review.create') || hasUserPermission(currentUser, 'review.manage')) : false;
+  const canEdit = currentUser ? (hasUserPermission(currentUser, 'reviews.edit') || hasUserPermission(currentUser, 'review.edit') || hasUserPermission(currentUser, 'review.manage')) : false;
+  const canApprove = currentUser ? (hasUserPermission(currentUser, 'reviews.approve') || hasUserPermission(currentUser, 'review.approve') || hasUserPermission(currentUser, 'review.manage')) : false;
+  const canDelete = currentUser ? (hasUserPermission(currentUser, 'reviews.delete') || hasUserPermission(currentUser, 'review.delete')) : false;
+  const canManage = canApprove;
 
   const showSuccessFeedback = (msg: string) => {
     setSuccessNotice(msg);
@@ -381,7 +384,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
 
   // Status update handler (Approve / Reject / Hold)
   const handleUpdateStatus = async (reviewId: string, newStatus: ReviewStatus) => {
-    if (!canManage) return;
+    if (!canApprove) return;
     setActionLoadingId(reviewId);
     try {
       const updated = await reviewsApi.update(reviewId, { status: newStatus });
@@ -518,22 +521,26 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
   // Submit Edit Review
   const handleSaveEditedReview = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingReview || !canManage) return;
-    if (!editAuthor.trim() || !editComment.trim()) {
+    if (!editingReview || (!canEdit && !canApprove)) return;
+    if (canEdit && (!editAuthor.trim() || !editComment.trim())) {
       setEditError('Author name and comment are required.');
       return;
     }
     setEditSubmitting(true);
     setEditError(null);
     try {
-      const updated = await reviewsApi.update(editingReview.id, {
-        authorName: editAuthor.trim(),
-        rating: editRating,
-        comment: editComment.trim(),
-        verifiedPurchase: editVerified,
-        status: editStatus,
-        images: editImages,
-      });
+      const payload: Partial<ProductReview> = {};
+      if (canApprove && editStatus !== undefined) {
+        payload.status = editStatus;
+      }
+      if (canEdit) {
+        payload.authorName = editAuthor.trim();
+        payload.rating = editRating;
+        payload.comment = editComment.trim();
+        payload.verifiedPurchase = editVerified;
+        payload.images = editImages;
+      }
+      const updated = await reviewsApi.update(editingReview.id, payload);
       setReviews((prev) => prev.map((r) => (r.id === editingReview.id ? updated : r)));
       if (viewingReview && viewingReview.id === editingReview.id) {
         setViewingReview(updated);
@@ -571,13 +578,17 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
   // Add review handler (locked to scoped product if applicable)
   const handleCreateStaffReview = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canCreate) {
+      setFormError('You do not have permission to create reviews.');
+      return;
+    }
     const targetId = scopedProduct ? scopedProduct.id : formProductId;
     if (!targetId || !formAuthor.trim() || !formComment.trim()) {
       setFormError('Please fill in all required fields (Author name, rating, comment).');
       return;
     }
 
-    // Permission enforcement: only users with review.manage can create directly approved reviews
+    // Permission enforcement: only users with reviews.approve can create directly approved reviews
     const effectiveStatus: ReviewStatus = canManage ? formStatus : 'pending';
 
     setFormSubmitting(true);
@@ -604,7 +615,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
       setFormRating(5);
       setFormVerified(false);
       setFormImages([]);
-      setFormStatus(canManage ? 'approved' : 'pending');
+      setFormStatus(canApprove ? 'approved' : 'pending');
       setFormSource('manual');
 
       showSuccessFeedback(
@@ -779,20 +790,33 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
               <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin text-rose-400' : ''}`} />
             </button>
 
-            <button
-              type="button"
-              id="add-review-scoped-btn"
-              onClick={() => {
-                setFormProductId(scopedProduct.id);
-                setFormStatus(canManage ? 'approved' : 'pending');
-                setFormVerified(false);
-                setIsAddModalOpen(true);
-              }}
-              className="py-2.5 px-4 rounded-xl bg-gradient-to-r from-rose-600 to-rose-700 hover:from-rose-500 hover:to-rose-600 text-white text-xs font-bold flex items-center gap-2 shadow-sm transition-all cursor-pointer whitespace-nowrap"
-            >
-              <Plus className="w-4 h-4" />
-              <span>+ Add Review</span>
-            </button>
+            {canCreate ? (
+              <button
+                type="button"
+                id="add-review-scoped-btn"
+                onClick={() => {
+                  setFormProductId(scopedProduct.id);
+                  setFormStatus(canApprove ? 'approved' : 'pending');
+                  setFormVerified(false);
+                  setIsAddModalOpen(true);
+                }}
+                className="py-2.5 px-4 rounded-xl bg-gradient-to-r from-rose-600 to-rose-700 hover:from-rose-500 hover:to-rose-600 text-white text-xs font-bold flex items-center gap-2 shadow-sm transition-all cursor-pointer whitespace-nowrap"
+              >
+                <Plus className="w-4 h-4" />
+                <span>+ Add Review</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                id="add-review-scoped-btn"
+                disabled
+                className="py-2.5 px-4 rounded-xl bg-slate-800 text-slate-500 border border-slate-700 text-xs font-bold flex items-center gap-2 shadow-none cursor-not-allowed whitespace-nowrap opacity-50"
+                title="Permission required: reviews.create"
+              >
+                <Plus className="w-4 h-4" />
+                <span>+ Add Review</span>
+              </button>
+            )}
           </div>
         </div>
       ) : (
@@ -819,19 +843,32 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
               <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin text-rose-500' : ''}`} />
             </button>
 
-            <button
-              type="button"
-              id="add-review-global-btn"
-              onClick={() => {
-                setFormStatus(canManage ? 'approved' : 'pending');
-                setFormVerified(false);
-                setIsAddModalOpen(true);
-              }}
-              className="py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-black text-white text-xs font-bold flex items-center gap-2 shadow-xs transition-colors cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              <span>+ Add Review</span>
-            </button>
+            {canCreate ? (
+              <button
+                type="button"
+                id="add-review-global-btn"
+                onClick={() => {
+                  setFormStatus(canApprove ? 'approved' : 'pending');
+                  setFormVerified(false);
+                  setIsAddModalOpen(true);
+                }}
+                className="py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-black text-white text-xs font-bold flex items-center gap-2 shadow-xs transition-colors cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>+ Add Review</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                id="add-review-global-btn"
+                disabled
+                className="py-2.5 px-4 rounded-xl bg-slate-100 border border-slate-200 text-slate-400 text-xs font-bold flex items-center gap-2 shadow-none cursor-not-allowed opacity-50"
+                title="Permission required: reviews.create"
+              >
+                <Plus className="w-4 h-4" />
+                <span>+ Add Review</span>
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -1349,7 +1386,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                       </button>
 
                       {/* Approve Action */}
-                      {canManage && !isApproved && (
+                      {canApprove && !isApproved && (
                         <button
                           type="button"
                           id={`approve-review-${rev.id}`}
@@ -1364,7 +1401,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                       )}
 
                       {/* Reject Action */}
-                      {canManage && !isRejected && (
+                      {canApprove && !isRejected && (
                         <button
                           type="button"
                           id={`reject-review-${rev.id}`}
@@ -1379,7 +1416,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                       )}
 
                       {/* Hold / Revert Action */}
-                      {canManage && !isPending && (
+                      {canApprove && !isPending && (
                         <button
                           type="button"
                           disabled={actionLoadingId === rev.id}
@@ -1393,7 +1430,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                       )}
 
                       {/* Edit Review Action */}
-                      {canManage && (
+                      {(canEdit || canApprove) && (
                         <button
                           type="button"
                           id={`edit-review-btn-${rev.id}`}
@@ -1640,7 +1677,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
             {/* Footer Actions */}
             <div className="p-4 border-t border-slate-100 bg-slate-50 flex items-center justify-between gap-2">
               <div className="flex items-center gap-1.5">
-                {canManage && viewingReview.status !== 'approved' && (
+                {canApprove && viewingReview.status !== 'approved' && (
                   <button
                     type="button"
                     onClick={() => handleUpdateStatus(viewingReview.id, 'approved')}
@@ -1649,7 +1686,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                     Approve
                   </button>
                 )}
-                {canManage && viewingReview.status !== 'rejected' && (
+                {canApprove && viewingReview.status !== 'rejected' && (
                   <button
                     type="button"
                     onClick={() => handleUpdateStatus(viewingReview.id, 'rejected')}
@@ -1658,7 +1695,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                     Reject
                   </button>
                 )}
-                {canManage && (
+                {(canEdit || canApprove) && (
                   <button
                     type="button"
                     onClick={() => {
@@ -1723,7 +1760,12 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                     onChange={(e) => setEditAuthor(e.target.value)}
                     required
                     maxLength={60}
-                    className="w-full py-2 px-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500/20"
+                    disabled={!canEdit}
+                    className={`w-full py-2 px-3 rounded-xl border text-xs text-slate-800 ${
+                      canEdit
+                        ? 'bg-slate-50 border-slate-200 focus:outline-none focus:ring-2 focus:ring-rose-500/20'
+                        : 'bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed'
+                    }`}
                   />
                 </div>
 
@@ -1734,8 +1776,9 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                       <button
                         key={star}
                         type="button"
+                        disabled={!canEdit}
                         onClick={() => setEditRating(star)}
-                        className="p-1 focus:outline-none cursor-pointer"
+                        className={`p-1 focus:outline-none ${canEdit ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
                       >
                         <Star
                           className={`w-5 h-5 ${
@@ -1757,7 +1800,12 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                   onChange={(e) => setEditComment(e.target.value)}
                   required
                   maxLength={1000}
-                  className="w-full py-2 px-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500/20"
+                  disabled={!canEdit}
+                  className={`w-full py-2 px-3 rounded-xl border text-xs text-slate-800 ${
+                    canEdit
+                      ? 'bg-slate-50 border-slate-200 focus:outline-none focus:ring-2 focus:ring-rose-500/20'
+                      : 'bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed'
+                  }`}
                 />
               </div>
 
@@ -1768,7 +1816,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                     <ImageIcon className="w-3.5 h-3.5 text-slate-500" />
                     <span>Review Photos ({editImages.length}/5)</span>
                   </label>
-                  {editImages.length < 5 && (
+                  {canEdit && editImages.length < 5 && (
                     <label className="text-[11px] font-bold text-blue-600 hover:text-blue-700 cursor-pointer flex items-center gap-1">
                       <Plus className="w-3 h-3" />
                       <span>Add Photo</span>
@@ -1800,14 +1848,16 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                         className="relative group w-16 h-16 rounded-xl overflow-hidden border border-slate-200 shrink-0"
                       >
                         <img src={img} alt="Thumb" className="w-full h-full object-cover" />
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveEditImage(idx)}
-                          className="absolute top-1 right-1 p-1 rounded-full bg-rose-600 text-white hover:bg-rose-700 transition-colors shadow-xs cursor-pointer"
-                          title="Remove image"
-                        >
-                          <X className="w-3 h-3" />
-                        </button>
+                        {canEdit && (
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveEditImage(idx)}
+                            className="absolute top-1 right-1 p-1 rounded-full bg-rose-600 text-white hover:bg-rose-700 transition-colors shadow-xs cursor-pointer"
+                            title="Remove image"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -1821,8 +1871,13 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                   <label className="block text-xs font-bold text-slate-700 mb-1">Review Source</label>
                   <select
                     value={editSource}
+                    disabled={!canEdit}
                     onChange={(e) => setEditSource(e.target.value as ReviewSource)}
-                    className="w-full py-1.5 px-3 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-800 cursor-pointer"
+                    className={`w-full py-1.5 px-3 rounded-xl border text-xs font-semibold ${
+                      canEdit
+                        ? 'bg-slate-50 border-slate-200 text-slate-800 cursor-pointer'
+                        : 'bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed'
+                    }`}
                   >
                     <option value="manual">Manual (Direct / Staff)</option>
                     <option value="whatsapp">WhatsApp</option>
@@ -1835,16 +1890,28 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Review Status</label>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Review Status {canApprove ? '' : '(Restricted)'}
+                  </label>
                   <select
                     value={editStatus}
+                    disabled={!canApprove}
                     onChange={(e) => setEditStatus(e.target.value as ReviewStatus)}
-                    className="w-full py-1.5 px-3 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-800 cursor-pointer"
+                    className={`w-full py-1.5 px-3 rounded-xl border text-xs font-semibold ${
+                      canApprove
+                        ? 'bg-slate-50 border-slate-200 text-slate-800 cursor-pointer'
+                        : 'bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed'
+                    }`}
                   >
                     <option value="approved">Approved (Live on Catalog)</option>
                     <option value="pending">Pending Moderation</option>
                     <option value="rejected">Rejected (Hidden)</option>
                   </select>
+                  {!canApprove && (
+                    <span className="text-[10px] text-amber-600 mt-0.5 block">
+                      Permission "reviews.approve" required to change status.
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -1853,10 +1920,11 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                   type="checkbox"
                   id="editVerifiedCheck"
                   checked={editVerified}
+                  disabled={!canEdit}
                   onChange={(e) => setEditVerified(e.target.checked)}
-                  className="rounded text-rose-600 focus:ring-rose-500 cursor-pointer"
+                  className={`rounded text-rose-600 focus:ring-rose-500 ${canEdit ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
                 />
-                <label htmlFor="editVerifiedCheck" className="text-xs font-semibold text-slate-700 cursor-pointer">
+                <label htmlFor="editVerifiedCheck" className={`text-xs font-semibold ${canEdit ? 'text-slate-700 cursor-pointer' : 'text-slate-400 cursor-not-allowed'}`}>
                   Verified Purchase Badge
                 </label>
               </div>
@@ -2182,7 +2250,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                 {/* Status Selection (Subject to permissions) */}
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">
-                    Initial Status {canManage ? '' : '(Restricted)'}
+                    Initial Status {canApprove ? '' : '(Pending Only)'}
                   </label>
                   <select
                     id="add-review-status-select"
@@ -2198,9 +2266,9 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                     <option value="approved">Approved (Live on Catalog)</option>
                     <option value="pending">Pending Moderation</option>
                   </select>
-                  {!canManage && (
+                  {!canApprove && (
                     <span className="text-[10px] text-amber-600 mt-0.5 block">
-                      Requires Review Manager permission to publish immediately.
+                      Permission "reviews.approve" required to publish immediately. Review will be submitted as Pending.
                     </span>
                   )}
                 </div>

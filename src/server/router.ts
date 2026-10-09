@@ -1067,6 +1067,60 @@ function hasPermission(
     return Boolean(auth.permissions && auth.permissions['product.update']);
   }
 
+  // Explicit checks for granular review permissions
+  if (keyStr === 'reviews.view' || keyStr === 'review.view') {
+    return Boolean(
+      auth.permissions && (
+        auth.permissions['reviews.view'] ||
+        auth.permissions['review.view'] ||
+        auth.permissions['review.manage']
+      )
+    );
+  }
+  if (keyStr === 'reviews.create' || keyStr === 'review.create') {
+    return Boolean(
+      auth.permissions && (
+        auth.permissions['reviews.create'] ||
+        auth.permissions['review.create'] ||
+        auth.permissions['review.manage']
+      )
+    );
+  }
+  if (keyStr === 'reviews.edit' || keyStr === 'review.edit') {
+    return Boolean(
+      auth.permissions && (
+        auth.permissions['reviews.edit'] ||
+        auth.permissions['review.edit'] ||
+        auth.permissions['review.manage']
+      )
+    );
+  }
+  if (keyStr === 'reviews.approve' || keyStr === 'review.approve') {
+    return Boolean(
+      auth.permissions && (
+        auth.permissions['reviews.approve'] ||
+        auth.permissions['review.approve'] ||
+        auth.permissions['review.manage']
+      )
+    );
+  }
+  if (keyStr === 'reviews.delete' || keyStr === 'review.delete') {
+    return Boolean(
+      auth.permissions && (
+        auth.permissions['reviews.delete'] ||
+        auth.permissions['review.delete']
+      )
+    );
+  }
+  if (keyStr === 'review.manage') {
+    return Boolean(
+      auth.permissions && (
+        auth.permissions['review.manage'] ||
+        (auth.permissions['reviews.approve'] && auth.permissions['reviews.edit'])
+      )
+    );
+  }
+
   // Granular PermissionKey check
   if (isValidPermissionKey(keyStr)) {
     return Boolean(auth.permissions && auth.permissions[keyStr as PermissionKey]);
@@ -3795,17 +3849,39 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           if (authCheck.errorResponse || !authCheck.auth || authCheck.auth.role === 'customer') {
             return jsonResponse({
               success: false,
-              error: 'Forbidden: Insufficient permissions to access review moderation queue.'
+              error: 'Forbidden: Insufficient permissions to access review moderation queue.',
+              requiredPermission: 'reviews.view',
             }, 403);
           }
-          const hasView = hasPermission(authCheck.auth, 'review.view') || hasPermission(authCheck.auth, 'review.manage');
+          const hasView = hasPermission(authCheck.auth, 'reviews.view') || hasPermission(authCheck.auth, 'review.view');
           if (!hasView) {
             return jsonResponse({
               success: false,
-              error: 'Forbidden: Insufficient permissions to access review moderation queue.'
+              error: 'Forbidden: Insufficient permissions to access review moderation queue.',
+              requiredPermission: 'reviews.view',
             }, 403);
           }
           allowNonApproved = true;
+        }
+
+        // Direct API check for authenticated admin users:
+        // A user with an administrative token who lacks reviews.view must not retrieve review data through direct API calls.
+        const token = extractTokenFromRequest(request);
+        if (token) {
+          const authRes = await requireAuth(request, env);
+          if (authRes.errorResponse) {
+            return authRes.errorResponse;
+          }
+          if (authRes.auth && (authRes.auth.role === 'admin' || authRes.auth.role === 'sub_admin')) {
+            const hasView = hasPermission(authRes.auth, 'reviews.view') || hasPermission(authRes.auth, 'review.view');
+            if (!hasView) {
+              return jsonResponse({
+                success: false,
+                error: 'Forbidden: Insufficient permissions to view review data.',
+                requiredPermission: 'reviews.view',
+              }, 403);
+            }
+          }
         }
 
         const filter: ReviewQueryFilter = {
@@ -3885,14 +3961,27 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         // Check if requester is authenticated admin creating an official review
         let isAdminCreation = false;
         let adminUser: any = null;
+        let canApproveDirectly = false;
         const token = extractTokenFromRequest(request);
         if (token) {
           try {
             const authRes = await requireAuth(request, env);
             if (!authRes.errorResponse && authRes.auth && authRes.auth.role !== 'customer') {
-              if (hasPermission(authRes.auth, 'review.manage')) {
+              const canCreate = hasPermission(authRes.auth, 'reviews.create') || hasPermission(authRes.auth, 'review.manage') || authRes.auth.role === 'super_admin';
+              if (canCreate) {
                 isAdminCreation = true;
                 adminUser = authRes.auth;
+                canApproveDirectly = hasPermission(authRes.auth, 'reviews.approve') || hasPermission(authRes.auth, 'review.manage') || authRes.auth.role === 'super_admin';
+              } else {
+                const reqSrc = String(reviewData.source || '').toLowerCase().trim();
+                const isExplicitAdminSubmission = (reqSrc && reqSrc !== 'customer') || reviewData.status !== undefined;
+                if (isExplicitAdminSubmission) {
+                  return jsonResponse({
+                    success: false,
+                    error: 'Forbidden: You do not have the "reviews.create" permission required to create official reviews.',
+                    requiredPermission: 'reviews.create',
+                  }, 403);
+                }
               }
             }
           } catch {}
@@ -4002,15 +4091,30 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
         // 6. Security Rule: Customer-submitted reviews default strictly to 'pending' on the server.
         // Client attempts to set approval status, approved_by, approved_at, or source are strictly stripped.
-        const initialStatus: ReviewStatus = isAdminCreation && reviewData.status ? reviewData.status : (isAdminCreation ? 'approved' : 'pending');
+        // Requirement 6 & 10: A user with reviews.create but without reviews.approve MUST NOT be able to approve reviews.
+        let initialStatus: ReviewStatus = 'pending';
+        let approvedBy: string | null = null;
+        let approvedAt: string | null = null;
+
+        if (isAdminCreation) {
+          if (canApproveDirectly) {
+            initialStatus = reviewData.status ? reviewData.status : 'approved';
+            if (initialStatus === 'approved') {
+              approvedBy = adminUser?.dbUser?.name || adminUser?.tokenUser?.email || 'admin';
+              approvedAt = new Date().toISOString();
+            }
+          } else {
+            // Admin has reviews.create but lacks reviews.approve: force to pending
+            initialStatus = 'pending';
+            approvedBy = null;
+            approvedAt = null;
+          }
+        }
         const validReqSources: ReviewSource[] = ['admin', 'manual', 'whatsapp', 'facebook', 'messenger', 'instagram'];
         const reqSrc = String(reviewData.source || '').toLowerCase().trim();
         const initialSource: ReviewSource = isAdminCreation && validReqSources.includes(reqSrc as ReviewSource)
           ? (reqSrc as ReviewSource)
           : (isAdminCreation ? 'admin' : 'customer');
-        const now = new Date().toISOString();
-        const approvedBy = initialStatus === 'approved' ? (adminUser?.dbUser?.name || adminUser?.tokenUser?.email || 'admin') : null;
-        const approvedAt = initialStatus === 'approved' ? now : null;
 
         const created = await insertReview(env.DB, {
           productId: targetProductId,
@@ -4040,14 +4144,34 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       if (!review) {
         return jsonResponse({ success: false, error: 'Review not found.' }, 404);
       }
+
+      // Check if an admin token is passed: admin must have reviews.view
+      const token = extractTokenFromRequest(request);
+      if (token) {
+        const authRes = await requireAuth(request, env);
+        if (authRes.errorResponse) {
+          return authRes.errorResponse;
+        }
+        if (authRes.auth && (authRes.auth.role === 'admin' || authRes.auth.role === 'sub_admin')) {
+          const hasView = hasPermission(authRes.auth, 'reviews.view') || hasPermission(authRes.auth, 'review.view');
+          if (!hasView) {
+            return jsonResponse({
+              success: false,
+              error: 'Forbidden: Insufficient permissions to view review data.',
+              requiredPermission: 'reviews.view',
+            }, 403);
+          }
+        }
+      }
+
       if (review.status !== 'approved') {
         const authCheck = await requireAuth(request, env);
         if (authCheck.errorResponse || !authCheck.auth || authCheck.auth.role === 'customer') {
           return jsonResponse({ success: false, error: 'Review not found.' }, 404);
         }
-        const hasView = hasPermission(authCheck.auth, 'review.view') || hasPermission(authCheck.auth, 'review.manage');
+        const hasView = hasPermission(authCheck.auth, 'reviews.view') || hasPermission(authCheck.auth, 'review.view');
         if (!hasView) {
-          return jsonResponse({ success: false, error: 'Review not found.' }, 404);
+          return jsonResponse({ success: false, error: 'Forbidden: Insufficient permissions to access unapproved review details.', requiredPermission: 'reviews.view' }, 403);
         }
       }
       return jsonResponse({ success: true, review });
@@ -4064,13 +4188,46 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     if (auth!.role === 'customer') {
       return jsonResponse({ success: false, error: 'Forbidden: Customers cannot moderate reviews.' }, 403);
     }
-    const permErr = requirePermission(auth!, 'review.manage');
-    if (permErr) return permErr;
 
     const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
     if (jsonErr) return jsonErr;
 
     const updates = body?.updates || body;
+    const isChangingStatus = updates.status !== undefined;
+    const isEditingContent =
+      updates.comment !== undefined ||
+      updates.rating !== undefined ||
+      updates.authorName !== undefined ||
+      updates.images !== undefined ||
+      updates.verifiedPurchase !== undefined;
+
+    const hasApprovePerm = hasPermission(auth!, 'reviews.approve') || hasPermission(auth!, 'review.manage') || auth!.role === 'super_admin';
+    const hasEditPerm = hasPermission(auth!, 'reviews.edit') || hasPermission(auth!, 'review.manage') || auth!.role === 'super_admin';
+
+    if (isChangingStatus && !hasApprovePerm) {
+      return jsonResponse({
+        success: false,
+        error: 'Forbidden: You do not have the "reviews.approve" permission required to approve or moderate reviews.',
+        requiredPermission: 'reviews.approve',
+      }, 403);
+    }
+
+    if (isEditingContent && !hasEditPerm) {
+      return jsonResponse({
+        success: false,
+        error: 'Forbidden: You do not have the "reviews.edit" permission required to edit reviews.',
+        requiredPermission: 'reviews.edit',
+      }, 403);
+    }
+
+    if (!hasApprovePerm && !hasEditPerm) {
+      return jsonResponse({
+        success: false,
+        error: 'Forbidden: You do not have permission to moderate or edit reviews.',
+        requiredPermission: 'reviews.edit',
+      }, 403);
+    }
+
     const adminIdentifier = auth!.dbUser?.name || auth!.tokenUser?.email || 'admin';
 
     // Validate updates
@@ -4140,7 +4297,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     if (auth!.role === 'customer') {
       return jsonResponse({ success: false, error: 'Forbidden: Customers cannot delete reviews.' }, 403);
     }
-    const permErr = requirePermission(auth!, 'review.delete');
+    const permErr = requirePermission(auth!, 'reviews.delete');
     if (permErr) return permErr;
 
     try {

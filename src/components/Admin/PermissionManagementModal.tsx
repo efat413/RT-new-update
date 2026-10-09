@@ -25,6 +25,7 @@ import {
   FileText,
   Save,
   Info,
+  MessageSquare,
 } from 'lucide-react';
 import { useStore } from '../../context/StoreContext';
 import { STORAGE_KEYS } from '../../context/storageKeys';
@@ -129,6 +130,20 @@ const PERMISSION_GROUPS: PermissionGroupDefinition[] = [
     keys: [
       'coupon.view',
       'coupon.manage',
+    ],
+  },
+  {
+    id: 'review',
+    name: 'Review Management',
+    icon: MessageSquare,
+    description: 'Moderate customer reviews, submit staff reviews, edit ratings/comments, and deletion',
+    color: 'text-amber-600 bg-amber-50 border-amber-200',
+    keys: [
+      'reviews.view',
+      'reviews.create',
+      'reviews.edit',
+      'reviews.approve',
+      'reviews.delete',
     ],
   },
   {

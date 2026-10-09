@@ -815,6 +815,66 @@ function localApiDevPlugin(): Plugin {
       return Boolean(auth.granularPermissions && auth.granularPermissions['product.update']);
     }
 
+    // Explicit checks for granular review permissions
+    if (permStr === 'reviews.view' || permStr === 'review.view') {
+      return Boolean(
+        (auth.granularPermissions && (
+          auth.granularPermissions['reviews.view'] ||
+          auth.granularPermissions['review.view'] ||
+          auth.granularPermissions['review.manage']
+        )) ||
+        (auth.permissions && (auth.permissions['review.view'] || auth.permissions['review.manage']))
+      );
+    }
+    if (permStr === 'reviews.create' || permStr === 'review.create') {
+      return Boolean(
+        (auth.granularPermissions && (
+          auth.granularPermissions['reviews.create'] ||
+          auth.granularPermissions['review.create'] ||
+          auth.granularPermissions['review.manage']
+        )) ||
+        (auth.permissions && (auth.permissions['reviews.create'] || auth.permissions['review.manage']))
+      );
+    }
+    if (permStr === 'reviews.edit' || permStr === 'review.edit') {
+      return Boolean(
+        (auth.granularPermissions && (
+          auth.granularPermissions['reviews.edit'] ||
+          auth.granularPermissions['review.edit'] ||
+          auth.granularPermissions['review.manage']
+        )) ||
+        (auth.permissions && (auth.permissions['reviews.edit'] || auth.permissions['review.manage']))
+      );
+    }
+    if (permStr === 'reviews.approve' || permStr === 'review.approve') {
+      return Boolean(
+        (auth.granularPermissions && (
+          auth.granularPermissions['reviews.approve'] ||
+          auth.granularPermissions['review.approve'] ||
+          auth.granularPermissions['review.manage']
+        )) ||
+        (auth.permissions && (auth.permissions['reviews.approve'] || auth.permissions['review.manage']))
+      );
+    }
+    if (permStr === 'reviews.delete' || permStr === 'review.delete') {
+      return Boolean(
+        (auth.granularPermissions && (
+          auth.granularPermissions['reviews.delete'] ||
+          auth.granularPermissions['review.delete']
+        )) ||
+        (auth.permissions && auth.permissions['review.delete'])
+      );
+    }
+    if (permStr === 'review.manage') {
+      return Boolean(
+        (auth.granularPermissions && (
+          auth.granularPermissions['review.manage'] ||
+          (auth.granularPermissions['reviews.approve'] && auth.granularPermissions['reviews.edit'])
+        )) ||
+        (auth.permissions && auth.permissions['review.manage'])
+      );
+    }
+
     // Granular PermissionKey check
     if (isValidPermissionKey(permStr)) {
       return Boolean(auth.granularPermissions && auth.granularPermissions[permStr as PermissionKey]);
@@ -3324,18 +3384,38 @@ function localApiDevPlugin(): Plugin {
                 res.statusCode = 403;
                 return res.end(JSON.stringify({
                   success: false,
-                  error: 'Forbidden: Insufficient permissions to access review moderation queue.'
+                  error: 'Forbidden: Insufficient permissions to access review moderation queue.',
+                  requiredPermission: 'reviews.view',
                 }));
               }
-              const hasView = hasDevPermission(authResult.auth, 'review.view') || hasDevPermission(authResult.auth, 'review.manage');
+              const hasView = hasDevPermission(authResult.auth, 'reviews.view') || hasDevPermission(authResult.auth, 'review.view');
               if (!hasView) {
                 res.statusCode = 403;
                 return res.end(JSON.stringify({
                   success: false,
-                  error: 'Forbidden: Insufficient permissions to access review moderation queue.'
+                  error: 'Forbidden: Insufficient permissions to access review moderation queue.',
+                  requiredPermission: 'reviews.view',
                 }));
               }
               allowNonApproved = true;
+            }
+
+            // Direct API check: if request has administrative token, must have reviews.view
+            const hasAuthHeader = Boolean(req.headers.authorization || (req.headers.cookie && req.headers.cookie.includes('rongdhonu_auth=')));
+            if (hasAuthHeader) {
+              const authResult = requireDevAuth(req);
+              if (authResult.error) return sendDevError(res, authResult.error);
+              if (authResult.auth && (authResult.auth.role === 'admin' || authResult.auth.role === 'sub_admin')) {
+                const hasView = hasDevPermission(authResult.auth, 'reviews.view') || hasDevPermission(authResult.auth, 'review.view');
+                if (!hasView) {
+                  res.statusCode = 403;
+                  return res.end(JSON.stringify({
+                    success: false,
+                    error: 'Forbidden: Insufficient permissions to view review data.',
+                    requiredPermission: 'reviews.view',
+                  }));
+                }
+              }
             }
 
             let filteredReviews = devReviews;
@@ -3408,7 +3488,26 @@ function localApiDevPlugin(): Plugin {
 
               const authResult = requireDevAuth(req);
               const auth = authResult.auth;
-              const isAdminCreation = Boolean(auth && auth.role !== 'customer' && (hasDevPermission(auth, 'review.manage') || auth.role === 'super_admin'));
+              let isAdminCreation = false;
+              let canApproveDirectly = false;
+              if (auth && auth.role !== 'customer') {
+                const canCreate = hasDevPermission(auth, 'reviews.create') || hasDevPermission(auth, 'review.manage') || auth.role === 'super_admin';
+                if (canCreate) {
+                  isAdminCreation = true;
+                  canApproveDirectly = hasDevPermission(auth, 'reviews.approve') || hasDevPermission(auth, 'review.manage') || auth.role === 'super_admin';
+                } else {
+                  const reqSrc = String(r.source || '').toLowerCase().trim();
+                  const isExplicitAdminSubmission = (reqSrc && reqSrc !== 'customer') || r.status !== undefined;
+                  if (isExplicitAdminSubmission) {
+                    res.statusCode = 403;
+                    return res.end(JSON.stringify({
+                      success: false,
+                      error: 'Forbidden: You do not have the "reviews.create" permission required to create official reviews.',
+                      requiredPermission: 'reviews.create',
+                    }));
+                  }
+                }
+              }
 
               if (!isAdminCreation) {
                 // 1. IP-based rate limiting (max 5 reviews per 10 minutes)
@@ -3506,15 +3605,30 @@ function localApiDevPlugin(): Plugin {
               }
 
               // Security Rule: Customer submissions default strictly to 'pending' on the server
-              const initialStatus = isAdminCreation && r.status ? r.status : (isAdminCreation ? 'approved' : 'pending');
+              // Requirement 6 & 10: A user with reviews.create but without reviews.approve MUST NOT be able to approve reviews.
+              const now = new Date().toISOString();
+              let initialStatus: string = 'pending';
+              let approvedBy: string | undefined = undefined;
+              let approvedAt: string | undefined = undefined;
+
+              if (isAdminCreation) {
+                if (canApproveDirectly) {
+                  initialStatus = r.status ? r.status : 'approved';
+                  if (initialStatus === 'approved') {
+                    approvedBy = auth?.user?.name || auth?.user?.email || 'admin';
+                    approvedAt = now;
+                  }
+                } else {
+                  initialStatus = 'pending';
+                  approvedBy = undefined;
+                  approvedAt = undefined;
+                }
+              }
               const validDevSources = ['admin', 'manual', 'whatsapp', 'facebook', 'messenger', 'instagram'];
               const devSrc = String(r.source || '').toLowerCase().trim();
               const initialSource = isAdminCreation && validDevSources.includes(devSrc)
                 ? devSrc
                 : (isAdminCreation ? 'admin' : 'customer');
-              const now = new Date().toISOString();
-              const approvedBy = initialStatus === 'approved' ? (auth?.user?.name || auth?.user?.email || 'admin') : undefined;
-              const approvedAt = initialStatus === 'approved' ? now : undefined;
 
               const newR = {
                 id: r.id || `rev-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
@@ -3555,16 +3669,39 @@ function localApiDevPlugin(): Plugin {
               res.statusCode = 404;
               return res.end(JSON.stringify({ success: false, error: 'Review not found.' }));
             }
+
+            // Direct API check: if request has administrative token, must have reviews.view
+            const hasAuthHeader = Boolean(req.headers.authorization || (req.headers.cookie && req.headers.cookie.includes('rongdhonu_auth=')));
+            if (hasAuthHeader) {
+              const authResult = requireDevAuth(req);
+              if (authResult.error) return sendDevError(res, authResult.error);
+              if (authResult.auth && (authResult.auth.role === 'admin' || authResult.auth.role === 'sub_admin')) {
+                const hasView = hasDevPermission(authResult.auth, 'reviews.view') || hasDevPermission(authResult.auth, 'review.view');
+                if (!hasView) {
+                  res.statusCode = 403;
+                  return res.end(JSON.stringify({
+                    success: false,
+                    error: 'Forbidden: Insufficient permissions to view review data.',
+                    requiredPermission: 'reviews.view',
+                  }));
+                }
+              }
+            }
+
             if (existing.status !== 'approved') {
               const authResult = requireDevAuth(req);
               if (authResult.error || !authResult.auth || authResult.auth.role === 'customer') {
                 res.statusCode = 404;
                 return res.end(JSON.stringify({ success: false, error: 'Review not found.' }));
               }
-              const hasView = hasDevPermission(authResult.auth, 'review.view') || hasDevPermission(authResult.auth, 'review.manage');
+              const hasView = hasDevPermission(authResult.auth, 'reviews.view') || hasDevPermission(authResult.auth, 'review.view');
               if (!hasView) {
-                res.statusCode = 404;
-                return res.end(JSON.stringify({ success: false, error: 'Review not found.' }));
+                res.statusCode = 403;
+                return res.end(JSON.stringify({
+                  success: false,
+                  error: 'Forbidden: Insufficient permissions to access unapproved review details.',
+                  requiredPermission: 'reviews.view',
+                }));
               }
             }
             res.statusCode = 200;
@@ -3577,8 +3714,6 @@ function localApiDevPlugin(): Plugin {
             if (authResult.auth!.role === 'customer') {
               return sendDevError(res, { status: 403, body: { success: false, error: 'Forbidden: Customers cannot moderate reviews.' } });
             }
-            const permErr = requireDevPermission(authResult, 'review.manage');
-            if (permErr) return sendDevError(res, permErr);
 
             return readBody((body) => {
               const updates = body?.updates || body;
@@ -3586,6 +3721,44 @@ function localApiDevPlugin(): Plugin {
               if (existingIndex === -1) {
                 res.statusCode = 404;
                 return res.end(JSON.stringify({ success: false, error: 'Review not found.' }));
+              }
+
+              const isChangingStatus = updates.status !== undefined;
+              const isEditingContent =
+                updates.comment !== undefined ||
+                updates.rating !== undefined ||
+                updates.authorName !== undefined ||
+                updates.images !== undefined ||
+                updates.verifiedPurchase !== undefined;
+
+              const hasApprovePerm = hasDevPermission(authResult.auth!, 'reviews.approve') || hasDevPermission(authResult.auth!, 'review.manage') || authResult.auth!.role === 'super_admin';
+              const hasEditPerm = hasDevPermission(authResult.auth!, 'reviews.edit') || hasDevPermission(authResult.auth!, 'review.manage') || authResult.auth!.role === 'super_admin';
+
+              if (isChangingStatus && !hasApprovePerm) {
+                res.statusCode = 403;
+                return res.end(JSON.stringify({
+                  success: false,
+                  error: 'Forbidden: You do not have the "reviews.approve" permission required to approve or moderate reviews.',
+                  requiredPermission: 'reviews.approve',
+                }));
+              }
+
+              if (isEditingContent && !hasEditPerm) {
+                res.statusCode = 403;
+                return res.end(JSON.stringify({
+                  success: false,
+                  error: 'Forbidden: You do not have the "reviews.edit" permission required to edit reviews.',
+                  requiredPermission: 'reviews.edit',
+                }));
+              }
+
+              if (!hasApprovePerm && !hasEditPerm) {
+                res.statusCode = 403;
+                return res.end(JSON.stringify({
+                  success: false,
+                  error: 'Forbidden: You do not have permission to moderate or edit reviews.',
+                  requiredPermission: 'reviews.edit',
+                }));
               }
 
               // Validate updates
@@ -3671,7 +3844,7 @@ function localApiDevPlugin(): Plugin {
             if (authResult.auth!.role === 'customer') {
               return sendDevError(res, { status: 403, body: { success: false, error: 'Forbidden: Customers cannot delete reviews.' } });
             }
-            const permErr = requireDevPermission(authResult, 'review.delete');
+            const permErr = requireDevPermission(authResult, 'reviews.delete');
             if (permErr) return sendDevError(res, permErr);
 
             const existingIndex = devReviews.findIndex((rev) => rev.id === revId);

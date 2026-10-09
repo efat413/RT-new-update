@@ -4741,7 +4741,7 @@ const AdminPanelContent: React.FC = () => {
                         </div>
                       </div>
 
-                      {(hasPermission('product.update') || hasPermission('product.delete') || hasPermission('review.view')) && (
+                      {(hasPermission('product.update') || hasPermission('product.delete') || hasPermission('reviews.view') || hasPermission('review.view')) && (
                         <div className="p-3 border-t border-slate-100 flex items-center gap-2 bg-white flex-wrap sm:flex-nowrap">
                           {hasPermission('product.update') && (
                             <button
@@ -4755,10 +4755,11 @@ const AdminPanelContent: React.FC = () => {
                           )}
                           {/* Dedicated Reviews Button for every product with actual approved count */}
                           {(() => {
+                            const canViewReviews = hasPermission('reviews.view') || hasPermission('review.view');
                             const actualApprovedCount = reviews
                               ? reviews.filter((r) => (r.productId === product.id || (product.slug && r.productId === product.slug)) && (r.status === 'approved' || !r.status)).length
                               : (product.reviewsCount ?? 0);
-                            return (
+                            return canViewReviews ? (
                               <button
                                 id={`manage-reviews-${product.id}`}
                                 type="button"
@@ -4772,6 +4773,20 @@ const AdminPanelContent: React.FC = () => {
                                 <MessageSquare className="w-3.5 h-3.5 text-amber-600 shrink-0" />
                                 <span>Reviews</span>
                                 <span className="text-[10px] px-1.5 py-0.2 rounded-full font-bold bg-amber-100/80 text-amber-900 border border-amber-200/60">
+                                  {actualApprovedCount}
+                                </span>
+                              </button>
+                            ) : (
+                              <button
+                                id={`manage-reviews-${product.id}`}
+                                type="button"
+                                disabled
+                                className="py-1.5 px-2.5 rounded-xl bg-slate-100 border border-slate-200 text-slate-400 font-bold text-xs flex items-center justify-center gap-1.5 shadow-none cursor-not-allowed opacity-50"
+                                title={`Permission required: reviews.view to moderate reviews for "${product.title}"`}
+                              >
+                                <MessageSquare className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                <span>Reviews</span>
+                                <span className="text-[10px] px-1.5 py-0.2 rounded-full font-bold bg-slate-200 text-slate-500">
                                   {actualApprovedCount}
                                 </span>
                               </button>
