@@ -37,6 +37,7 @@ import {
   resolveUserPermissions,
   generateLegacyPermissionFlags,
 } from './permissions';
+import { sanitizeReviewImageReference } from './imageSecurity';
 
 export const REQUIRED_TABLES = [
   'products',
@@ -2289,6 +2290,23 @@ export async function getMediaAssetFromD1(
   }
 }
 
+export async function mediaAssetExistsInD1(
+  db: D1Database,
+  id: string
+): Promise<boolean> {
+  const cleanId = (id || '').trim();
+  if (!cleanId) return false;
+  try {
+    const row = await db
+      .prepare('SELECT id FROM media_assets WHERE id = ? LIMIT 1')
+      .bind(cleanId)
+      .first<{ id: string }>();
+    return Boolean(row);
+  } catch {
+    return false;
+  }
+}
+
 // ==============================================================
 // 5. COUPONS / VOUCHERS DATABASE OPERATIONS
 // ==============================================================
@@ -2611,10 +2629,18 @@ export async function insertReview(db: D1Database, input: any): Promise<ProductR
   const approvedBy = status === 'approved' ? (input.approvedBy || (source === 'admin' ? 'admin' : 'system')) : null;
 
   let imagesJson = '[]';
-  if (Array.isArray(input.images)) {
-    imagesJson = JSON.stringify(input.images);
-  } else if (typeof input.imagesJson === 'string') {
-    imagesJson = input.imagesJson;
+  const rawImagesList = Array.isArray(input.images)
+    ? input.images
+    : (typeof input.imagesJson === 'string'
+      ? (() => { try { return JSON.parse(input.imagesJson); } catch { return []; } })()
+      : []);
+  if (Array.isArray(rawImagesList)) {
+    const validImgs: string[] = [];
+    for (const img of rawImagesList.slice(0, 5)) {
+      const sanitized = sanitizeReviewImageReference(img);
+      if (sanitized) validImgs.push(sanitized);
+    }
+    imagesJson = JSON.stringify(validImgs);
   }
 
   const candidateFields = [
@@ -2687,8 +2713,13 @@ export async function updateReviewInD1(
   const rating = updates.rating !== undefined ? Math.min(5, Math.max(1, Math.round(Number(updates.rating)))) : existing.rating;
   const authorName = updates.authorName !== undefined ? updates.authorName.trim() : existing.author_name;
   let imagesJson = existing.images_json || '[]';
-  if (updates.images !== undefined) {
-    imagesJson = JSON.stringify(updates.images);
+  if (updates.images !== undefined && Array.isArray(updates.images)) {
+    const validImgs: string[] = [];
+    for (const img of updates.images.slice(0, 5)) {
+      const sanitized = sanitizeReviewImageReference(img);
+      if (sanitized) validImgs.push(sanitized);
+    }
+    imagesJson = JSON.stringify(validImgs);
   }
   const verifiedPurchase = updates.verifiedPurchase !== undefined
     ? (updates.verifiedPurchase ? 1 : 0)

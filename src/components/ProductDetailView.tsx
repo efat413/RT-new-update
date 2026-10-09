@@ -408,21 +408,26 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
     quickBuy(product, size, color);
   };
 
-  const handleReviewSubmit = (e: React.FormEvent) => {
+  const handleReviewSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!product || !reviewComment.trim()) return;
 
-    addProductReview({
-      productId: product.id,
-      authorName: reviewAuthor.trim() || 'Verified Shopper',
-      rating: reviewRating,
-      comment: reviewComment.trim(),
-      verifiedPurchase: true,
-    });
+    try {
+      const res = await addProductReview({
+        productId: product.id,
+        authorName: reviewAuthor.trim() || 'Verified Shopper',
+        rating: reviewRating,
+        comment: reviewComment.trim(),
+      });
 
-    setReviewComment('');
-    setReviewSuccessMsg('Thank you! Your verified review has been submitted.');
-    setTimeout(() => setReviewSuccessMsg(''), 4000);
+      setReviewComment('');
+      setReviewAuthor('');
+      setReviewSuccessMsg(res?.message || 'Thank you! Your review has been submitted for moderation.');
+      setTimeout(() => setReviewSuccessMsg(''), 6000);
+    } catch (err: any) {
+      setReviewSuccessMsg(err.message || 'Failed to submit review. Please try again.');
+      setTimeout(() => setReviewSuccessMsg(''), 6000);
+    }
   };
 
   return (

@@ -255,3 +255,49 @@ export function getSafeMediaHeaders(mime: string): Record<string, string> {
     'Vary': 'Accept',
   };
 }
+
+/**
+ * Validates and sanitizes review photo references.
+ * Strictly blocks arbitrary URL injection, JavaScript/data schemes, and non-image extensions.
+ */
+export function sanitizeReviewImageReference(img: any): string | null {
+  if (typeof img !== 'string') return null;
+  const trimmed = img.trim();
+  if (!trimmed || trimmed.length > 2048) return null;
+
+  // Strictly disallow executable, script, data, and dangerous protocols
+  if (/^(javascript|data|vbscript|file):/i.test(trimmed)) return null;
+  if (/[<>"'`\\;\r\n]/.test(trimmed)) return null;
+  if (trimmed.includes('..')) return null;
+
+  // 1. Authoritative media key: asset-<timestamp>-<hash>(_w<width>)?<ext>
+  if (isValidMediaKey(trimmed)) return trimmed;
+
+  // 2. Authoritative internal media URL: /api/media/asset-...
+  const mediaMatch = trimmed.match(/^\/api\/media\/([a-zA-Z0-9_\-.]+)$/);
+  if (mediaMatch && isValidMediaKey(mediaMatch[1])) return trimmed;
+
+  // 3. Safe relative image filename (for existing seed & test data support)
+  if (/^[a-zA-Z0-9_\-]+\.(jpg|jpeg|png|webp|gif|ico)$/i.test(trimmed)) return trimmed;
+
+  // 4. Safe HTTPS URL to trusted image hosts
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'https:') return null;
+    const hostname = parsed.hostname.toLowerCase();
+    const trustedHosts = [
+      'images.unsplash.com',
+      'i.pinimg.com',
+      'rongdhonutrade.com',
+      'localhost',
+      '127.0.0.1',
+    ];
+    if (trustedHosts.some((h) => hostname === h || hostname.endsWith(`.${h}`))) {
+      return trimmed;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+

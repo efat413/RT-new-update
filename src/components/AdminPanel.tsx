@@ -136,6 +136,9 @@ const AdminDebugTab = React.lazy(() =>
 const AdminProfitAnalyticsTab = React.lazy(() =>
   import('./AdminProfitAnalyticsTab').then((m) => ({ default: m.AdminProfitAnalyticsTab }))
 );
+const AdminReviewsTab = React.lazy(() =>
+  import('./AdminReviewsTab').then((m) => ({ default: m.AdminReviewsTab }))
+);
 
 const AdminTabFallback: React.FC = () => (
   <div className="py-24 flex flex-col items-center justify-center space-y-3 text-slate-400">
@@ -286,7 +289,11 @@ const AdminPanelContent: React.FC = () => {
     setOrderQueryFilters,
     featuredProducts,
     toggleProductFeatured,
+    reviews,
+    refreshProductsByIds,
   } = useStore();
+
+  const [selectedReviewProductFilter, setSelectedReviewProductFilter] = useState<string>('all');
 
   // Authentication states (start empty for security, no auto-fill)
   const [username, setUsername] = useState('');
@@ -2714,6 +2721,8 @@ const AdminPanelContent: React.FC = () => {
           setIsMobileNavOpen={setIsMobileNavOpen}
           ordersCount={totalOrdersCount}
           productsCount={products.length}
+          reviewsCount={reviews.length}
+          pendingReviewsCount={reviews.filter((r) => r.status === 'pending').length}
           featuredProductsCount={featuredProductsCount}
           categoriesCount={categories.length}
           slidesCount={slides.length}
@@ -4754,10 +4763,11 @@ const AdminPanelContent: React.FC = () => {
                                 id={`manage-reviews-${product.id}`}
                                 type="button"
                                 onClick={() => {
-                                  showNotification('info', 'Customer Reviews', `Customer reviews management for "${product.title}" will be activated in the next phase.`);
+                                  setSelectedReviewProductFilter(product.id);
+                                  handleSelectTab('reviews');
                                 }}
-                                className="py-1.5 px-2.5 rounded-xl bg-slate-50 border border-slate-200 text-slate-700 font-bold text-xs flex items-center justify-center gap-1 hover:bg-slate-100 transition-colors shadow-xs"
-                                title={`Customer reviews for "${product.title}" (${product.reviewsCount ?? 0})`}
+                                className="py-1.5 px-2.5 rounded-xl bg-slate-50 border border-slate-200 text-slate-700 font-bold text-xs flex items-center justify-center gap-1 hover:bg-slate-100 transition-colors shadow-xs cursor-pointer"
+                                title={`Moderate customer reviews for "${product.title}" (${product.reviewsCount ?? 0})`}
                               >
                                 <MessageSquare className="w-3.5 h-3.5 text-amber-600" />
                                 <span className="hidden sm:inline">Reviews</span>
@@ -4821,6 +4831,24 @@ const AdminPanelContent: React.FC = () => {
             </>
             )}
           </div>
+          )
+        )}
+
+        {/* ============================================================ */}
+        {/* TAB: CUSTOMER REVIEWS MODERATION                             */}
+        {/* ============================================================ */}
+        {activeTab === 'reviews' && (
+          !hasPermission('review.view') ? (
+            renderPermissionRestrictedNotice('review.view', 'Customer Reviews Moderation')
+          ) : (
+            <React.Suspense fallback={<AdminTabFallback />}>
+              <AdminReviewsTab
+                products={products}
+                currentUser={currentUser}
+                onRefreshProducts={refreshProductsByIds ? () => refreshProductsByIds(products.map((p) => p.id)) : undefined}
+                initialProductFilter={selectedReviewProductFilter}
+              />
+            </React.Suspense>
           )
         )}
 

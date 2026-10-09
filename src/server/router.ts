@@ -32,6 +32,7 @@ import {
   // Media Assets
   saveMediaAssetInD1,
   getMediaAssetFromD1,
+  mediaAssetExistsInD1,
   // Coupons
   getAllCoupons,
   insertCoupon,
@@ -39,6 +40,7 @@ import {
   deleteCouponFromD1,
   // Reviews
   getAllReviews,
+  getReviewById,
   insertReview,
   updateReviewInD1,
   deleteReviewFromD1,
@@ -139,6 +141,7 @@ import {
   generateSafeMediaKey,
   isValidMediaKey,
   getSafeMediaHeaders,
+  sanitizeReviewImageReference,
   MAX_IMAGE_SIZE_BYTES,
 } from './imageSecurity';
 
@@ -3789,12 +3792,20 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         let allowNonApproved = false;
         if (requestedStatus && requestedStatus !== 'approved') {
           const authCheck = await requireAuth(request, env);
-          if (!authCheck.errorResponse && authCheck.auth && authCheck.auth.role !== 'customer') {
-            const hasView = hasPermission(authCheck.auth, 'review.view') || hasPermission(authCheck.auth, 'review.manage');
-            if (hasView) {
-              allowNonApproved = true;
-            }
+          if (authCheck.errorResponse || !authCheck.auth || authCheck.auth.role === 'customer') {
+            return jsonResponse({
+              success: false,
+              error: 'Forbidden: Insufficient permissions to access review moderation queue.'
+            }, 403);
           }
+          const hasView = hasPermission(authCheck.auth, 'review.view') || hasPermission(authCheck.auth, 'review.manage');
+          if (!hasView) {
+            return jsonResponse({
+              success: false,
+              error: 'Forbidden: Insufficient permissions to access review moderation queue.'
+            }, 403);
+          }
+          allowNonApproved = true;
         }
 
         const filter: ReviewQueryFilter = {
@@ -3831,12 +3842,16 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
         const reviewData = body?.review || body;
 
-        const productId = String(reviewData.productId || '').trim();
+        const rawProductId = String(reviewData.productId || '').trim();
         const authorName = String(reviewData.authorName || reviewData.author || '').trim();
         const comment = String(reviewData.comment || '').trim();
-        const rating = Math.min(5, Math.max(1, Math.round(Number(reviewData.rating) || 5)));
+        const rawRating = Number(reviewData.rating);
 
-        if (!productId || !authorName || !comment) {
+        if (!rawProductId) {
+          return jsonResponse({ success: false, error: 'Product ID is required.' }, 400);
+        }
+
+        if (!authorName || !comment) {
           return jsonResponse({ success: false, error: 'Product, author name, and comment are required.' }, 400);
         }
 
@@ -3846,6 +3861,25 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
         if (comment.length < 3 || comment.length > 1000) {
           return jsonResponse({ success: false, error: 'Review comment must be between 3 and 1000 characters.' }, 400);
+        }
+
+        if (!Number.isFinite(rawRating) || rawRating < 1 || rawRating > 5) {
+          return jsonResponse({ success: false, error: 'Rating must be an integer between 1 and 5.' }, 400);
+        }
+        const rating = Math.min(5, Math.max(1, Math.round(rawRating)));
+
+        // Validate target product exists in catalog and resolve canonical ID
+        let targetProductId = rawProductId;
+        if (env.DB) {
+          try {
+            const prod = await getProductById(env.DB, rawProductId);
+            if (!prod) {
+              return jsonResponse({ success: false, error: 'Product not found or invalid product ID.' }, 400);
+            }
+            targetProductId = prod.id;
+          } catch (prodErr) {
+            console.warn('[Review Route] Product resolution warning in D1:', prodErr);
+          }
         }
 
         // Check if requester is authenticated admin creating an official review
@@ -3876,7 +3910,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           }
 
           // 2. Per-product throttling (max 2 reviews per product per IP per 10 minutes)
-          const prodThrottleKey = `rev-prod:${clientIp}:${productId}`;
+          const prodThrottleKey = `rev-prod:${clientIp}:${targetProductId}`;
           const prodCheck = await checkRateLimit(prodThrottleKey, 2, 600, env.DB);
           if (!prodCheck.allowed) {
             return jsonResponse({
@@ -3894,7 +3928,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         if (env.DB) {
           const dup = await env.DB.prepare(
             'SELECT id FROM reviews WHERE product_id = ? AND comment = ? LIMIT 1'
-          ).bind(productId, comment).first();
+          ).bind(targetProductId, comment).first();
           if (dup) {
             return jsonResponse({
               success: false,
@@ -3904,21 +3938,12 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         }
 
         // 4. Server-Authoritative verifiedPurchase Verification:
-        // Client cannot force verifiedPurchase: true under any circumstances for customer submissions.
+        // Customer submissions can NEVER force verifiedPurchase = true.
         // Client-provided email alone can NEVER make a review verifiedPurchase = true.
         let isVerifiedPurchase = false;
-        let targetProductId = productId;
 
         if (env.DB) {
           try {
-            // Server-side validation of target product
-            try {
-              const prod = await getProductById(env.DB, productId);
-              if (prod) {
-                targetProductId = prod.id;
-              }
-            } catch {}
-
             if (isAdminCreation && reviewData.verifiedPurchase !== undefined) {
               isVerifiedPurchase = Boolean(reviewData.verifiedPurchase);
             } else {
@@ -3955,18 +3980,30 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           }
         }
 
-        // Sanitize photos metadata (array of URLs or media keys, max 5)
+        // 5. Sanitize and validate photos metadata (array of valid media keys or safe URLs, max 5)
         let reviewImages: string[] = [];
         if (Array.isArray(reviewData.images)) {
-          reviewImages = reviewData.images
-            .filter((img: any) => typeof img === 'string' && img.trim().length > 0 && img.length < 2048)
-            .slice(0, 5)
-            .map((img: string) => img.trim());
+          for (const rawImg of reviewData.images.slice(0, 5)) {
+            const sanitized = sanitizeReviewImageReference(rawImg);
+            if (sanitized) {
+              const mediaKeyMatch = sanitized.match(/(?:^\/api\/media\/|^)([a-zA-Z0-9_\-.]+)$/);
+              if (mediaKeyMatch && isValidMediaKey(mediaKeyMatch[1]) && env.DB) {
+                try {
+                  const exists = await mediaAssetExistsInD1(env.DB, mediaKeyMatch[1]);
+                  if (!exists) {
+                    continue; // Skip invalid or nonexistent internal media assets
+                  }
+                } catch {}
+              }
+              reviewImages.push(sanitized);
+            }
+          }
         }
 
-        // Determine moderation status and audit attribution
+        // 6. Security Rule: Customer-submitted reviews default strictly to 'pending' on the server.
+        // Client attempts to set approval status, approved_by, approved_at, or source are strictly stripped.
         const initialStatus: ReviewStatus = isAdminCreation && reviewData.status ? reviewData.status : (isAdminCreation ? 'approved' : 'pending');
-        const initialSource: ReviewSource = isAdminCreation ? 'admin' : 'customer';
+        const initialSource: ReviewSource = isAdminCreation ? (reviewData.source === 'admin' ? 'admin' : 'customer') : 'customer';
         const now = new Date().toISOString();
         const approvedBy = initialStatus === 'approved' ? (adminUser?.dbUser?.name || adminUser?.tokenUser?.email || 'admin') : null;
         const approvedAt = initialStatus === 'approved' ? now : null;
@@ -3992,10 +4029,37 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
   }
 
   const reviewIdMatch = path.match(/^\/api\/reviews\/([^/]+)$/);
+  if (reviewIdMatch && method === 'GET') {
+    const revId = decodeURIComponent(reviewIdMatch[1]);
+    try {
+      const review = await getReviewById(env.DB, revId);
+      if (!review) {
+        return jsonResponse({ success: false, error: 'Review not found.' }, 404);
+      }
+      if (review.status !== 'approved') {
+        const authCheck = await requireAuth(request, env);
+        if (authCheck.errorResponse || !authCheck.auth || authCheck.auth.role === 'customer') {
+          return jsonResponse({ success: false, error: 'Review not found.' }, 404);
+        }
+        const hasView = hasPermission(authCheck.auth, 'review.view') || hasPermission(authCheck.auth, 'review.manage');
+        if (!hasView) {
+          return jsonResponse({ success: false, error: 'Review not found.' }, 404);
+        }
+      }
+      return jsonResponse({ success: true, review });
+    } catch (err: any) {
+      console.error('Error fetching review by ID:', err);
+      return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+    }
+  }
+
   if (reviewIdMatch && (method === 'PATCH' || method === 'PUT')) {
     const revId = decodeURIComponent(reviewIdMatch[1]);
     const { auth, errorResponse } = await requireAuth(request, env);
     if (errorResponse) return errorResponse;
+    if (auth!.role === 'customer') {
+      return jsonResponse({ success: false, error: 'Forbidden: Customers cannot moderate reviews.' }, 403);
+    }
     const permErr = requirePermission(auth!, 'review.manage');
     if (permErr) return permErr;
 
@@ -4005,21 +4069,51 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     const updates = body?.updates || body;
     const adminIdentifier = auth!.dbUser?.name || auth!.tokenUser?.email || 'admin';
 
+    // Validate updates
+    if (updates.status !== undefined) {
+      const s = String(updates.status).toLowerCase();
+      if (s !== 'pending' && s !== 'approved' && s !== 'rejected') {
+        return jsonResponse({ success: false, error: 'Invalid review status. Must be pending, approved, or rejected.' }, 400);
+      }
+    }
+
+    if (updates.rating !== undefined) {
+      const r = Number(updates.rating);
+      if (!Number.isFinite(r) || r < 1 || r > 5) {
+        return jsonResponse({ success: false, error: 'Rating must be an integer between 1 and 5.' }, 400);
+      }
+    }
+
+    if (updates.comment !== undefined) {
+      const c = String(updates.comment).trim();
+      if (c.length < 3 || c.length > 1000) {
+        return jsonResponse({ success: false, error: 'Review comment must be between 3 and 1000 characters.' }, 400);
+      }
+    }
+
+    if (updates.authorName !== undefined) {
+      const a = String(updates.authorName).trim();
+      if (a.length < 2 || a.length > 60) {
+        return jsonResponse({ success: false, error: 'Author name must be between 2 and 60 characters.' }, 400);
+      }
+    }
+
     let validatedImages: string[] | undefined = undefined;
     if (Array.isArray(updates.images)) {
-      validatedImages = updates.images
-        .filter((img: any) => typeof img === 'string' && img.trim().length > 0 && img.length < 2048)
-        .slice(0, 5)
-        .map((img: string) => img.trim());
+      validatedImages = [];
+      for (const rawImg of updates.images.slice(0, 5)) {
+        const sanitized = sanitizeReviewImageReference(rawImg);
+        if (sanitized) validatedImages.push(sanitized);
+      }
     }
 
     try {
       const updated = await updateReviewInD1(env.DB, revId, {
         status: updates.status,
         approvedBy: adminIdentifier,
-        comment: updates.comment,
-        rating: updates.rating !== undefined ? Number(updates.rating) : undefined,
-        authorName: updates.authorName,
+        comment: updates.comment ? String(updates.comment).trim() : undefined,
+        rating: updates.rating !== undefined ? Math.round(Number(updates.rating)) : undefined,
+        authorName: updates.authorName ? String(updates.authorName).trim() : undefined,
         images: validatedImages,
         verifiedPurchase: updates.verifiedPurchase !== undefined ? Boolean(updates.verifiedPurchase) : undefined,
       });

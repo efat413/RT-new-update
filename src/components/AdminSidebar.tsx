@@ -16,6 +16,7 @@ import {
   Lock,
   Bug,
   TrendingUp,
+  MessageSquare,
 } from 'lucide-react';
 
 interface AdminSidebarProps {
@@ -25,6 +26,8 @@ interface AdminSidebarProps {
   setIsMobileNavOpen: (open: boolean) => void;
   ordersCount: number;
   productsCount: number;
+  reviewsCount?: number;
+  pendingReviewsCount?: number;
   featuredProductsCount?: number;
   categoriesCount: number;
   slidesCount: number;
@@ -54,6 +57,8 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
   setIsMobileNavOpen,
   ordersCount,
   productsCount,
+  reviewsCount = 0,
+  pendingReviewsCount = 0,
   featuredProductsCount = 0,
   categoriesCount,
   slidesCount,
@@ -113,6 +118,14 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
       badge: productsCount,
       color: 'amber',
       permission: 'product.view',
+    },
+    {
+      id: 'reviews',
+      label: 'Customer Reviews',
+      icon: MessageSquare,
+      badge: pendingReviewsCount > 0 ? `${pendingReviewsCount} Pending` : (reviewsCount > 0 ? reviewsCount : null),
+      color: 'amber',
+      permission: 'review.view',
     },
     {
       id: 'categories',

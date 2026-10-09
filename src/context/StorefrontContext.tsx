@@ -7,6 +7,7 @@ import {
   StoreSettings,
   CarouselSlide,
   ProductReview,
+  ReviewStatus,
   Coupon,
   ToastNotificationData,
   PixelEventLog,
@@ -131,7 +132,7 @@ export interface StorefrontContextType {
 
   reviews: ProductReview[];
   setReviews: React.Dispatch<React.SetStateAction<ProductReview[]>>;
-  addProductReview: (review: Omit<ProductReview, 'id' | 'createdAt'>) => void;
+  addProductReview: (review: Omit<ProductReview, 'id' | 'createdAt'>) => Promise<{ success: boolean; status?: ReviewStatus; message?: string }>;
   deleteProductReview: (reviewId: string) => void;
   getProductReviews: (productId: string) => ProductReview[];
 
@@ -685,38 +686,47 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     return reviews.filter((r) => r.productId === productId);
   }, [reviews]);
 
-  const addProductReview = useCallback((reviewData: Omit<ProductReview, 'id' | 'createdAt'>) => {
+  const addProductReview = useCallback(async (reviewData: Omit<ProductReview, 'id' | 'createdAt'>) => {
     const authorName = reviewData.authorName || reviewData.author || 'Customer';
-    // Security Hardening: Use CSPRNG for collision-free review identifier
-    const revBuf = new Uint32Array(1);
-    crypto.getRandomValues(revBuf);
-    const revRand = 100 + (revBuf[0] % 900);
-    const newReview: ProductReview = {
-      ...reviewData,
-      author: authorName,
-      authorName: authorName,
-      id: `rev-${Date.now()}-${revRand}`,
-      createdAt: new Date().toISOString(),
-      date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-    };
-    const updatedReviews = [newReview, ...reviews];
-    setReviews(updatedReviews);
-    reviewsApi.create(newReview).catch(console.error);
+    try {
+      const created = await reviewsApi.create({
+        productId: reviewData.productId,
+        authorName,
+        author: authorName,
+        comment: reviewData.comment,
+        rating: reviewData.rating,
+        images: reviewData.images,
+      });
 
-    const productRevs = updatedReviews.filter((r) => r.productId === reviewData.productId);
-    const avgRating = productRevs.reduce((acc, r) => acc + r.rating, 0) / productRevs.length;
-
-    setProducts((prev) =>
-      prev.map((p) =>
-        p.id === reviewData.productId
-          ? {
+      // ONLY if the server returned an approved review (e.g. staff/admin creation) do we update public review state
+      if (created.status === 'approved') {
+        setReviews((prev) => [created, ...prev]);
+        setProducts((prev) =>
+          prev.map((p) => {
+            if (p.id !== reviewData.productId) return p;
+            const existingApproved = reviews.filter((r) => r.productId === reviewData.productId && (r.status === 'approved' || !r.status));
+            const newCount = existingApproved.length + 1;
+            const newAvg = (existingApproved.reduce((sum, r) => sum + (Number(r.rating) || 5), 0) + (Number(created.rating) || 5)) / newCount;
+            return {
               ...p,
-              rating: Number(avgRating.toFixed(1)),
-              reviewsCount: Math.max((p.reviewsCount ?? 0) + 1, productRevs.length),
-            }
-          : p
-      )
-    );
+              rating: Number(newAvg.toFixed(1)),
+              reviewsCount: newCount,
+            };
+          })
+        );
+        return { success: true, status: 'approved' as ReviewStatus, message: 'Review published successfully.' };
+      }
+
+      // Customer submissions default to 'pending' on the server and do NOT appear publicly or alter ratings
+      return {
+        success: true,
+        status: 'pending' as ReviewStatus,
+        message: 'Thank you! Your review has been submitted for moderation and will appear publicly once approved by our team.',
+      };
+    } catch (err: any) {
+      console.error('Failed to submit review:', err);
+      throw err;
+    }
   }, [reviews]);
 
   const deleteProductReview = useCallback((reviewId: string) => {
