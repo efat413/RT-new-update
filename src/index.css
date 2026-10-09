@@ -96,3 +96,42 @@
   animation: dropdownRight 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
+@page {
+  size: A4 portrait;
+  margin: 12mm;
+}
+
+@media print {
+  html,
+  body {
+    background: #ffffff !important;
+    color: #0f172a !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  tr,
+  .print-avoid-break {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  body.invoice-printing-active > #root > *:not(.invoice-print-portal) {
+    display: none !important;
+  }
+
+  #invoice-printable-card {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+    box-shadow: none !important;
+  }
+}
+
+

@@ -88,8 +88,8 @@ export function generateInvoiceHtml(order: Order, settings: StoreSettings): stri
   <link rel="icon" type="image/x-icon" href="${safeFaviconUrl}" />
   <style>
     @page {
-      size: A4;
-      margin: 15mm;
+      size: A4 portrait;
+      margin: 12mm;
     }
     * {
       box-sizing: border-box;
@@ -97,12 +97,16 @@ export function generateInvoiceHtml(order: Order, settings: StoreSettings): stri
       padding: 0;
     }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-family: 'Plus Jakarta Sans', 'Noto Sans Bengali', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       color: #0f172a;
       background: #f8fafc;
       padding: 20px;
       -webkit-print-color-adjust: exact !important;
       print-color-adjust: exact !important;
+    }
+    tr, .print-avoid-break {
+      page-break-inside: avoid;
+      break-inside: avoid;
     }
     .invoice-container {
       max-width: 820px;
