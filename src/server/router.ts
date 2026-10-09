@@ -4188,16 +4188,14 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
                   }, 400);
                 }
 
-                const safeKey = generateSafeMediaKey(validation.extension);
-                const r2Bucket = env.R2 || env.BUCKET;
-                if (r2Bucket) {
-                  await r2Bucket.put(safeKey, u8.buffer, {
-                    httpMetadata: { contentType: validation.mime },
-                  });
-                } else if (env.DB) {
-                  await saveMediaAssetInD1(env.DB, safeKey, validation.mime, base64Content, u8.byteLength);
+                const imageId = `rev-img-${Date.now()}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`;
+                if (env.DB) {
+                  await env.DB.prepare(
+                    `INSERT INTO review_images (id, review_id, product_id, mime_type, file_size, data)
+                     VALUES (?, ?, ?, ?, ?, ?)`
+                  ).bind(imageId, null, targetProductId, validation.mime, u8.byteLength, u8.buffer).run();
                 }
-                reviewImages.push(`/api/media/${safeKey}`);
+                reviewImages.push(`/api/reviews/images/${imageId}`);
               } catch (b64Err) {
                 console.warn('[Review Upload Error] Failed to process base64 photo:', b64Err);
               }
@@ -4260,6 +4258,19 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           approvedBy,
           images: reviewImages,
         });
+
+        // Link stored binary review_images to created review ID
+        if (env.DB && reviewImages.length > 0) {
+          for (const imgUrl of reviewImages) {
+            const m = imgUrl.match(/^\/api\/reviews\/images\/([^/]+)$/);
+            if (m) {
+              await env.DB.prepare('UPDATE review_images SET review_id = ? WHERE id = ?')
+                .bind(created.id, m[1])
+                .run();
+            }
+          }
+        }
+
         return jsonResponse({ success: true, review: created }, 201);
       } catch (err: any) {
         console.error('Error creating review:', err);
