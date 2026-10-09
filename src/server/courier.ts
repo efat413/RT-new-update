@@ -405,8 +405,23 @@ export async function syncSingleOrderCourierStatus(
  */
 export async function syncAllActiveCourierOrders(
   db: D1Database,
-  credentials: { apiKey: string; secretKey: string }
+  credentials: { apiKey?: string; secretKey?: string; STEADFAST_API_KEY?: string; STEADFAST_SECRET_KEY?: string }
 ): Promise<{ success: boolean; totalChecked: number; updatedCount: number; errors: string[] }> {
+  const apiKey = (credentials?.apiKey || credentials?.STEADFAST_API_KEY || '').trim();
+  const secretKey = (credentials?.secretKey || credentials?.STEADFAST_SECRET_KEY || '').trim();
+
+  if (!apiKey || !secretKey) {
+    console.warn('[Courier Sync] Steadfast credentials (API Key and Secret Key) not configured.');
+    return {
+      success: false,
+      totalChecked: 0,
+      updatedCount: 0,
+      errors: ['Steadfast credentials not configured.'],
+    };
+  }
+
+  const creds = { apiKey, secretKey };
+
   // Query all orders that have Steadfast consignment/tracking and are NOT in final statuses
   const activeOrdersQuery = `
     SELECT id, order_number, consignment_id, courier_waybill, courier_status, shipping_status, payment_status, courier_booking_json
@@ -426,7 +441,7 @@ export async function syncAllActiveCourierOrders(
 
   for (const row of activeList) {
     try {
-      const res = await syncSingleOrderCourierStatus(db, row.id, credentials);
+      const res = await syncSingleOrderCourierStatus(db, row.id, creds);
       if (res.success && !res.unchanged) {
         updatedCount++;
       } else if (!res.success && res.error) {

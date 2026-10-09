@@ -23,6 +23,11 @@
     "RESEND_FROM_EMAIL": "support@rongdhonutrade.com",
     "SUPER_ADMIN_EMAILS": "cmt413uec@gmail.com"
   },
+  "triggers": {
+    "crons": [
+      "*/15 * * * *"
+    ]
+  },
   "d1_databases": [
     {
       "binding": "DB",

@@ -415,14 +415,16 @@ export default {
    * Automatically synchronizes active Steadfast courier parcel statuses
    */
   async scheduled(event: any, env: Env, ctx?: any): Promise<void> {
-    if (!env.DB) return;
+    if (!env?.DB) return;
     try {
       const apiKey = (env.STEADFAST_API_KEY || '').trim();
       const secretKey = (env.STEADFAST_SECRET_KEY || '').trim();
-      if (apiKey && secretKey) {
-        const result = await syncAllActiveCourierOrders(env.DB, { apiKey, secretKey });
-        console.log(`[Courier Cron Sync] Checked ${result.totalChecked} orders, updated ${result.updatedCount}.`);
+      if (!apiKey || !secretKey) {
+        console.warn('[Courier Cron Sync] Steadfast credentials not configured. Skipping scheduled sync.');
+        return;
       }
+      const result = await syncAllActiveCourierOrders(env.DB, env);
+      console.log(`[Courier Cron Sync] Checked ${result.totalChecked} orders, updated ${result.updatedCount}.`);
     } catch (err) {
       console.error('[Courier Cron Sync Error]:', err);
     }
