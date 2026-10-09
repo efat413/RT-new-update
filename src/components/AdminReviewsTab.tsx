@@ -37,6 +37,7 @@ export interface AdminReviewsTabProps {
   products: Product[];
   currentUser: UserAccount | null;
   onRefreshProducts?: () => void;
+  onRefreshReviews?: (productId?: string) => void;
   initialProductFilter?: string;
   onBackToProducts?: () => void;
 }
@@ -143,6 +144,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
   products,
   currentUser,
   onRefreshProducts,
+  onRefreshReviews,
   initialProductFilter,
   onBackToProducts,
 }) => {
@@ -400,6 +402,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
           : 'Review reverted to pending moderation queue.'
       );
       if (onRefreshProducts) onRefreshProducts();
+      if (onRefreshReviews) onRefreshReviews(updated.productId);
     } catch (err: any) {
       alert(`Failed to update review status: ${err.message || 'Server error'}`);
     } finally {
@@ -548,6 +551,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
       setEditingReview(null);
       showSuccessFeedback('Review details updated successfully.');
       if (onRefreshProducts) onRefreshProducts();
+      if (onRefreshReviews) onRefreshReviews(editingReview.productId);
     } catch (err: any) {
       setEditError(err.message || 'Failed to update review on server.');
     } finally {
@@ -568,6 +572,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
       setDeleteCandidate(null);
       showSuccessFeedback('Review permanently deleted.');
       if (onRefreshProducts) onRefreshProducts();
+      if (onRefreshReviews) onRefreshReviews(deleteCandidate.productId);
     } catch (err: any) {
       alert(`Failed to delete review: ${err.message || 'Server error'}`);
     } finally {
@@ -624,6 +629,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
           : 'Review saved in Pending queue for moderation.'
       );
       if (onRefreshProducts) onRefreshProducts();
+      if (onRefreshReviews) onRefreshReviews(created.productId);
     } catch (err: any) {
       setFormError(err.message || 'Failed to create review.');
     } finally {

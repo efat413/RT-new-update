@@ -4,7 +4,7 @@
  * OpenGraph, Twitter Cards, and Bangladesh search-intent optimizations.
  */
 
-import { Product, Category, StoreSettings } from '../types';
+import { Product, Category, StoreSettings, ProductReview } from '../types';
 
 export const SITE_DOMAIN = 'https://rongdhonutrade.com';
 export const DEFAULT_SITE_NAME = 'Rongodhonu Trade';
@@ -39,6 +39,7 @@ export interface SEOMetadata {
   noIndex?: boolean;
   product?: Product;
   category?: Category;
+  reviews?: ProductReview[];
   breadcrumbs?: Array<{ name: string; url: string }>;
   keywords?: CategorySEOKeywords;
 }
@@ -771,7 +772,8 @@ export function generateBreadcrumbSchema(items: Array<{ name: string; url: strin
 export function generateProductSchema(
   product: Product,
   categoryName?: string,
-  siteName: string = DEFAULT_SITE_NAME
+  siteName: string = DEFAULT_SITE_NAME,
+  reviews?: ProductReview[]
 ) {
   const slugOrId = product.slug || generateProductSlug(product.title) || product.id;
   const canonicalUrl = `${SITE_DOMAIN}/product/${encodeURIComponent(slugOrId)}`;
@@ -779,10 +781,22 @@ export function generateProductSchema(
     ? product.images
     : [product.imageUrl || DEFAULT_FALLBACK_IMAGE];
 
-  const ratingNum = typeof product.rating === 'number' ? product.rating : parseFloat(String(product.rating || 0));
-  const reviewCountNum = typeof product.reviewsCount === 'number' ? product.reviewsCount : parseInt(String(product.reviewsCount || 0), 10);
+  let ratingNum: number;
+  let reviewCountNum: number;
 
-  const hasGenuineRating = ratingNum > 0 && reviewCountNum > 0;
+  if (Array.isArray(reviews)) {
+    const approvedReviews = reviews.filter((r) => r && r.status === 'approved');
+    reviewCountNum = approvedReviews.length;
+    ratingNum = reviewCountNum > 0
+      ? approvedReviews.reduce((sum, r) => sum + (Number(r.rating) || 5), 0) / reviewCountNum
+      : 0;
+  } else {
+    ratingNum = typeof product.rating === 'number' ? product.rating : parseFloat(String(product.rating || 0));
+    reviewCountNum = typeof product.reviewsCount === 'number' ? product.reviewsCount : parseInt(String(product.reviewsCount || 0), 10);
+  }
+
+  // Include aggregateRating strictly from approved reviews; omit markup entirely if count is 0
+  const hasGenuineRating = reviewCountNum > 0 && ratingNum > 0;
 
   const schema: any = {
     '@context': 'https://schema.org',
@@ -814,7 +828,7 @@ export function generateProductSchema(
     schema.category = categoryName;
   }
 
-  // Include aggregateRating ONLY if genuine data is present
+  // Include aggregateRating ONLY if genuine data is present; omit markup entirely if count is 0
   if (hasGenuineRating) {
     schema.aggregateRating = {
       '@type': 'AggregateRating',
@@ -1277,7 +1291,7 @@ export function applyClientSEO(meta: SEOMetadata, settings?: StoreSettings) {
   // Product Schema (strictly when on a product view)
   if (meta.product) {
     const categoryName = meta.category?.name;
-    injectSchemaScript('schema-product', generateProductSchema(meta.product, categoryName, siteName));
+    injectSchemaScript('schema-product', generateProductSchema(meta.product, categoryName, siteName, meta.reviews));
   } else {
     const existingProdSchema = document.getElementById('schema-product');
     if (existingProdSchema) existingProdSchema.remove();

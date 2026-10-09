@@ -132,6 +132,8 @@ export interface StorefrontContextType {
 
   reviews: ProductReview[];
   setReviews: React.Dispatch<React.SetStateAction<ProductReview[]>>;
+  refreshReviews: (productId?: string) => Promise<void>;
+  updateProductReviewStatus: (reviewId: string, newStatus: ReviewStatus) => Promise<ProductReview>;
   addProductReview: (review: Omit<ProductReview, 'id' | 'createdAt'>) => Promise<{ success: boolean; status?: ReviewStatus; message?: string }>;
   deleteProductReview: (reviewId: string) => void;
   getProductReviews: (productId: string) => ProductReview[];
@@ -686,6 +688,37 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     return reviews.filter((r) => r.productId === productId);
   }, [reviews]);
 
+  const refreshReviews = useCallback(async (productId?: string) => {
+    try {
+      const fetched = await reviewsApi.getAll(productId ? { productId, status: 'approved' } : { status: 'approved' });
+      if (Array.isArray(fetched)) {
+        setReviews((prev) => {
+          if (productId) {
+            const others = prev.filter((r) => r.productId !== productId);
+            return [...fetched, ...others];
+          }
+          return fetched;
+        });
+      }
+    } catch (err) {
+      console.warn('Failed to refresh reviews:', err);
+    }
+  }, []);
+
+  const updateProductReviewStatus = useCallback(async (reviewId: string, newStatus: ReviewStatus) => {
+    try {
+      const updated = await reviewsApi.update(reviewId, { status: newStatus });
+      setReviews((prev) => prev.map((r) => (r.id === reviewId ? updated : r)));
+      if (updated.productId) {
+        await refreshReviews(updated.productId);
+      }
+      return updated;
+    } catch (err) {
+      console.error('Failed to update review status:', err);
+      throw err;
+    }
+  }, [refreshReviews]);
+
   const addProductReview = useCallback(async (reviewData: Omit<ProductReview, 'id' | 'createdAt'>) => {
     const authorName = reviewData.authorName || reviewData.author || 'Customer';
     try {
@@ -697,6 +730,9 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         rating: reviewData.rating,
         images: reviewData.images,
       });
+
+      // Invalidate review cache / StorefrontContext
+      await refreshReviews(reviewData.productId);
 
       // ONLY if the server returned an approved review (e.g. staff/admin creation) do we update public review state
       if (created.status === 'approved') {
@@ -727,7 +763,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       console.error('Failed to submit review:', err);
       throw err;
     }
-  }, [reviews]);
+  }, [reviews, refreshReviews]);
 
   const deleteProductReview = useCallback((reviewId: string) => {
     const target = reviews.find((r) => r.id === reviewId);
@@ -1411,10 +1447,14 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     if (activeProd) {
       const meta = getProductSEOMetadata(activeProd, settings.siteName);
       const cat = categories.find((c) => c.id === activeProd.categoryId);
+      const approvedForProd = Array.isArray(reviews)
+        ? reviews.filter((r) => r && (r.productId === activeProd.id || (activeProd.slug && r.productId === activeProd.slug)) && r.status === 'approved')
+        : [];
       applyClientSEO(
         {
           ...meta,
           category: cat,
+          reviews: approvedForProd,
           breadcrumbs: [
             { name: 'Home', url: `${SITE_DOMAIN}/` },
             ...(cat
@@ -1487,6 +1527,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     categories,
     currentView,
     settings,
+    reviews,
   ]);
 
   const value = useMemo<StorefrontContextType>(() => ({
@@ -1555,6 +1596,8 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     applyCoupon,
     reviews,
     setReviews,
+    refreshReviews,
+    updateProductReviewStatus,
     addProductReview,
     deleteProductReview,
     getProductReviews,

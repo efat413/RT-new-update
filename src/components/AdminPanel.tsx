@@ -290,6 +290,7 @@ const AdminPanelContent: React.FC = () => {
     featuredProducts,
     toggleProductFeatured,
     reviews,
+    refreshReviews,
     refreshProductsByIds,
   } = useStore();
 
@@ -4865,6 +4866,7 @@ const AdminPanelContent: React.FC = () => {
                 products={products}
                 currentUser={currentUser}
                 onRefreshProducts={refreshProductsByIds ? () => refreshProductsByIds(products.map((p) => p.id)) : undefined}
+                onRefreshReviews={refreshReviews}
                 initialProductFilter={selectedReviewProductFilter}
                 onBackToProducts={() => {
                   setSelectedReviewProductFilter('all');
