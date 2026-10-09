@@ -190,7 +190,7 @@ function localApiDevPlugin(): Plugin {
     const targetProduct = devProducts.find((p) => p.id === cleanId || p.slug === cleanId);
     const targetId = targetProduct ? targetProduct.id : cleanId;
     const approved = devReviews.filter(
-      (r) => (r.productId === targetId || r.productId === cleanId) && (r.status === 'approved' || !r.status)
+      (r) => (r.productId === targetId || r.productId === cleanId) && r.status === 'approved'
     );
     const reviewsCount = approved.length;
     const avg = reviewsCount > 0
@@ -201,6 +201,11 @@ function localApiDevPlugin(): Plugin {
       targetProduct.reviewsCount = reviewsCount;
     }
   }
+
+  // Recalculate dev product ratings and review counts strictly from approved reviews (remove seed count fallbacks)
+  devProducts.forEach((p) => {
+    recalculateDevProductRating(p.id);
+  });
 
   // Resolve Super Admin identities server-side from environment variables
   // Real production Super Admin identities must NEVER be hardcoded into source code fallbacks
@@ -3427,7 +3432,7 @@ function localApiDevPlugin(): Plugin {
 
             if (!allowNonApproved) {
               // Public default: ONLY return approved reviews
-              filteredReviews = filteredReviews.filter((r) => (r.status === 'approved' || !r.status));
+              filteredReviews = filteredReviews.filter((r) => r.status === 'approved');
             } else if (requestedStatus && requestedStatus !== 'all') {
               filteredReviews = filteredReviews.filter((r) => r.status === requestedStatus);
             }

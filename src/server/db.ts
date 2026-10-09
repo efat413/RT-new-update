@@ -648,7 +648,7 @@ export function rowToProduct(row: ProductRow): Product {
     featuredSortOrder: row.featured_sort_order != null ? Number(row.featured_sort_order) : 0,
     rating: Number(row.rating) || 5.0,
     reviewsCount: row.reviews_count != null && Number.isFinite(Number(row.reviews_count))
-      ? Math.max(0, Math.floor(Number(row.reviews_count)))
+      ? Number(row.reviews_count)
       : 0,
     specs,
     sizes,
@@ -2547,8 +2547,8 @@ export async function getAllReviews(
     whereClauses.push('status = ?');
     bindings.push(status);
   } else if (!includeAllStatus && !status) {
-    // Public default: ONLY show approved reviews (or legacy rows where status is approved or NULL)
-    whereClauses.push("(status = 'approved' OR status IS NULL)");
+    // Public default: ONLY show approved reviews
+    whereClauses.push("status = 'approved'");
   }
 
   const whereSql = whereClauses.length > 0 ? ` WHERE ${whereClauses.join(' AND ')}` : '';
@@ -2587,12 +2587,12 @@ export async function recalculateProductRatingFromApprovedReviews(
           COUNT(id) AS total_count,
           AVG(rating) AS avg_rating
         FROM reviews
-        WHERE product_id = ? AND (status = 'approved' OR status IS NULL)
+        WHERE product_id = ? AND status = 'approved'
       `)
       .bind(cleanId)
       .first<{ total_count: number; avg_rating: number | null }>();
 
-    const reviewsCount = stats && Number.isFinite(Number(stats.total_count)) ? Math.max(0, Math.floor(Number(stats.total_count))) : 0;
+    const reviewsCount = stats && Number.isFinite(Number(stats.total_count)) ? Number(stats.total_count) : 0;
     const rawAvg = stats && stats.avg_rating != null ? Number(stats.avg_rating) : 5.0;
     const rating = reviewsCount > 0 ? Math.round(rawAvg * 10) / 10 : 5.0;
 

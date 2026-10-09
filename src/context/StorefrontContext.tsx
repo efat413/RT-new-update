@@ -704,7 +704,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         setProducts((prev) =>
           prev.map((p) => {
             if (p.id !== reviewData.productId) return p;
-            const existingApproved = reviews.filter((r) => r.productId === reviewData.productId && (r.status === 'approved' || !r.status));
+            const existingApproved = reviews.filter((r) => r.productId === reviewData.productId && r.status === 'approved');
             const newCount = existingApproved.length + 1;
             const newAvg = (existingApproved.reduce((sum, r) => sum + (Number(r.rating) || 5), 0) + (Number(created.rating) || 5)) / newCount;
             return {
@@ -736,10 +736,10 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     const updatedReviews = reviews.filter((r) => r.id !== reviewId);
     setReviews(updatedReviews);
 
-    const remainingForProduct = updatedReviews.filter((r) => r.productId === prodId);
+    const remainingApproved = updatedReviews.filter((r) => r.productId === prodId && r.status === 'approved');
     const avgRating =
-      remainingForProduct.length > 0
-        ? remainingForProduct.reduce((acc, r) => acc + r.rating, 0) / remainingForProduct.length
+      remainingApproved.length > 0
+        ? remainingApproved.reduce((acc, r) => acc + r.rating, 0) / remainingApproved.length
         : 5.0;
 
     setProducts((prev) =>
@@ -748,7 +748,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           ? {
               ...p,
               rating: Number(avgRating.toFixed(1)),
-              reviewsCount: Math.max(0, Math.max((p.reviewsCount ?? 0) - 1, remainingForProduct.length)),
+              reviewsCount: remainingApproved.length,
             }
           : p
       )

@@ -4757,8 +4757,8 @@ const AdminPanelContent: React.FC = () => {
                           {(() => {
                             const canViewReviews = hasPermission('reviews.view') || hasPermission('review.view');
                             const actualApprovedCount = reviews
-                              ? reviews.filter((r) => (r.productId === product.id || (product.slug && r.productId === product.slug)) && (r.status === 'approved' || !r.status)).length
-                              : (product.reviewsCount ?? 0);
+                              ? reviews.filter((r) => (r.productId === product.id || (product.slug && r.productId === product.slug)) && r.status === 'approved').length
+                              : 0;
                             return canViewReviews ? (
                               <button
                                 id={`manage-reviews-${product.id}`}
