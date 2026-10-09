@@ -242,6 +242,36 @@ export function generateSafeMediaKey(extension: string): string {
   return `asset-${timestamp}-${rand}.${safeExt}`;
 }
 
+export const MAX_REVIEW_PHOTO_BYTES = 2 * 1024 * 1024; // 2 MB (2,097,152 bytes)
+export const ALLOWED_REVIEW_PHOTO_FORMATS = ['jpeg', 'png', 'webp'] as const;
+
+/**
+ * Validates review photo buffer against 2 MB limit and enforces JPEG/PNG/WebP formats.
+ * Does not affect global site media limits (which remain at 10 MB).
+ */
+export function validateReviewPhotoBuffer(buffer: ArrayBuffer | Uint8Array): {
+  valid: boolean;
+  format?: 'jpeg' | 'png' | 'webp';
+  mime?: string;
+  extension?: string;
+  error?: string;
+} {
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  if (bytes.byteLength > MAX_REVIEW_PHOTO_BYTES) {
+    return { valid: false, error: 'Review photo exceeds maximum allowed limit of 2 MB.' };
+  }
+  const result = validateImageBuffer(bytes);
+  if (!result.valid || !result.format || !ALLOWED_REVIEW_PHOTO_FORMATS.includes(result.format as any)) {
+    return { valid: false, error: 'Invalid review photo format. Only JPEG, PNG, and WebP images are permitted.' };
+  }
+  return {
+    valid: true,
+    format: result.format as 'jpeg' | 'png' | 'webp',
+    mime: result.mime,
+    extension: result.extension,
+  };
+}
+
 /**
  * Returns strict security headers when serving uploaded media.
  * Ensures Vary: Accept so WebP content negotiation never causes cache collisions across clients.

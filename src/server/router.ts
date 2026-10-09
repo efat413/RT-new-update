@@ -138,6 +138,7 @@ import {
 } from './ssrf';
 import {
   validateImageBuffer,
+  validateReviewPhotoBuffer,
   generateSafeMediaKey,
   isValidMediaKey,
   getSafeMediaHeaders,
@@ -4069,10 +4070,56 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           }
         }
 
-        // 5. Sanitize and validate photos metadata (array of valid media keys or safe URLs, max 5)
+        // 5. Sanitize and validate photos metadata (Strictly 2 MB per image, JPEG/PNG/WebP, max 5 photos)
         let reviewImages: string[] = [];
         if (Array.isArray(reviewData.images)) {
           for (const rawImg of reviewData.images.slice(0, 5)) {
+            if (typeof rawImg !== 'string') continue;
+
+            // Handle Base64 Data URLs (e.g. from customer review upload)
+            const base64Match = rawImg.match(/^data:image\/(jpeg|png|webp);base64,(.+)$/i);
+            if (base64Match) {
+              const base64Content = base64Match[2];
+              const approxBinaryLength = Math.floor((base64Content.length * 3) / 4);
+              if (approxBinaryLength > 2 * 1024 * 1024) {
+                return jsonResponse({
+                  success: false,
+                  error: 'Attached review photo exceeds maximum allowed limit of 2 MB.',
+                }, 400);
+              }
+
+              try {
+                const rawBinary = atob(base64Content);
+                const u8 = new Uint8Array(rawBinary.length);
+                for (let i = 0; i < rawBinary.length; i++) {
+                  u8[i] = rawBinary.charCodeAt(i);
+                }
+
+                const validation = validateReviewPhotoBuffer(u8);
+                if (!validation.valid || !validation.mime || !validation.extension) {
+                  return jsonResponse({
+                    success: false,
+                    error: validation.error || 'Invalid review photo format. Only JPEG, PNG, and WebP are accepted.',
+                  }, 400);
+                }
+
+                const safeKey = generateSafeMediaKey(validation.extension);
+                const r2Bucket = env.R2 || env.BUCKET;
+                if (r2Bucket) {
+                  await r2Bucket.put(safeKey, u8.buffer, {
+                    httpMetadata: { contentType: validation.mime },
+                  });
+                } else if (env.DB) {
+                  await saveMediaAssetInD1(env.DB, safeKey, validation.mime, base64Content, u8.byteLength);
+                }
+                reviewImages.push(`/api/media/${safeKey}`);
+              } catch (b64Err) {
+                console.warn('[Review Upload Error] Failed to process base64 photo:', b64Err);
+              }
+              continue;
+            }
+
+            // Internal media references / safe URL references (arbitrary external URLs are rejected)
             const sanitized = sanitizeReviewImageReference(rawImg);
             if (sanitized) {
               const mediaKeyMatch = sanitized.match(/(?:^\/api\/media\/|^)([a-zA-Z0-9_\-.]+)$/);
