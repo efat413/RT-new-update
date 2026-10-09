@@ -1214,15 +1214,9 @@ export async function insertProduct(db: D1Database, input: any): Promise<Product
   const featuredSortOrder = input.featuredSortOrder != null && !isNaN(Number(input.featuredSortOrder))
     ? Math.max(0, Math.floor(Number(input.featuredSortOrder)))
     : 0;
-  const rating = input.rating != null && !isNaN(Number(input.rating))
-    ? Math.max(1, Math.min(5, Number(input.rating)))
-    : 5.0;
-  const parsedReviewsCount = input.reviewsCount !== undefined && input.reviewsCount !== null
-    ? Number(input.reviewsCount)
-    : 0;
-  const reviewsCount = Number.isFinite(parsedReviewsCount)
-    ? Math.max(0, Math.floor(parsedReviewsCount))
-    : 0;
+  // Ratings and reviewsCount are strictly derived from approved reviews (no fake counts or manual overrides)
+  const rating = 5.0;
+  const reviewsCount = 0;
   const specs = Array.isArray(input.specs) ? input.specs : [];
   const sizes = Array.isArray(input.sizes) ? input.sizes : [];
   const colors = Array.isArray(input.colors) ? input.colors : [];
@@ -1313,14 +1307,9 @@ export async function updateProductInD1(
   const images = updates.images !== undefined ? updates.images : existing.images;
   const stock = updates.stock !== undefined ? Math.max(0, Math.floor(Number(updates.stock))) : existing.stock;
   const featured = updates.featured !== undefined ? (updates.featured ? 1 : 0) : (existing.featured ? 1 : 0);
-  const rating = updates.rating !== undefined ? Number(updates.rating) : existing.rating;
-  let reviewsCount = existing.reviewsCount ?? 0;
-  if (updates.reviewsCount !== undefined) {
-    const parsedRev = updates.reviewsCount !== null
-      ? Number(updates.reviewsCount)
-      : 0;
-    reviewsCount = Number.isFinite(parsedRev) ? Math.max(0, Math.floor(parsedRev)) : 0;
-  }
+  // Ratings and reviewsCount are strictly derived from approved reviews (preserve existing without manual overrides)
+  const rating = existing.rating ?? 5.0;
+  const reviewsCount = existing.reviewsCount ?? 0;
   const specs = updates.specs !== undefined ? updates.specs : existing.specs;
   const sizes = updates.sizes !== undefined ? updates.sizes : existing.sizes;
   const colors = updates.colors !== undefined ? updates.colors : existing.colors;
