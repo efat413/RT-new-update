@@ -4741,18 +4741,24 @@ const AdminPanelContent: React.FC = () => {
                         </div>
                       </div>
 
-                      {(hasPermission('product.update') || hasPermission('product.delete')) && (
-                        <div className="p-3 border-t border-slate-100 flex items-center gap-2 bg-white">
+                      {(hasPermission('product.update') || hasPermission('product.delete') || hasPermission('review.view')) && (
+                        <div className="p-3 border-t border-slate-100 flex items-center gap-2 bg-white flex-wrap sm:flex-nowrap">
                           {hasPermission('product.update') && (
-                            <>
-                              <button
-                                id={`edit-product-${product.id}`}
-                                onClick={() => openEditProductModal(product)}
-                                className="flex-1 py-1.5 px-3 rounded-xl bg-slate-50 border border-slate-200 text-slate-700 font-bold text-xs flex items-center justify-center gap-1 hover:bg-slate-100 transition-colors shadow-xs"
-                              >
-                                <Edit2 className="w-3.5 h-3.5 text-blue-600" />
-                                <span>Edit</span>
-                              </button>
+                            <button
+                              id={`edit-product-${product.id}`}
+                              onClick={() => openEditProductModal(product)}
+                              className="flex-1 py-1.5 px-3 rounded-xl bg-slate-50 border border-slate-200 text-slate-700 font-bold text-xs flex items-center justify-center gap-1 hover:bg-slate-100 transition-colors shadow-xs"
+                            >
+                              <Edit2 className="w-3.5 h-3.5 text-blue-600" />
+                              <span>Edit</span>
+                            </button>
+                          )}
+                          {/* Dedicated Reviews Button for every product with actual approved count */}
+                          {(() => {
+                            const actualApprovedCount = reviews
+                              ? reviews.filter((r) => (r.productId === product.id || (product.slug && r.productId === product.slug)) && (r.status === 'approved' || !r.status)).length
+                              : (product.reviewsCount ?? 0);
+                            return (
                               <button
                                 id={`manage-reviews-${product.id}`}
                                 type="button"
@@ -4760,28 +4766,32 @@ const AdminPanelContent: React.FC = () => {
                                   setSelectedReviewProductFilter(product.id);
                                   handleSelectTab('reviews');
                                 }}
-                                className="py-1.5 px-2.5 rounded-xl bg-slate-50 border border-slate-200 text-slate-700 font-bold text-xs flex items-center justify-center gap-1 hover:bg-slate-100 transition-colors shadow-xs cursor-pointer"
-                                title={`Moderate customer reviews for "${product.title}" (${product.reviewsCount ?? 0})`}
+                                className="py-1.5 px-2.5 rounded-xl bg-slate-50 border border-slate-200 hover:border-amber-300 hover:bg-amber-50/50 text-slate-700 font-bold text-xs flex items-center justify-center gap-1.5 transition-colors shadow-xs cursor-pointer"
+                                title={`Moderate customer reviews for "${product.title}" (${actualApprovedCount} approved reviews)`}
                               >
-                                <MessageSquare className="w-3.5 h-3.5 text-amber-600" />
-                                <span className="hidden sm:inline">Reviews</span>
-                                <span className="text-[10px] text-slate-500 font-normal">({product.reviewsCount ?? 0})</span>
+                                <MessageSquare className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                                <span>Reviews</span>
+                                <span className="text-[10px] px-1.5 py-0.2 rounded-full font-bold bg-amber-100/80 text-amber-900 border border-amber-200/60">
+                                  {actualApprovedCount}
+                                </span>
                               </button>
-                              <button
-                                id={`toggle-featured-card-${product.id}`}
-                                type="button"
-                                onClick={() => toggleProductFeatured(product.id, !product.featured)}
-                                className={`py-1.5 px-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-1 transition-colors cursor-pointer border ${
-                                  product.featured
-                                    ? 'bg-rose-50 border-rose-300 text-rose-700 hover:bg-rose-100'
-                                    : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
-                                }`}
-                                title={product.featured ? 'Remove from Featured' : 'Add to Featured'}
-                              >
-                                <Sparkles className={`w-3.5 h-3.5 ${product.featured ? 'text-rose-500 fill-rose-500' : 'text-slate-400'}`} />
-                                <span className="hidden sm:inline">{product.featured ? 'Featured' : 'Feature'}</span>
-                              </button>
-                            </>
+                            );
+                          })()}
+                          {hasPermission('product.update') && (
+                            <button
+                              id={`toggle-featured-card-${product.id}`}
+                              type="button"
+                              onClick={() => toggleProductFeatured(product.id, !product.featured)}
+                              className={`py-1.5 px-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-1 transition-colors cursor-pointer border ${
+                                product.featured
+                                  ? 'bg-rose-50 border-rose-300 text-rose-700 hover:bg-rose-100'
+                                  : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+                              }`}
+                              title={product.featured ? 'Remove from Featured' : 'Add to Featured'}
+                            >
+                              <Sparkles className={`w-3.5 h-3.5 ${product.featured ? 'text-rose-500 fill-rose-500' : 'text-slate-400'}`} />
+                              <span className="hidden sm:inline">{product.featured ? 'Featured' : 'Feature'}</span>
+                            </button>
                           )}
                           {hasPermission('product.delete') && (
                             <button
@@ -4841,6 +4851,10 @@ const AdminPanelContent: React.FC = () => {
                 currentUser={currentUser}
                 onRefreshProducts={refreshProductsByIds ? () => refreshProductsByIds(products.map((p) => p.id)) : undefined}
                 initialProductFilter={selectedReviewProductFilter}
+                onBackToProducts={() => {
+                  setSelectedReviewProductFilter('all');
+                  handleSelectTab('products');
+                }}
               />
             </React.Suspense>
           )

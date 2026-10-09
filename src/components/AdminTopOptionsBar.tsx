@@ -16,6 +16,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Lock,
+  MessageSquare,
 } from 'lucide-react';
 
 export interface AdminTopOptionsBarProps {
@@ -75,6 +76,14 @@ export const AdminTopOptionsBar: React.FC<AdminTopOptionsBarProps> = ({
       badge: `${productsCount}`,
       badgeColor: 'bg-slate-700 text-slate-300',
       permission: 'product.view',
+    },
+    {
+      id: 'reviews',
+      label: 'Customer Reviews',
+      icon: MessageSquare,
+      badge: null,
+      badgeColor: 'bg-slate-700 text-slate-300',
+      permission: 'review.view',
     },
     {
       id: 'categories',
