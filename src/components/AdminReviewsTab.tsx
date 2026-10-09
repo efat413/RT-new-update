@@ -430,10 +430,30 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    if (formImages.length + files.length > 5) {
+    const fileList: File[] = Array.from(files);
+
+    if (formImages.length + fileList.length > 5) {
       setFormError('You can attach a maximum of 5 photos per review.');
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
+    }
+
+    // Pre-validate all selected files BEFORE initiating upload
+    for (const file of fileList) {
+      if (file.size > MAX_REVIEW_IMAGE_SIZE_BYTES) {
+        const sizeMb = (file.size / (1024 * 1024)).toFixed(2);
+        const errorMsg = `File "${file.name}" exceeds the strict 2MB limit (${sizeMb} MB). Review photos must be 2MB or less.`;
+        setFormError(errorMsg);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+        return;
+      }
+
+      const val = await validateClientImageFile(file);
+      if (!val.valid) {
+        setFormError(val.error || `Invalid image file "${file.name}".`);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+        return;
+      }
     }
 
     setIsUploadingImages(true);
@@ -441,18 +461,12 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
 
     const uploadedUrls: string[] = [];
     try {
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        setImageUploadProgressText(`Verifying and uploading photo ${i + 1} of ${files.length}...`);
+      for (let i = 0; i < fileList.length; i++) {
+        const file = fileList[i];
+        setImageUploadProgressText(`Uploading photo ${i + 1} of ${fileList.length}...`);
 
-        // Client-side magic byte & size validation
-        const val = await validateClientImageFile(file);
-        if (!val.valid) {
-          throw new Error(val.error || `Invalid image file "${file.name}".`);
-        }
-
-        // Upload to server
-        const res = await uploadApi.upload(file);
+        // Upload to server with purpose='review'
+        const res = await uploadApi.upload(file, 'review');
         if (!res.success || !res.url) {
           throw new Error(res.error || `Failed to upload "${file.name}".`);
         }
@@ -480,10 +494,30 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    if (editImages.length + files.length > 5) {
+    const fileList: File[] = Array.from(files);
+
+    if (editImages.length + fileList.length > 5) {
       setEditError('You can attach a maximum of 5 photos per review.');
       if (editFileInputRef.current) editFileInputRef.current.value = '';
       return;
+    }
+
+    // Pre-validate all selected files BEFORE initiating upload
+    for (const file of fileList) {
+      if (file.size > MAX_REVIEW_IMAGE_SIZE_BYTES) {
+        const sizeMb = (file.size / (1024 * 1024)).toFixed(2);
+        const errorMsg = `File "${file.name}" exceeds the strict 2MB limit (${sizeMb} MB). Review photos must be 2MB or less.`;
+        setEditError(errorMsg);
+        if (editFileInputRef.current) editFileInputRef.current.value = '';
+        return;
+      }
+
+      const val = await validateClientImageFile(file);
+      if (!val.valid) {
+        setEditError(val.error || `Invalid image file "${file.name}".`);
+        if (editFileInputRef.current) editFileInputRef.current.value = '';
+        return;
+      }
     }
 
     setIsUploadingEditImages(true);
@@ -491,16 +525,12 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
 
     const uploadedUrls: string[] = [];
     try {
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        setEditUploadProgressText(`Uploading photo ${i + 1} of ${files.length}...`);
+      for (let i = 0; i < fileList.length; i++) {
+        const file = fileList[i];
+        setEditUploadProgressText(`Uploading photo ${i + 1} of ${fileList.length}...`);
 
-        const val = await validateClientImageFile(file);
-        if (!val.valid) {
-          throw new Error(val.error || `Invalid image file "${file.name}".`);
-        }
-
-        const res = await uploadApi.upload(file);
+        // Upload to server with purpose='review'
+        const res = await uploadApi.upload(file, 'review');
         if (!res.success || !res.url) {
           throw new Error(res.error || `Failed to upload "${file.name}".`);
         }

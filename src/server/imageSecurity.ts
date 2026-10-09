@@ -4,7 +4,8 @@
  * sanitizes filenames, enforces maximum upload sizes, and guarantees safe serving headers.
  */
 
-export const MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024; // 10 Megabytes
+export const MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024; // 10 Megabytes for general site media
+export const REVIEW_MAX_IMAGE_SIZE = 2 * 1024 * 1024; // 2 Megabytes strictly for review photos
 export const MIN_IMAGE_SIZE_BYTES = 12; // Minimum bytes to verify magic headers
 
 export type SupportedImageFormat = 'jpeg' | 'png' | 'webp' | 'gif' | 'ico';

@@ -775,9 +775,15 @@ export const usersApi = {
 // 8. MEDIA UPLOAD API (R2 & D1 STORED)
 // ==========================================
 export const uploadApi = {
-  async upload(file: File): Promise<{ success: boolean; url?: string; key?: string; error?: string }> {
+  async upload(
+    file: File,
+    purpose?: string
+  ): Promise<{ success: boolean; url?: string; key?: string; error?: string }> {
     const formData = new FormData();
     formData.append('file', file);
+    if (purpose) {
+      formData.append('purpose', purpose);
+    }
 
     try {
       const res = await fetch(`${API_BASE}/upload`, {
@@ -812,6 +818,8 @@ export const uploadApi = {
     }
   },
 };
+
+export const uploadImage = uploadApi.upload;
 
 // ==========================================
 // 9. PROFIT & FINANCIAL ANALYTICS API (SUPER ADMIN ONLY)

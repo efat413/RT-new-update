@@ -144,6 +144,7 @@ import {
   getSafeMediaHeaders,
   sanitizeReviewImageReference,
   MAX_IMAGE_SIZE_BYTES,
+  REVIEW_MAX_IMAGE_SIZE,
 } from './imageSecurity';
 
 let activeApiRequest: Request | null = null;
@@ -3393,16 +3394,24 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       if (contentTypeHeader.includes('multipart/form-data')) {
         const formData = await request.formData();
         const file = formData.get('file') as File | null;
+        const uploadPurpose = String(formData.get('purpose') || '').trim().toLowerCase();
         if (!file) {
           return jsonResponse({ success: false, error: 'No file provided in form data' }, 400);
         }
-        if (file.size > MAX_IMAGE_SIZE_BYTES) {
-          return jsonResponse({ success: false, error: 'File size exceeds maximum allowed 10MB limit.' }, 413);
+        const maxLimit = uploadPurpose === 'review' ? REVIEW_MAX_IMAGE_SIZE : MAX_IMAGE_SIZE_BYTES;
+        if (file.size > maxLimit) {
+          return jsonResponse({
+            success: false,
+            error: uploadPurpose === 'review'
+              ? 'File size exceeds maximum allowed 2MB limit for review photos.'
+              : 'File size exceeds maximum allowed 10MB limit.',
+          }, 413);
         }
         fileBuffer = await file.arrayBuffer();
       } else {
         const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
         if (jsonErr) return jsonErr;
+        const uploadPurpose = String(body?.purpose || '').trim().toLowerCase();
         const dataUrl = body?.dataUrl || body?.image || '';
         if (!dataUrl || typeof dataUrl !== 'string') {
           return jsonResponse({ success: false, error: 'Expected dataUrl in JSON body' }, 400);
@@ -3410,6 +3419,15 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         const matches = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
         if (matches) {
           const raw = atob(matches[2]);
+          const maxLimit = uploadPurpose === 'review' ? REVIEW_MAX_IMAGE_SIZE : MAX_IMAGE_SIZE_BYTES;
+          if (raw.length > maxLimit) {
+            return jsonResponse({
+              success: false,
+              error: uploadPurpose === 'review'
+                ? 'File size exceeds maximum allowed 2MB limit for review photos.'
+                : 'File size exceeds maximum allowed 10MB limit.',
+            }, 413);
+          }
           const u8 = new Uint8Array(raw.length);
           for (let i = 0; i < raw.length; i++) {
             u8[i] = raw.charCodeAt(i);
