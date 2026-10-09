@@ -138,7 +138,7 @@ export function getResponsiveImageUrl(url: string, width: number, quality: numbe
     return cleanUrl;
   }
 
-  // 2. Internal Cloudflare / D1 / R2 media endpoints (/api/media/:key)
+  // 2. Internal Cloudflare D1 media endpoints (/api/media/:key)
   // Maps to genuine available pregenerated/transformed variant widths (240, 360, 480, 720, 1080)
   if (isInternalMediaUrl(cleanUrl)) {
     const availableWidth = getBestAvailableInternalWidth(width);

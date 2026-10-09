@@ -95,7 +95,7 @@ export const ImageUploadField: React.FC<ImageUploadFieldProps> = ({
 
     try {
       setIsProcessing(true);
-      // Upload directly to Cloudflare Worker upload endpoint (R2 / D1 media assets)
+      // Upload directly to Cloudflare Worker upload endpoint (D1 media assets)
       const uploadRes = await uploadApi.upload(file);
       if (uploadRes.success && uploadRes.url) {
         onChange(uploadRes.url);

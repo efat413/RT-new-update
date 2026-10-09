@@ -86,7 +86,7 @@ console.log('\n[TEST 5] Verifying storage architecture (images_json stores URLs/
 assert(dbSource.includes('images_json') || routerSource.includes('reviewImages'), 'D1 reviews table stores metadata/urls in images_json');
 assert(routerSource.includes('sanitizeReviewImageReference'), 'Review images must be sanitized on the backend');
 assert(routerSource.includes('slice(0, 5)'), 'Server must cap review images at max 5');
-console.log('✅ TEST 5 PASSED: Review records store storage keys/URLs in images_json; binary files stored in R2 / media storage.');
+console.log('✅ TEST 5 PASSED: Review records store storage keys/URLs in images_json; binary files stored in D1 binary media storage.');
 
 // -------------------------------------------------------------
 // TEST 6: Review Sources Integration in Backend Router & Database

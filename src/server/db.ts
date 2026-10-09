@@ -2242,7 +2242,7 @@ export async function updateStoreSettingsInD1(db: D1Database, updates: Partial<S
   return merged;
 }
 
-// Media assets persistence in D1 (used when R2 is not configured)
+// Media assets persistence in Cloudflare D1 media_assets table
 export async function saveMediaAssetInD1(
   db: D1Database,
   id: string,

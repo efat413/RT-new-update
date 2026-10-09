@@ -3350,7 +3350,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
   }
 
   // ==========================================
-  // 4B. MEDIA ASSET UPLOAD & SERVING (R2 & D1)
+  // 4B. MEDIA ASSET UPLOAD & SERVING (D1 STORAGE)
   // ==========================================
   if (path === '/api/upload' && method === 'POST') {
     const { auth, errorResponse } = await requireAuth(request, env);
@@ -3560,7 +3560,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         ? (standardWidths.find((sw) => sw >= targetWidth) || 1080)
         : null;
 
-      // 1. Check for pre-generated variant in R2 / D1 first:
+      // 1. Check for pre-generated variant in D1 media storage first:
       if (targetWidth && targetWidth > 0 && targetWidth <= 2400) {
         const baseKeyWithoutExt = key.replace(/\.[^.]+$/, '');
         // Prioritized candidate variant keys:
@@ -3581,11 +3581,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           if (env.DB) {
             const varAsset = await getMediaAssetFromD1(env.DB, variantKey);
             if (varAsset) {
-              const raw = atob(varAsset.dataBase64);
-              variantBuffer = new Uint8Array(raw.length);
-              for (let i = 0; i < raw.length; i++) {
-                variantBuffer[i] = raw.charCodeAt(i);
-              }
+              variantBuffer = base64ToUint8Array(varAsset.dataBase64);
             }
           }
           if (variantBuffer && variantBuffer.byteLength > 0) {
@@ -3668,7 +3664,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
             if (wantsWebp) {
               const webpBuffer = await pipeline.webp({ quality: Math.min(Math.max(targetQuality, 50), 95) }).toBuffer();
-              // Persist newly generated variant into R2 or D1 for instant future hits
+              // Persist newly generated variant into D1 media storage for instant future hits
               const baseKeyWithoutExt = key.replace(/\.[^.]+$/, '');
               const varKey = `${baseKeyWithoutExt}_w${effectiveWidth}.webp`;
               try {

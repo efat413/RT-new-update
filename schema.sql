@@ -295,7 +295,7 @@ CREATE TABLE IF NOT EXISTS rate_limits (
 CREATE INDEX IF NOT EXISTS idx_rate_limits_reset_at ON rate_limits(reset_at);
 
 -- ==============================================================
--- 14. MEDIA ASSETS TABLE (Media storage fallback when R2 is unconfigured)
+-- 14. MEDIA ASSETS TABLE (Authoritative media storage in D1)
 -- ==============================================================
 CREATE TABLE IF NOT EXISTS media_assets (
   id TEXT PRIMARY KEY,

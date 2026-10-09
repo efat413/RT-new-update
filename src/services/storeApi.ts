@@ -796,7 +796,7 @@ export const usersApi = {
 };
 
 // ==========================================
-// 8. MEDIA UPLOAD API (R2 & D1 STORED)
+// 8. MEDIA UPLOAD API (D1 STORED)
 // ==========================================
 export const uploadApi = {
   async upload(
