@@ -625,9 +625,14 @@ export const couponsApi = {
 // 6. REVIEWS API
 // ==========================================
 export const reviewsApi = {
-  async getAll(productId?: string): Promise<ProductReview[]> {
+  async getAll(params?: string | { productId?: string; status?: string }): Promise<ProductReview[]> {
     const url = new URL(`${API_BASE}/reviews`, window.location.origin);
-    if (productId) url.searchParams.set('productId', productId);
+    if (typeof params === 'string') {
+      if (params) url.searchParams.set('productId', params);
+    } else if (params) {
+      if (params.productId) url.searchParams.set('productId', params.productId);
+      if (params.status) url.searchParams.set('status', params.status);
+    }
 
     const res = await apiRequest<{ success: boolean; reviews: ProductReview[] }>(url.toString());
     if (res.success && res.data && Array.isArray(res.data.reviews)) {
@@ -643,6 +648,20 @@ export const reviewsApi = {
     });
     if (!res.success || !res.data?.review) {
       throw new Error(res.error || 'Failed to create review. Please try again.');
+    }
+    return res.data.review;
+  },
+
+  async update(id: string, updates: Partial<ProductReview>): Promise<ProductReview> {
+    const res = await apiRequest<{ success: boolean; review: ProductReview }>(
+      `${API_BASE}/reviews/${encodeURIComponent(id)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ updates }),
+      }
+    );
+    if (!res.success || !res.data?.review) {
+      throw new Error(res.error || 'Failed to update review. Please try again.');
     }
     return res.data.review;
   },

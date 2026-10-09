@@ -38,6 +38,11 @@ export const PERMISSION_KEYS = [
   'coupon.view',
   'coupon.manage',
 
+  // Review Permissions
+  'review.view',
+  'review.manage',
+  'review.delete',
+
   // Courier Permissions
   'courier.configure',
   'courier.booking',
@@ -76,6 +81,7 @@ export interface PermissionMetadata {
     | 'Category'
     | 'Slider'
     | 'Coupon'
+    | 'Review'
     | 'Courier'
     | 'Analytics / Reports'
     | 'User / Admin'
@@ -316,6 +322,35 @@ export const PERMISSIONS_METADATA: Record<PermissionKey, PermissionMetadata> = {
     dangerous: false,
   },
 
+  // Review
+  'review.view': {
+    key: 'review.view',
+    group: 'Review',
+    displayName: 'View Reviews',
+    description: 'Browse customer reviews and check moderation queue.',
+    superAdminOnly: false,
+    sensitive: false,
+    dangerous: false,
+  },
+  'review.manage': {
+    key: 'review.manage',
+    group: 'Review',
+    displayName: 'Moderate & Create Reviews',
+    description: 'Approve, reject, edit customer reviews, or create official reviews.',
+    superAdminOnly: false,
+    sensitive: false,
+    dangerous: false,
+  },
+  'review.delete': {
+    key: 'review.delete',
+    group: 'Review',
+    displayName: 'Delete Reviews',
+    description: 'Permanently remove reviews from database.',
+    superAdminOnly: false,
+    sensitive: false,
+    dangerous: true,
+  },
+
   // Courier
   'courier.configure': {
     key: 'courier.configure',
@@ -485,6 +520,10 @@ export const DEFAULT_ADMIN_1_PERMISSIONS: Readonly<Record<PermissionKey, boolean
   'coupon.view': true,
   'coupon.manage': true,
 
+  'review.view': true,
+  'review.manage': true,
+  'review.delete': true,
+
   'courier.configure': true,
   'courier.booking': true,
   'courier.status_sync': true,
@@ -538,6 +577,10 @@ export const DEFAULT_ADMIN_2_PERMISSIONS: Readonly<Record<PermissionKey, boolean
   'coupon.view': false,
   'coupon.manage': false,
 
+  'review.view': true,
+  'review.manage': false,
+  'review.delete': false,
+
   'courier.configure': false,
   'courier.booking': true,
   'courier.status_sync': true,
@@ -588,6 +631,10 @@ export const DEFAULT_SUB_ADMIN_PERMISSIONS: Readonly<Record<PermissionKey, boole
 
   'coupon.view': false,
   'coupon.manage': false,
+
+  'review.view': false,
+  'review.manage': false,
+  'review.delete': false,
 
   'courier.configure': false,
   'courier.booking': false,
@@ -891,6 +938,18 @@ export const LEGACY_PERMISSION_MAPPINGS: Record<string, LegacyPermissionMapping>
     sensitivity: 'operational',
     description: 'Legacy alias for coupon update.',
   },
+  'review.moderate': {
+    legacyKey: 'review.moderate',
+    canonicalKey: 'review.manage',
+    sensitivity: 'operational',
+    description: 'Review moderation alias.',
+  },
+  'canManageReviews': {
+    legacyKey: 'canManageReviews',
+    canonicalKey: 'review.manage',
+    sensitivity: 'operational',
+    description: 'Legacy boolean flag for review management.',
+  },
 };
 
 /**
@@ -953,6 +1012,12 @@ export function mapLegacyPermissionsToGranular(legacy: Record<string, any>): Rec
     mapped['coupon.manage'] = true;
     mapped['courier.configure'] = true;
     // settings.manage remains false: Super Admin-only!
+  }
+
+  if (legacy.canManageReviews) {
+    mapped['review.view'] = true;
+    mapped['review.manage'] = true;
+    mapped['review.delete'] = true;
   }
 
   return mapped;
@@ -1059,6 +1124,7 @@ export function generateLegacyPermissionFlags(perms: Record<PermissionKey, boole
     canManageCategories: Boolean(perms['category.manage']),
     canManageAccounts: Boolean(perms['user.view'] || perms['customer.manage']),
     canManageSettings: Boolean(perms['slider.manage'] || perms['coupon.manage'] || perms['courier.configure']),
+    canManageReviews: Boolean(perms['review.manage'] || perms['review.view']),
   };
 }
 

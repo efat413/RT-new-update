@@ -7,6 +7,8 @@ import {
   StoreSettings,
   Coupon,
   ProductReview,
+  ReviewStatus,
+  ReviewSource,
   UserAccount,
   Expense,
   ExpenseType,
@@ -673,7 +675,7 @@ export const COUPON_COLUMNS =
   'code, discount_type, discount_value, min_spend, description, is_active';
 
 export const REVIEW_COLUMNS =
-  'id, product_id, author_name, rating, comment, verified_purchase, created_at';
+  'id, product_id, author_name, rating, comment, verified_purchase, status, source, approved_at, approved_by, updated_at, images_json, created_at';
 
 export interface ProductFilter {
   category?: string;
@@ -2383,27 +2385,152 @@ export async function deleteCouponFromD1(db: D1Database, code: string): Promise<
 // 6. PRODUCT REVIEWS DATABASE OPERATIONS
 // ==============================================================
 
+let cachedReviewTableColumns: Set<string> | null = null;
+
+export async function getReviewTableColumns(db: D1Database): Promise<Set<string>> {
+  if (cachedReviewTableColumns && cachedReviewTableColumns.size > 0) {
+    return cachedReviewTableColumns;
+  }
+  try {
+    const res = await db.prepare("SELECT name FROM pragma_table_info('reviews')").all<{ name: string }>();
+    if (res.results && res.results.length > 0) {
+      cachedReviewTableColumns = new Set(res.results.map((r) => r.name.toLowerCase()));
+      return cachedReviewTableColumns;
+    }
+  } catch (err) {
+    console.warn('[D1] Could not query pragma_table_info for reviews:', err);
+  }
+  return new Set([
+    'id', 'product_id', 'author_name', 'rating', 'comment', 'verified_purchase',
+    'status', 'source', 'approved_at', 'approved_by', 'updated_at', 'images_json', 'created_at'
+  ]);
+}
+
+export async function ensureReviewTableSchema(db: D1Database): Promise<Set<string>> {
+  let columns = await getReviewTableColumns(db);
+
+  if (!columns.has('status')) {
+    try {
+      await db.prepare("ALTER TABLE reviews ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'").run();
+      cachedReviewTableColumns = null;
+    } catch {}
+  }
+  if (!columns.has('source')) {
+    try {
+      await db.prepare("ALTER TABLE reviews ADD COLUMN source TEXT NOT NULL DEFAULT 'customer'").run();
+      cachedReviewTableColumns = null;
+    } catch {}
+  }
+  if (!columns.has('approved_at')) {
+    try {
+      await db.prepare('ALTER TABLE reviews ADD COLUMN approved_at TEXT').run();
+      cachedReviewTableColumns = null;
+    } catch {}
+  }
+  if (!columns.has('approved_by')) {
+    try {
+      await db.prepare('ALTER TABLE reviews ADD COLUMN approved_by TEXT').run();
+      cachedReviewTableColumns = null;
+    } catch {}
+  }
+  if (!columns.has('updated_at')) {
+    try {
+      await db.prepare('ALTER TABLE reviews ADD COLUMN updated_at TEXT').run();
+      cachedReviewTableColumns = null;
+    } catch {}
+  }
+  if (!columns.has('images_json')) {
+    try {
+      await db.prepare("ALTER TABLE reviews ADD COLUMN images_json TEXT NOT NULL DEFAULT '[]'").run();
+      cachedReviewTableColumns = null;
+    } catch {}
+  }
+
+  return getReviewTableColumns(db);
+}
+
 export function rowToReview(row: ReviewRow): ProductReview {
+  let images: string[] = [];
+  try {
+    if (row.images_json) {
+      const parsed = JSON.parse(row.images_json);
+      if (Array.isArray(parsed)) {
+        images = parsed.filter((img) => typeof img === 'string' && img.trim().length > 0);
+      }
+    }
+  } catch {}
+
+  const rawStatus = (row.status || '').toLowerCase().trim();
+  const status: ReviewStatus = rawStatus === 'approved' || rawStatus === 'rejected' || rawStatus === 'pending'
+    ? (rawStatus as ReviewStatus)
+    : (row.status ? 'pending' : 'approved');
+
+  const source: ReviewSource = row.source === 'admin' ? 'admin' : 'customer';
+
   return {
     id: row.id,
     productId: row.product_id,
     authorName: row.author_name,
+    author: row.author_name,
     rating: Number(row.rating) || 5,
     comment: row.comment,
     verifiedPurchase: Boolean(row.verified_purchase),
+    status,
+    source,
+    approvedAt: row.approved_at || undefined,
+    approvedBy: row.approved_by || undefined,
+    updatedAt: row.updated_at || undefined,
+    images: images.length > 0 ? images : undefined,
+    imagesJson: row.images_json || '[]',
     createdAt: row.created_at,
+    date: row.created_at ? new Date(row.created_at).toLocaleDateString('en-GB') : undefined,
   };
 }
 
-export async function getAllReviews(db: D1Database, productId?: string): Promise<ProductReview[]> {
-  let query = `SELECT ${REVIEW_COLUMNS} FROM reviews`;
+export interface ReviewQueryFilter {
+  productId?: string;
+  status?: string;
+  includeAllStatus?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export async function getAllReviews(
+  db: D1Database,
+  filter?: ReviewQueryFilter | string
+): Promise<ProductReview[]> {
+  await ensureReviewTableSchema(db);
+
+  let productId: string | undefined;
+  let status: string | undefined;
+  let includeAllStatus = false;
+
+  if (typeof filter === 'string') {
+    productId = filter;
+  } else if (filter && typeof filter === 'object') {
+    productId = filter.productId;
+    status = filter.status;
+    includeAllStatus = Boolean(filter.includeAllStatus);
+  }
+
+  let whereClauses: string[] = [];
   const bindings: any[] = [];
 
   if (productId) {
-    query += ' WHERE product_id = ?';
+    whereClauses.push('product_id = ?');
     bindings.push(productId);
   }
-  query += ' ORDER BY created_at DESC';
+
+  if (status && status !== 'all') {
+    whereClauses.push('status = ?');
+    bindings.push(status);
+  } else if (!includeAllStatus && !status) {
+    // Public default: ONLY show approved reviews (or legacy rows where status is approved or NULL)
+    whereClauses.push("(status = 'approved' OR status IS NULL)");
+  }
+
+  const whereSql = whereClauses.length > 0 ? ` WHERE ${whereClauses.join(' AND ')}` : '';
+  const query = `SELECT * FROM reviews${whereSql} ORDER BY created_at DESC`;
 
   const stmt = db.prepare(query);
   const bound = bindings.length > 0 ? stmt.bind(...bindings) : stmt;
@@ -2412,27 +2539,186 @@ export async function getAllReviews(db: D1Database, productId?: string): Promise
   return (result.results || []).map(rowToReview);
 }
 
+export async function getReviewById(db: D1Database, id: string): Promise<ProductReview | null> {
+  await ensureReviewTableSchema(db);
+  const row = await db.prepare('SELECT * FROM reviews WHERE id = ? LIMIT 1').bind(id).first<ReviewRow>();
+  return row ? rowToReview(row) : null;
+}
+
+/**
+ * Derives product ratings and reviews count STRICTLY from approved reviews in D1.
+ * Unapproved (pending) and rejected reviews are never counted towards public stats.
+ */
+export async function recalculateProductRatingFromApprovedReviews(
+  db: D1Database,
+  productId: string
+): Promise<{ rating: number; reviewsCount: number }> {
+  const cleanId = (productId || '').trim();
+  if (!cleanId) return { rating: 5.0, reviewsCount: 0 };
+
+  try {
+    await ensureReviewTableSchema(db);
+
+    const stats = await db
+      .prepare(`
+        SELECT
+          COUNT(id) AS total_count,
+          AVG(rating) AS avg_rating
+        FROM reviews
+        WHERE product_id = ? AND (status = 'approved' OR status IS NULL)
+      `)
+      .bind(cleanId)
+      .first<{ total_count: number; avg_rating: number | null }>();
+
+    const reviewsCount = stats && Number.isFinite(Number(stats.total_count)) ? Math.max(0, Math.floor(Number(stats.total_count))) : 0;
+    const rawAvg = stats && stats.avg_rating != null ? Number(stats.avg_rating) : 5.0;
+    const rating = reviewsCount > 0 ? Math.round(rawAvg * 10) / 10 : 5.0;
+
+    await db
+      .prepare(`
+        UPDATE products
+        SET rating = ?, reviews_count = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `)
+      .bind(rating, reviewsCount, cleanId)
+      .run();
+
+    return { rating, reviewsCount };
+  } catch (err) {
+    console.warn('[D1 recalculateProductRatingFromApprovedReviews Error]:', err);
+    return { rating: 5.0, reviewsCount: 0 };
+  }
+}
+
 export async function insertReview(db: D1Database, input: any): Promise<ProductReview> {
-  const id = input.id || `rev-${Date.now()}`;
+  const availableColumns = await ensureReviewTableSchema(db);
+
+  const id = input.id || `rev-${Date.now()}-${crypto.randomUUID().replace(/-/g, '').slice(0, 6)}`;
   const productId = input.productId;
   const authorName = (input.authorName || input.author || 'Customer').trim();
-  const rating = Math.min(5, Math.max(1, Number(input.rating) || 5));
-  const comment = input.comment || '';
-  // Security Hardening: strictly default to 0 (unverified) unless server logic explicitly sets true
+  const rating = Math.min(5, Math.max(1, Math.round(Number(input.rating) || 5)));
+  const comment = (input.comment || '').trim();
   const verifiedPurchase = input.verifiedPurchase === true ? 1 : 0;
+
+  const rawStatus = (input.status || '').toLowerCase().trim();
+  const status: ReviewStatus = rawStatus === 'approved' || rawStatus === 'rejected' || rawStatus === 'pending'
+    ? (rawStatus as ReviewStatus)
+    : 'pending';
+
+  const source: ReviewSource = input.source === 'admin' ? 'admin' : 'customer';
   const createdAt = input.createdAt || new Date().toISOString();
+  const approvedAt = status === 'approved' ? (input.approvedAt || createdAt) : null;
+  const approvedBy = status === 'approved' ? (input.approvedBy || (source === 'admin' ? 'admin' : 'system')) : null;
+
+  let imagesJson = '[]';
+  if (Array.isArray(input.images)) {
+    imagesJson = JSON.stringify(input.images);
+  } else if (typeof input.imagesJson === 'string') {
+    imagesJson = input.imagesJson;
+  }
+
+  const candidateFields = [
+    { col: 'id', val: id },
+    { col: 'product_id', val: productId },
+    { col: 'author_name', val: authorName },
+    { col: 'rating', val: rating },
+    { col: 'comment', val: comment },
+    { col: 'verified_purchase', val: verifiedPurchase },
+    { col: 'status', val: status },
+    { col: 'source', val: source },
+    { col: 'approved_at', val: approvedAt },
+    { col: 'approved_by', val: approvedBy },
+    { col: 'images_json', val: imagesJson },
+    { col: 'created_at', val: createdAt },
+  ];
+
+  const activeFields = candidateFields.filter((f) => availableColumns.has(f.col));
+  const colNames = [...activeFields.map((f) => f.col), 'updated_at'].join(', ');
+  const placeholders = [...activeFields.map(() => '?'), 'CURRENT_TIMESTAMP'].join(', ');
+  const bindings = activeFields.map((f) => f.val);
 
   await db
-    .prepare(`
-      INSERT INTO reviews (id, product_id, author_name, rating, comment, verified_purchase, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `)
-    .bind(id, productId, authorName, rating, comment, verifiedPurchase, createdAt)
+    .prepare(`INSERT INTO reviews (${colNames}) VALUES (${placeholders})`)
+    .bind(...bindings)
     .run();
 
-  const row = await db.prepare(`SELECT ${REVIEW_COLUMNS} FROM reviews WHERE id = ?`).bind(id).first<ReviewRow>();
+  // If created directly in approved status, update product rating & review count
+  if (status === 'approved') {
+    await recalculateProductRatingFromApprovedReviews(db, productId);
+  }
+
+  const row = await db.prepare('SELECT * FROM reviews WHERE id = ?').bind(id).first<ReviewRow>();
   if (!row) throw new Error('Failed to retrieve inserted review');
   return rowToReview(row);
+}
+
+export async function updateReviewInD1(
+  db: D1Database,
+  id: string,
+  updates: {
+    status?: ReviewStatus;
+    approvedBy?: string;
+    comment?: string;
+    rating?: number;
+    authorName?: string;
+    images?: string[];
+    verifiedPurchase?: boolean;
+  }
+): Promise<ProductReview | null> {
+  const availableColumns = await ensureReviewTableSchema(db);
+
+  const existing = await db.prepare('SELECT * FROM reviews WHERE id = ?').bind(id).first<ReviewRow>();
+  if (!existing) return null;
+
+  const newStatus = updates.status !== undefined ? updates.status : (existing.status as ReviewStatus || 'pending');
+  const now = new Date().toISOString();
+  let approvedAt = existing.approved_at;
+  let approvedBy = existing.approved_by;
+
+  if (updates.status === 'approved' && existing.status !== 'approved') {
+    approvedAt = now;
+    approvedBy = updates.approvedBy || 'admin';
+  } else if (updates.status === 'rejected' || updates.status === 'pending') {
+    approvedAt = null;
+    approvedBy = null;
+  }
+
+  const comment = updates.comment !== undefined ? updates.comment.trim() : existing.comment;
+  const rating = updates.rating !== undefined ? Math.min(5, Math.max(1, Math.round(Number(updates.rating)))) : existing.rating;
+  const authorName = updates.authorName !== undefined ? updates.authorName.trim() : existing.author_name;
+  let imagesJson = existing.images_json || '[]';
+  if (updates.images !== undefined) {
+    imagesJson = JSON.stringify(updates.images);
+  }
+  const verifiedPurchase = updates.verifiedPurchase !== undefined
+    ? (updates.verifiedPurchase ? 1 : 0)
+    : existing.verified_purchase;
+
+  const candidateUpdates: { col: string; val: any }[] = [
+    { col: 'status', val: newStatus },
+    { col: 'approved_at', val: approvedAt },
+    { col: 'approved_by', val: approvedBy },
+    { col: 'comment', val: comment },
+    { col: 'rating', val: rating },
+    { col: 'author_name', val: authorName },
+    { col: 'images_json', val: imagesJson },
+    { col: 'verified_purchase', val: verifiedPurchase },
+  ];
+
+  const activeUpdates = candidateUpdates.filter((u) => availableColumns.has(u.col));
+  const setClauses = [...activeUpdates.map((u) => `${u.col} = ?`), 'updated_at = CURRENT_TIMESTAMP'].join(', ');
+  const bindings = [...activeUpdates.map((u) => u.val), id];
+
+  await db
+    .prepare(`UPDATE reviews SET ${setClauses} WHERE id = ?`)
+    .bind(...bindings)
+    .run();
+
+  // Recalculate product rating strictly from approved reviews!
+  await recalculateProductRatingFromApprovedReviews(db, existing.product_id);
+
+  const updatedRow = await db.prepare('SELECT * FROM reviews WHERE id = ?').bind(id).first<ReviewRow>();
+  return updatedRow ? rowToReview(updatedRow) : null;
 }
 
 /**
@@ -2519,7 +2805,11 @@ export async function verifyCustomerPurchaseInD1(
 }
 
 export async function deleteReviewFromD1(db: D1Database, id: string): Promise<boolean> {
+  const existing = await db.prepare('SELECT product_id FROM reviews WHERE id = ?').bind(id).first<{ product_id: string }>();
   const res = await db.prepare('DELETE FROM reviews WHERE id = ?').bind(id).run();
+  if (existing && existing.product_id) {
+    await recalculateProductRatingFromApprovedReviews(db, existing.product_id);
+  }
   return res.success;
 }
 

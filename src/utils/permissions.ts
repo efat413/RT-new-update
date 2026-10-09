@@ -99,6 +99,12 @@ export function hasUserPermission(
     if (permStr === 'product.update') {
       return Boolean(user.permissions['product.update']);
     }
+    if (permStr === 'review.manage' || permStr === 'canManageReviews' || permStr === 'review.moderate') {
+      return Boolean(user.permissions['review.manage'] || user.permissions['canManageReviews']);
+    }
+    if (permStr === 'review.view') {
+      return Boolean(user.permissions['review.view'] || user.permissions['review.manage'] || user.permissions['canManageReviews']);
+    }
 
     // Direct match on user.permissions
     if (permStr in user.permissions) {

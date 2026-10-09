@@ -173,7 +173,33 @@ function localApiDevPlugin(): Plugin {
   } catch {}
 
   let devCoupons: any[] = [...INITIAL_COUPONS];
-  let devReviews: any[] = [...INITIAL_REVIEWS];
+  let devReviews: any[] = INITIAL_REVIEWS.map((r) => ({
+    ...r,
+    status: r.status || 'approved',
+    source: r.source || 'customer',
+    approvedAt: r.approvedAt || r.createdAt,
+    approvedBy: r.approvedBy || 'system_migration',
+    updatedAt: r.updatedAt || r.createdAt,
+    images: r.images || [],
+  }));
+
+  function recalculateDevProductRating(productId: string) {
+    const cleanId = String(productId || '').trim();
+    if (!cleanId) return;
+    const targetProduct = devProducts.find((p) => p.id === cleanId || p.slug === cleanId);
+    const targetId = targetProduct ? targetProduct.id : cleanId;
+    const approved = devReviews.filter(
+      (r) => (r.productId === targetId || r.productId === cleanId) && (r.status === 'approved' || !r.status)
+    );
+    const reviewsCount = approved.length;
+    const avg = reviewsCount > 0
+      ? Math.round((approved.reduce((acc, curr) => acc + (Number(curr.rating) || 5), 0) / reviewsCount) * 10) / 10
+      : 5.0;
+    if (targetProduct) {
+      targetProduct.rating = avg;
+      targetProduct.reviewsCount = reviewsCount;
+    }
+  }
 
   // Resolve Super Admin identities server-side from environment variables
   // Real production Super Admin identities must NEVER be hardcoded into source code fallbacks
@@ -3288,24 +3314,46 @@ function localApiDevPlugin(): Plugin {
         if (url.pathname === '/api/reviews') {
           if (method === 'GET') {
             const productId = url.searchParams.get('productId') || undefined;
-            const filteredReviews = productId ? devReviews.filter((r) => r.productId === productId) : devReviews;
-            res.setHeader('Cache-Control', 'public, max-age=30, s-maxage=60, stale-while-revalidate=30');
+            const requestedStatus = url.searchParams.get('status') || undefined;
+
+            let allowNonApproved = false;
+            if (requestedStatus && requestedStatus !== 'approved') {
+              const authResult = requireDevAuth(req);
+              if (!authResult.error && authResult.auth && authResult.auth.role !== 'customer') {
+                const hasView = hasDevPermission(authResult.auth, 'review.view') || hasDevPermission(authResult.auth, 'review.manage');
+                if (hasView) {
+                  allowNonApproved = true;
+                }
+              }
+            }
+
+            let filteredReviews = devReviews;
+            if (productId) {
+              const targetProd = devProducts.find((p) => p.id === productId || p.slug === productId);
+              const targetId = targetProd ? targetProd.id : productId;
+              filteredReviews = filteredReviews.filter((r) => r.productId === targetId || r.productId === productId);
+            }
+
+            if (!allowNonApproved) {
+              // Public default: ONLY return approved reviews
+              filteredReviews = filteredReviews.filter((r) => (r.status === 'approved' || !r.status));
+            } else if (requestedStatus && requestedStatus !== 'all') {
+              filteredReviews = filteredReviews.filter((r) => r.status === requestedStatus);
+            }
+
+            if (!allowNonApproved) {
+              res.setHeader('Cache-Control', 'public, max-age=30, s-maxage=60, stale-while-revalidate=30');
+            } else {
+              res.setHeader('Cache-Control', 'private, no-cache, no-store');
+            }
             res.setHeader('Vary', 'Origin');
             res.statusCode = 200;
             return res.end(JSON.stringify({ success: true, count: filteredReviews.length, reviews: filteredReviews }));
           }
+
           if (method === 'POST') {
             const clientIp = ((req.headers['cf-connecting-ip'] || req.headers['x-real-ip'] || req.socket?.remoteAddress || '127.0.0.1') as string).trim();
             const reviewIpKey = `rev-ip:${clientIp}`;
-
-            // 1. IP-based rate limiting (max 5 reviews per 10 minutes)
-            if (!checkDevRateLimit(reviewIpKey, 5, 600)) {
-              res.statusCode = 429;
-              return res.end(JSON.stringify({
-                success: false,
-                error: 'Too many reviews submitted from your connection. Please wait a few minutes before submitting another.',
-              }));
-            }
 
             return readBody((body) => {
               const r = body.review || body;
@@ -3329,18 +3377,36 @@ function localApiDevPlugin(): Plugin {
                 return res.end(JSON.stringify({ success: false, error: 'Review comment must be between 3 and 1000 characters.' }));
               }
 
-              // 2. Per-product throttling (max 2 reviews per product per IP per 10 minutes)
-              const prodThrottleKey = `rev-prod:${clientIp}:${productId}`;
-              if (!checkDevRateLimit(prodThrottleKey, 2, 600)) {
-                res.statusCode = 429;
-                return res.end(JSON.stringify({
-                  success: false,
-                  error: 'You have recently reviewed this product. Please wait before submitting another review.',
-                }));
+              const authResult = requireDevAuth(req);
+              const auth = authResult.auth;
+              const isAdminCreation = Boolean(auth && auth.role !== 'customer' && (hasDevPermission(auth, 'review.manage') || auth.role === 'super_admin'));
+
+              if (!isAdminCreation) {
+                // 1. IP-based rate limiting (max 5 reviews per 10 minutes)
+                if (!checkDevRateLimit(reviewIpKey, 5, 600)) {
+                  res.statusCode = 429;
+                  return res.end(JSON.stringify({
+                    success: false,
+                    error: 'Too many reviews submitted from your connection. Please wait a few minutes before submitting another.',
+                  }));
+                }
+
+                // 2. Per-product throttling (max 2 reviews per product per IP per 10 minutes)
+                const prodThrottleKey = `rev-prod:${clientIp}:${productId}`;
+                if (!checkDevRateLimit(prodThrottleKey, 2, 600)) {
+                  res.statusCode = 429;
+                  return res.end(JSON.stringify({
+                    success: false,
+                    error: 'You have recently reviewed this product. Please wait before submitting another review.',
+                  }));
+                }
+
+                recordDevRateAttempt(reviewIpKey, 600);
+                recordDevRateAttempt(prodThrottleKey, 600);
               }
 
               // 3. Duplicate submission protection
-              const isDuplicate = devReviews.some((rev) => rev.productId === productId && rev.comment === comment);
+              const isDuplicate = devReviews.some((rev) => (rev.productId === productId || rev.productId === targetProductId) && rev.comment === comment);
               if (isDuplicate) {
                 res.statusCode = 409;
                 return res.end(JSON.stringify({
@@ -3349,20 +3415,14 @@ function localApiDevPlugin(): Plugin {
                 }));
               }
 
-              recordDevRateAttempt(reviewIpKey, 600);
-              recordDevRateAttempt(prodThrottleKey, 600);
-
-              // 4. Server-Authoritative verifiedPurchase Verification:
-              // Client cannot force verifiedPurchase: true under any circumstances.
-              // Client-provided email alone can NEVER make a review verifiedPurchase = true.
-              let isVerifiedPurchase = false;
-              const authResult = requireDevAuth(req);
-              const auth = authResult.auth;
-
               const targetProduct = devProducts.find((p) => p.id === productId || p.slug === productId);
               const targetProductId = targetProduct ? targetProduct.id : productId;
 
-              if (auth && auth.user && auth.user.id) {
+              // 4. Verified Purchase Verification
+              let isVerifiedPurchase = false;
+              if (isAdminCreation && r.verifiedPurchase !== undefined) {
+                isVerifiedPurchase = Boolean(r.verifiedPurchase);
+              } else if (auth && auth.user && auth.user.id) {
                 const authUserId = String(auth.user.id).trim();
                 const authUserEmail = String(auth.user.email || '').trim().toLowerCase();
 
@@ -3410,19 +3470,125 @@ function localApiDevPlugin(): Plugin {
                 }
               }
 
+              // Sanitize photos
+              let reviewImages: string[] = [];
+              if (Array.isArray(r.images)) {
+                reviewImages = r.images
+                  .filter((img: any) => typeof img === 'string' && img.trim().length > 0 && img.length < 2048)
+                  .slice(0, 5)
+                  .map((img: string) => img.trim());
+              }
+
+              const initialStatus = isAdminCreation && r.status ? r.status : (isAdminCreation ? 'approved' : 'pending');
+              const initialSource = isAdminCreation ? 'admin' : 'customer';
+              const now = new Date().toISOString();
+              const approvedBy = initialStatus === 'approved' ? (auth?.user?.name || auth?.user?.email || 'admin') : undefined;
+              const approvedAt = initialStatus === 'approved' ? now : undefined;
+
               const newR = {
-                id: r.id || `rev-${Date.now()}`,
+                id: r.id || `rev-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
                 productId: targetProductId,
                 authorName,
+                author: authorName,
                 rating,
                 comment,
                 verifiedPurchase: isVerifiedPurchase,
-                createdAt: r.createdAt || new Date().toISOString(),
+                status: initialStatus,
+                source: initialSource,
+                approvedAt,
+                approvedBy,
+                updatedAt: now,
+                images: reviewImages,
+                createdAt: r.createdAt || now,
+                date: new Date().toLocaleDateString('en-GB'),
               };
+
               devReviews.unshift(newR);
+
+              if (initialStatus === 'approved') {
+                recalculateDevProductRating(targetProductId);
+              }
+
               res.statusCode = 201;
               return res.end(JSON.stringify({ success: true, review: newR }));
             });
+          }
+        }
+
+        const devReviewIdMatch = url.pathname.match(/^\/api\/reviews\/([^/]+)$/);
+        if (devReviewIdMatch) {
+          const revId = decodeURIComponent(devReviewIdMatch[1]);
+          if (method === 'PATCH' || method === 'PUT') {
+            const authResult = requireDevAuth(req);
+            if (authResult.error) return sendDevError(res, authResult.error);
+            const permErr = requireDevPermission(authResult, 'review.manage');
+            if (permErr) return sendDevError(res, permErr);
+
+            return readBody((body) => {
+              const updates = body?.updates || body;
+              const existingIndex = devReviews.findIndex((rev) => rev.id === revId);
+              if (existingIndex === -1) {
+                res.statusCode = 404;
+                return res.end(JSON.stringify({ success: false, error: 'Review not found.' }));
+              }
+
+              const existing = devReviews[existingIndex];
+              const now = new Date().toISOString();
+              const newStatus = updates.status !== undefined ? updates.status : existing.status;
+              let approvedAt = existing.approvedAt;
+              let approvedBy = existing.approvedBy;
+
+              if (updates.status === 'approved' && existing.status !== 'approved') {
+                approvedAt = now;
+                approvedBy = authResult.auth?.user?.name || authResult.auth?.user?.email || 'admin';
+              } else if (updates.status === 'rejected' || updates.status === 'pending') {
+                approvedAt = undefined;
+                approvedBy = undefined;
+              }
+
+              const updatedImages = Array.isArray(updates.images)
+                ? updates.images.filter((img: any) => typeof img === 'string' && img.trim().length > 0).slice(0, 5)
+                : existing.images;
+
+              const updatedRev = {
+                ...existing,
+                status: newStatus,
+                approvedAt,
+                approvedBy,
+                updatedAt: now,
+                comment: updates.comment !== undefined ? String(updates.comment).trim() : existing.comment,
+                rating: updates.rating !== undefined ? Math.min(5, Math.max(1, Math.round(Number(updates.rating)))) : existing.rating,
+                authorName: updates.authorName !== undefined ? String(updates.authorName).trim() : existing.authorName,
+                images: updatedImages,
+                verifiedPurchase: updates.verifiedPurchase !== undefined ? Boolean(updates.verifiedPurchase) : existing.verifiedPurchase,
+              };
+
+              devReviews[existingIndex] = updatedRev;
+              recalculateDevProductRating(existing.productId);
+
+              res.statusCode = 200;
+              return res.end(JSON.stringify({ success: true, review: updatedRev }));
+            });
+          }
+
+          if (method === 'DELETE') {
+            const authResult = requireDevAuth(req);
+            if (authResult.error) return sendDevError(res, authResult.error);
+            if (authResult.auth!.role === 'customer') {
+              return sendDevError(res, { status: 403, body: { success: false, error: 'Forbidden: Customers cannot delete reviews.' } });
+            }
+            const permErr = requireDevPermission(authResult, 'review.delete');
+            if (permErr) return sendDevError(res, permErr);
+
+            const existingIndex = devReviews.findIndex((rev) => rev.id === revId);
+            if (existingIndex !== -1) {
+              const targetProductId = devReviews[existingIndex].productId;
+              devReviews.splice(existingIndex, 1);
+              recalculateDevProductRating(targetProductId);
+            }
+
+            res.statusCode = 200;
+            return res.end(JSON.stringify({ success: true, message: 'Review deleted successfully.' }));
           }
         }
 

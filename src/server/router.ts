@@ -40,8 +40,10 @@ import {
   // Reviews
   getAllReviews,
   insertReview,
+  updateReviewInD1,
   deleteReviewFromD1,
   verifyCustomerPurchaseInD1,
+  ReviewQueryFilter,
   // Users
   getAllUsers,
   getUserByEmail,
@@ -90,6 +92,8 @@ import {
   StoreSettings,
   Coupon,
   ProductReview,
+  ReviewStatus,
+  ReviewSource,
   UserAccount,
   AdminPermissions,
   UserRole,
@@ -3780,11 +3784,36 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     if (method === 'GET') {
       try {
         const productId = url.searchParams.get('productId') || undefined;
-        const reviews = await getAllReviews(env.DB, productId);
-        return jsonResponse({ success: true, count: reviews.length, reviews }, 200, {
-          'Cache-Control': 'public, max-age=30, s-maxage=60, stale-while-revalidate=30',
+        const requestedStatus = url.searchParams.get('status') || undefined;
+
+        let allowNonApproved = false;
+        if (requestedStatus && requestedStatus !== 'approved') {
+          const authCheck = await requireAuth(request, env);
+          if (!authCheck.errorResponse && authCheck.auth && authCheck.auth.role !== 'customer') {
+            const hasView = hasPermission(authCheck.auth, 'review.view') || hasPermission(authCheck.auth, 'review.manage');
+            if (hasView) {
+              allowNonApproved = true;
+            }
+          }
+        }
+
+        const filter: ReviewQueryFilter = {
+          productId,
+          status: allowNonApproved ? (requestedStatus === 'all' ? undefined : requestedStatus) : 'approved',
+          includeAllStatus: allowNonApproved && requestedStatus === 'all',
+        };
+
+        const reviews = await getAllReviews(env.DB, filter);
+        const headers: Record<string, string> = {
           'Vary': 'Origin, Accept-Encoding',
-        });
+        };
+        if (!allowNonApproved) {
+          headers['Cache-Control'] = 'public, max-age=30, s-maxage=60, stale-while-revalidate=30';
+        } else {
+          headers['Cache-Control'] = 'private, no-cache, no-store';
+        }
+
+        return jsonResponse({ success: true, count: reviews.length, reviews }, 200, headers);
       } catch (err: any) {
         console.error('Error fetching reviews:', err);
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
@@ -3796,15 +3825,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         const isDev = isDevEnvironment(env);
         const clientIp = getClientIp(request, isDev);
         const reviewIpKey = `rev-ip:${clientIp}`;
-
-        // 1. IP-based rate limiting (max 5 reviews per 10 minutes)
-        const ipCheck = await checkRateLimit(reviewIpKey, 5, 600, env.DB);
-        if (!ipCheck.allowed) {
-          return jsonResponse({
-            success: false,
-            error: 'Too many reviews submitted from your connection. Please wait a few minutes before submitting another.'
-          }, 429);
-        }
 
         const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
         if (jsonErr) return jsonErr;
@@ -3828,14 +3848,46 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           return jsonResponse({ success: false, error: 'Review comment must be between 3 and 1000 characters.' }, 400);
         }
 
-        // 2. Per-product throttling (max 2 reviews per product per IP per 10 minutes)
-        const prodThrottleKey = `rev-prod:${clientIp}:${productId}`;
-        const prodCheck = await checkRateLimit(prodThrottleKey, 2, 600, env.DB);
-        if (!prodCheck.allowed) {
-          return jsonResponse({
-            success: false,
-            error: 'You have recently reviewed this product. Please wait before submitting another review.'
-          }, 429);
+        // Check if requester is authenticated admin creating an official review
+        let isAdminCreation = false;
+        let adminUser: any = null;
+        const token = extractTokenFromRequest(request);
+        if (token) {
+          try {
+            const authRes = await requireAuth(request, env);
+            if (!authRes.errorResponse && authRes.auth && authRes.auth.role !== 'customer') {
+              if (hasPermission(authRes.auth, 'review.manage')) {
+                isAdminCreation = true;
+                adminUser = authRes.auth;
+              }
+            }
+          } catch {}
+        }
+
+        // Rate limiting applies to non-admin review submissions
+        if (!isAdminCreation) {
+          // 1. IP-based rate limiting (max 5 reviews per 10 minutes)
+          const ipCheck = await checkRateLimit(reviewIpKey, 5, 600, env.DB);
+          if (!ipCheck.allowed) {
+            return jsonResponse({
+              success: false,
+              error: 'Too many reviews submitted from your connection. Please wait a few minutes before submitting another.'
+            }, 429);
+          }
+
+          // 2. Per-product throttling (max 2 reviews per product per IP per 10 minutes)
+          const prodThrottleKey = `rev-prod:${clientIp}:${productId}`;
+          const prodCheck = await checkRateLimit(prodThrottleKey, 2, 600, env.DB);
+          if (!prodCheck.allowed) {
+            return jsonResponse({
+              success: false,
+              error: 'You have recently reviewed this product. Please wait before submitting another review.'
+            }, 429);
+          }
+
+          // Record submission attempts for rate limits
+          await recordFailedAttempt(reviewIpKey, 5, 600, env.DB);
+          await recordFailedAttempt(prodThrottleKey, 2, 600, env.DB);
         }
 
         // 3. Duplicate submission protection
@@ -3851,14 +3903,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           }
         }
 
-        // Record submission attempts for rate limits
-        await recordFailedAttempt(reviewIpKey, 5, 600, env.DB);
-        await recordFailedAttempt(prodThrottleKey, 2, 600, env.DB);
-
         // 4. Server-Authoritative verifiedPurchase Verification:
-        // Client cannot force verifiedPurchase: true under any circumstances.
+        // Client cannot force verifiedPurchase: true under any circumstances for customer submissions.
         // Client-provided email alone can NEVER make a review verifiedPurchase = true.
-        // Only server-authenticated users (or guests with strong multi-factor proof) can qualify.
         let isVerifiedPurchase = false;
         let targetProductId = productId;
 
@@ -3872,37 +3919,57 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
               }
             } catch {}
 
-            let authenticatedUserId: string | null = null;
-            let authenticatedEmail: string | null = null;
+            if (isAdminCreation && reviewData.verifiedPurchase !== undefined) {
+              isVerifiedPurchase = Boolean(reviewData.verifiedPurchase);
+            } else {
+              let authenticatedUserId: string | null = null;
+              let authenticatedEmail: string | null = null;
 
-            // Extract authoritative identity from server session (HttpOnly cookie or Bearer token)
-            const token = extractTokenFromRequest(request);
-            if (token) {
-              try {
-                const authRes = await requireAuth(request, env);
-                if (!authRes.errorResponse && authRes.auth?.dbUser) {
-                  authenticatedUserId = String(authRes.auth.dbUser.id || '').trim();
-                  authenticatedEmail = String(authRes.auth.dbUser.email || '').trim().toLowerCase();
-                }
-              } catch {}
+              if (adminUser?.dbUser) {
+                authenticatedUserId = String(adminUser.dbUser.id || '').trim();
+                authenticatedEmail = String(adminUser.dbUser.email || '').trim().toLowerCase();
+              } else if (token) {
+                try {
+                  const authRes = await requireAuth(request, env);
+                  if (!authRes.errorResponse && authRes.auth?.dbUser) {
+                    authenticatedUserId = String(authRes.auth.dbUser.id || '').trim();
+                    authenticatedEmail = String(authRes.auth.dbUser.email || '').trim().toLowerCase();
+                  }
+                } catch {}
+              }
+
+              const guestOrderNo = String(reviewData.orderNumber || reviewData.order_number || '').trim();
+              const guestPhone = String(reviewData.phone || reviewData.customerPhone || '').replace(/\D/g, '');
+
+              isVerifiedPurchase = await verifyCustomerPurchaseInD1(env.DB, {
+                authenticatedUserId,
+                authenticatedEmail,
+                guestOrderNumber: guestOrderNo,
+                guestPhone,
+                productId: targetProductId,
+              });
             }
-
-            // Client-provided email or user ID is NEVER trusted for purchase verification
-            const guestOrderNo = String(reviewData.orderNumber || reviewData.order_number || '').trim();
-            const guestPhone = String(reviewData.phone || reviewData.customerPhone || '').replace(/\D/g, '');
-
-            isVerifiedPurchase = await verifyCustomerPurchaseInD1(env.DB, {
-              authenticatedUserId,
-              authenticatedEmail,
-              guestOrderNumber: guestOrderNo,
-              guestPhone,
-              productId: targetProductId,
-            });
           } catch (vpErr) {
             console.error('[Review Error] Error determining verified purchase status in D1:', vpErr);
             isVerifiedPurchase = false;
           }
         }
+
+        // Sanitize photos metadata (array of URLs or media keys, max 5)
+        let reviewImages: string[] = [];
+        if (Array.isArray(reviewData.images)) {
+          reviewImages = reviewData.images
+            .filter((img: any) => typeof img === 'string' && img.trim().length > 0 && img.length < 2048)
+            .slice(0, 5)
+            .map((img: string) => img.trim());
+        }
+
+        // Determine moderation status and audit attribution
+        const initialStatus: ReviewStatus = isAdminCreation && reviewData.status ? reviewData.status : (isAdminCreation ? 'approved' : 'pending');
+        const initialSource: ReviewSource = isAdminCreation ? 'admin' : 'customer';
+        const now = new Date().toISOString();
+        const approvedBy = initialStatus === 'approved' ? (adminUser?.dbUser?.name || adminUser?.tokenUser?.email || 'admin') : null;
+        const approvedAt = initialStatus === 'approved' ? now : null;
 
         const created = await insertReview(env.DB, {
           productId: targetProductId,
@@ -3910,6 +3977,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           comment,
           rating,
           verifiedPurchase: isVerifiedPurchase,
+          status: initialStatus,
+          source: initialSource,
+          approvedAt,
+          approvedBy,
+          images: reviewImages,
         });
         return jsonResponse({ success: true, review: created }, 201);
       } catch (err: any) {
@@ -3920,6 +3992,49 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
   }
 
   const reviewIdMatch = path.match(/^\/api\/reviews\/([^/]+)$/);
+  if (reviewIdMatch && (method === 'PATCH' || method === 'PUT')) {
+    const revId = decodeURIComponent(reviewIdMatch[1]);
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const permErr = requirePermission(auth!, 'review.manage');
+    if (permErr) return permErr;
+
+    const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+    if (jsonErr) return jsonErr;
+
+    const updates = body?.updates || body;
+    const adminIdentifier = auth!.dbUser?.name || auth!.tokenUser?.email || 'admin';
+
+    let validatedImages: string[] | undefined = undefined;
+    if (Array.isArray(updates.images)) {
+      validatedImages = updates.images
+        .filter((img: any) => typeof img === 'string' && img.trim().length > 0 && img.length < 2048)
+        .slice(0, 5)
+        .map((img: string) => img.trim());
+    }
+
+    try {
+      const updated = await updateReviewInD1(env.DB, revId, {
+        status: updates.status,
+        approvedBy: adminIdentifier,
+        comment: updates.comment,
+        rating: updates.rating !== undefined ? Number(updates.rating) : undefined,
+        authorName: updates.authorName,
+        images: validatedImages,
+        verifiedPurchase: updates.verifiedPurchase !== undefined ? Boolean(updates.verifiedPurchase) : undefined,
+      });
+
+      if (!updated) {
+        return jsonResponse({ success: false, error: 'Review not found.' }, 404);
+      }
+
+      return jsonResponse({ success: true, review: updated });
+    } catch (err: any) {
+      logServerError({ route: path, method, error: err, action: 'review.manage' });
+      return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+    }
+  }
+
   if (reviewIdMatch && method === 'DELETE') {
     const revId = decodeURIComponent(reviewIdMatch[1]);
     const { auth, errorResponse } = await requireAuth(request, env);
@@ -3927,6 +4042,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     if (auth!.role === 'customer') {
       return jsonResponse({ success: false, error: 'Forbidden: Customers cannot delete reviews.' }, 403);
     }
+    const permErr = requirePermission(auth!, 'review.delete');
+    if (permErr) return permErr;
 
     try {
       await deleteReviewFromD1(env.DB, revId);

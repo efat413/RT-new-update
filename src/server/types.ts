@@ -208,6 +208,12 @@ export interface ReviewRow {
   comment: string;
   verified_purchase: number;
   created_at: string;
+  status?: string | null;
+  source?: string | null;
+  approved_at?: string | null;
+  approved_by?: string | null;
+  updated_at?: string | null;
+  images_json?: string | null;
 }
 
 export interface UserRow {
