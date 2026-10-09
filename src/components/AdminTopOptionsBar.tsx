@@ -62,7 +62,7 @@ export const AdminTopOptionsBar: React.FC<AdminTopOptionsBarProps> = ({
     },
     {
       id: 'orders',
-      label: 'Manage Orders',
+      label: 'Order Management',
       icon: ShoppingBag,
       badge: pendingOrdersCount > 0 ? `${pendingOrdersCount} Pending` : `${ordersCount}`,
       badgeColor: pendingOrdersCount > 0 ? 'bg-amber-500 text-white animate-pulse' : 'bg-slate-700 text-slate-300',

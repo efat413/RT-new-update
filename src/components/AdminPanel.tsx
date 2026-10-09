@@ -2964,7 +2964,7 @@ const AdminPanelContent: React.FC = () => {
                     setOrderStatusFilter('all');
                   }}
                   className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs hover:border-blue-400 hover:shadow-md transition-all cursor-pointer group"
-                  title="Click to view all orders in Manage Orders"
+                  title="Click to view all orders in Order Management"
                 >
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold text-slate-500 uppercase tracking-wider group-hover:text-blue-600 transition-colors">
@@ -3404,7 +3404,7 @@ const AdminPanelContent: React.FC = () => {
         {/* ============================================================ */}
         {activeTab === 'orders' && (
           !hasPermission('canManageOrders') ? (
-            renderPermissionRestrictedNotice('canManageOrders', 'Manage Orders')
+            renderPermissionRestrictedNotice('canManageOrders', 'Order Management')
           ) : (
           <div className="space-y-6 animate-in fade-in duration-200">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -4565,12 +4565,6 @@ const AdminPanelContent: React.FC = () => {
                           <h4 className="font-bold text-sm text-slate-800 line-clamp-1">
                             {product.title}
                           </h4>
-                          <span className="inline-block font-mono text-[10px] text-slate-400">
-                            slug: /product/{product.slug || product.id}
-                          </span>
-                          <p className="text-xs text-slate-500 line-clamp-2 leading-relaxed">
-                            {product.description}
-                          </p>
                           <div className="flex items-baseline gap-2 pt-1">
                             <span className="text-base font-bold font-display text-slate-900">
                               ৳ {product.price.toLocaleString()}
@@ -4757,7 +4751,7 @@ const AdminPanelContent: React.FC = () => {
                                 className="flex-1 py-1.5 px-3 rounded-xl bg-slate-50 border border-slate-200 text-slate-700 font-bold text-xs flex items-center justify-center gap-1 hover:bg-slate-100 transition-colors shadow-xs"
                               >
                                 <Edit2 className="w-3.5 h-3.5 text-blue-600" />
-                                <span>Edit Details</span>
+                                <span>Edit</span>
                               </button>
                               <button
                                 id={`manage-reviews-${product.id}`}

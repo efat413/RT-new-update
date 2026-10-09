@@ -175,7 +175,7 @@ export const AdminDebugTab: React.FC<AdminDebugTabProps> = ({ onNavigateTab }) =
         category: 'payment',
         severity: 'critical',
         title: `${unverifiedPayments.length} DBBL / NexusPay Payment${unverifiedPayments.length > 1 ? 's' : ''} Unverified`,
-        description: `Customer submitted transaction IDs that need manual bank reconciliation in Manage Orders.`,
+        description: `Customer submitted transaction IDs that need manual bank reconciliation in Order Management.`,
         count: unverifiedPayments.length,
         fixTab: 'orders',
         fixActionLabel: 'Verify Payments',

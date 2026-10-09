@@ -199,7 +199,7 @@ export const PERMISSIONS_METADATA: Record<PermissionKey, PermissionMetadata> = {
   'order.manage': {
     key: 'order.manage',
     group: 'Order',
-    displayName: 'Manage Orders',
+    displayName: 'Order Management',
     description: 'Edit order delivery address, recipient notes, and item quantities.',
     superAdminOnly: false,
     sensitive: false,
