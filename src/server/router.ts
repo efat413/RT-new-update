@@ -6032,7 +6032,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       if (jsonErr) return jsonErr;
 
       try {
-        const updates: Partial<Order> = body?.updates || body;
+        const updates: Partial<Order> = body?.updates || body || {};
+        if (!updates || typeof updates !== 'object') {
+          return jsonResponse({ success: false, error: 'Invalid update payload.' }, 400);
+        }
         const updateKeys = Object.keys(updates);
 
         const existing = await getOrderById(env.DB, orderId);
@@ -6302,9 +6305,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         ) {
           try {
             await insertAuditLogInD1(env.DB, {
-              actorId: auth!.dbUser?.id || auth!.tokenUser?.userId || 'admin',
-              actorEmail: auth!.dbUser?.email || auth!.tokenUser?.email || 'admin@local.test',
-              actorRole: auth!.role,
+              actorId: auth?.dbUser?.id || auth?.tokenUser?.userId || 'admin',
+              actorEmail: auth?.dbUser?.email || auth?.tokenUser?.email || 'admin@local.test',
+              actorRole: auth?.role || 'admin',
               action: 'ORDER_ADVANCE_PAYMENT_UPDATE',
               targetId: existing.id,
               targetType: 'order',
@@ -6324,9 +6327,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           }
         }
 
-        const isSuperAdmin = auth!.role === 'super_admin';
-        const canViewBuyingPrice = hasPermission(auth!, 'product.view_buying_price') || isSuperAdmin;
-        const canViewProfit = hasPermission(auth!, 'report.profit') || hasPermission(auth!, 'product.view_profit') || isSuperAdmin;
+        const isSuperAdmin = auth?.role === 'super_admin';
+        const canViewBuyingPrice = Boolean(auth && (hasPermission(auth, 'product.view_buying_price') || isSuperAdmin));
+        const canViewProfit = Boolean(auth && (hasPermission(auth, 'report.profit') || hasPermission(auth, 'product.view_profit') || isSuperAdmin));
 
         return jsonResponse({
           success: true,
@@ -7119,14 +7122,17 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         const nowIso = new Date().toISOString();
 
         // 1. Extract Steadfast delivery update parameters
-        const sfData = body?.data && typeof body.data === 'object' ? body.data : body;
-        const consignmentId = sfData?.consignment_id || sfData?.consignmentId || sfData?.cid;
-        const invoice = sfData?.invoice || sfData?.order_id || sfData?.orderId || sfData?.orderNumber;
-        const trackingCode = sfData?.tracking_code || sfData?.trackingCode || sfData?.tracking;
-        const rawStatus = sfData?.status || sfData?.delivery_status || sfData?.status_name;
+        const sfData = body?.data && typeof body.data === 'object' ? body.data : (body || {});
+        const rawCid = sfData?.consignment_id ?? sfData?.consignmentId ?? sfData?.cid;
+        const consignmentId = rawCid != null ? String(rawCid).trim() : undefined;
+        const rawInv = sfData?.invoice ?? sfData?.order_id ?? sfData?.orderId ?? sfData?.orderNumber;
+        const invoice = rawInv != null ? String(rawInv).trim() : undefined;
+        const rawTrack = sfData?.tracking_code ?? sfData?.trackingCode ?? sfData?.tracking;
+        const trackingCode = rawTrack != null ? String(rawTrack).trim() : undefined;
+        const rawStatus = sfData?.status ?? sfData?.delivery_status ?? sfData?.status_name;
 
         const eventType = String(body?.event || body?.notification_type || body?.type || body?.action || '').toLowerCase();
-        const isDummyConsignment = consignmentId === 0 || consignmentId === '0' || consignmentId === 'test' || String(invoice).toLowerCase() === 'test';
+        const isDummyConsignment = consignmentId === '0' || consignmentId === 'test' || String(invoice || '').toLowerCase() === 'test';
 
         // Check if this is a test ping (Steadfast "Test Webhook", UI tester, or trigger verification)
         const isExplicitTestPing =

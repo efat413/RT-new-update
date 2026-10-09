@@ -39,6 +39,7 @@ CREATE INDEX IF NOT EXISTS idx_products_created_at ON products(created_at);
 CREATE INDEX IF NOT EXISTS idx_products_category_created_at ON products(category_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_products_featured_created_at ON products(featured, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_products_featured_sort_order ON products(featured, featured_sort_order ASC, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_products_slug ON products(slug);
 
 -- Engine-level guard preventing race conditions from overselling below 0
@@ -306,6 +307,7 @@ CREATE TABLE IF NOT EXISTS media_assets (
 );
 
 CREATE INDEX IF NOT EXISTS idx_media_assets_created ON media_assets(created_at);
+CREATE INDEX IF NOT EXISTS idx_media_assets_created_at ON media_assets(created_at);
 
 -- ==============================================================
 -- 15. WEBHOOK REPLAYS TABLE (Webhook replay protection & deduplication)
@@ -331,6 +333,36 @@ CREATE TABLE IF NOT EXISTS product_slug_history (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_product_slug_history_slug ON product_slug_history(slug);
 CREATE INDEX IF NOT EXISTS idx_product_slug_history_product_id ON product_slug_history(product_id);
+
+-- ==============================================================
+-- 17. ORDER IDEMPOTENCY TABLE (Distributed edge idempotency & duplicate order prevention)
+-- ==============================================================
+CREATE TABLE IF NOT EXISTS order_idempotency (
+  key TEXT PRIMARY KEY,
+  order_id TEXT NOT NULL,
+  order_number TEXT NOT NULL,
+  response_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_order_idempotency_created ON order_idempotency(created_at);
+
+-- ==============================================================
+-- 18. REVIEW IMAGES TABLE (Direct Cloudflare D1 binary BLOB storage for review photos)
+-- ==============================================================
+CREATE TABLE IF NOT EXISTS review_images (
+  id TEXT PRIMARY KEY,
+  review_id TEXT,
+  product_id TEXT,
+  mime_type TEXT NOT NULL DEFAULT 'image/jpeg',
+  file_size INTEGER NOT NULL DEFAULT 0,
+  data BLOB NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_review_images_review_id ON review_images(review_id);
+CREATE INDEX IF NOT EXISTS idx_review_images_product_id ON review_images(product_id);
+CREATE INDEX IF NOT EXISTS idx_review_images_created_at ON review_images(created_at);
 
 
 

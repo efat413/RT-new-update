@@ -41,17 +41,17 @@ async function verifyD1MigrationChain() {
     .sort();
 
   console.log(`  Found ${files.length} SQL migration files in migrations/`);
-  assert(files.length === 20, `Exactly 20 migration files exist (found ${files.length})`);
+  assert(files.length === 23, `Exactly 23 migration files exist (found ${files.length})`);
 
-  // Verify sequential numbers 0001 to 0020
-  for (let i = 1; i <= 20; i++) {
+  // Verify sequential numbers 0001 to 0023
+  for (let i = 1; i <= 23; i++) {
     const prefix = String(i).padStart(4, '0');
     const matched = files.find((f) => f.startsWith(`${prefix}_`));
     assert(!!matched, `Migration with prefix ${prefix} exists: "${matched}"`);
   }
 
   // 2. Verify migration 0020 specifically
-  console.log('\n[Test 2] Verifying migration 0020_advance_payment.sql...');
+  console.log('\n[Test 2] Verifying migration 0020_advance_payment.sql & 0023_review_images_blob_storage.sql...');
   const m20 = files.find((f) => f.startsWith('0020_'));
   assert(m20 === '0020_advance_payment.sql', `Migration 0020 is "0020_advance_payment.sql" (found ${m20})`);
   const m20Content = fs.readFileSync(path.join(migrationsDir, m20!), 'utf8');
@@ -59,8 +59,14 @@ async function verifyD1MigrationChain() {
   assert(m20Content.includes('idx_orders_advance_payment'), '0020 contains advance_payment index creation');
   assert(!m20Content.toUpperCase().includes('DROP TABLE'), '0020 contains zero destructive DROP TABLE statements');
 
+  const m23 = files.find((f) => f.startsWith('0023_'));
+  assert(m23 === '0023_review_images_blob_storage.sql', `Migration 0023 is "0023_review_images_blob_storage.sql" (found ${m23})`);
+  const m23Content = fs.readFileSync(path.join(migrationsDir, m23!), 'utf8');
+  assert(m23Content.includes('CREATE TABLE IF NOT EXISTS review_images'), '0023 contains review_images table definition');
+  assert(m23Content.includes('idx_review_images_review_id'), '0023 contains review_images index creation');
+
   // 3. Inspect all migrations for non-destructiveness
-  console.log('\n[Test 3] Auditing all 20 migrations for non-destructive schema discipline...');
+  console.log('\n[Test 3] Auditing all 23 migrations for non-destructive schema discipline...');
   for (const file of files) {
     const content = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
     // Ensure no DROP TABLE
