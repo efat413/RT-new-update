@@ -541,7 +541,6 @@ export const INITIAL_REVIEWS: ProductReview[] = [
     comment: 'Authentic pure cowhide leather! RFID works as expected and stitching is top-notch. Fast delivery within Dhaka in 24 hours.',
     createdAt: '2026-03-05T14:20:00.000Z',
     verifiedPurchase: true,
-    status: 'approved',
   },
   {
     id: 'rev-2',
@@ -551,7 +550,6 @@ export const INITIAL_REVIEWS: ProductReview[] = [
     comment: 'Very slim design. Fits 8 cards easily without feeling bulky in the pocket. High quality packaging.',
     createdAt: '2026-03-08T09:15:00.000Z',
     verifiedPurchase: true,
-    status: 'approved',
   },
   {
     id: 'rev-3',
@@ -561,7 +559,6 @@ export const INITIAL_REVIEWS: ProductReview[] = [
     comment: 'Sublime finish on the watch dial. The sapphire glass is scratch-proof and looks exceptionally elegant with formal shirts.',
     createdAt: '2026-03-09T18:40:00.000Z',
     verifiedPurchase: true,
-    status: 'approved',
   },
   {
     id: 'rev-4',
@@ -571,7 +568,6 @@ export const INITIAL_REVIEWS: ProductReview[] = [
     comment: 'Active noise cancellation (ANC) works surprisingly well for the price. Deep bass and crystal clear call microphones.',
     createdAt: '2026-03-10T11:30:00.000Z',
     verifiedPurchase: true,
-    status: 'approved',
   },
   {
     id: 'rev-5',
@@ -581,7 +577,6 @@ export const INITIAL_REVIEWS: ProductReview[] = [
     comment: 'Bought this as an anniversary gift. The engraving quality and velvet packaging made it very special. Highly recommended!',
     createdAt: '2026-03-12T16:50:00.000Z',
     verifiedPurchase: true,
-    status: 'approved',
   },
 ];
 

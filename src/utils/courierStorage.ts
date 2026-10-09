@@ -171,9 +171,7 @@ export function sanitizeAllBrowserStorage(): void {
         } catch {}
       }
 
-      // 4. Purge any orphan storage entries containing credential patterns and purge legacy unmoderated reviews cache
-      storage.removeItem('rongdhonu_reviews');
-
+      // 4. Purge any orphan storage entries containing credential patterns
       const keysToRemove: string[] = [];
       for (let i = 0; i < storage.length; i++) {
         const key = storage.key(i);

@@ -131,10 +131,8 @@ export interface StorefrontContextType {
 
   reviews: ProductReview[];
   setReviews: React.Dispatch<React.SetStateAction<ProductReview[]>>;
-  addProductReview: (review: { productId: string; authorName?: string; author?: string; rating: number; comment: string; orderNumber?: string; phone?: string } | any) => Promise<{ success: boolean; message: string; review?: ProductReview; error?: string }>;
-  submitCustomerReview: (review: { productId: string; authorName?: string; author?: string; rating: number; comment: string; orderNumber?: string; phone?: string }) => Promise<{ success: boolean; message: string; review?: ProductReview; error?: string }>;
-  refreshProductReviews: (productId?: string) => Promise<void>;
-  deleteProductReview: (reviewId: string) => Promise<boolean>;
+  addProductReview: (review: Omit<ProductReview, 'id' | 'createdAt'>) => void;
+  deleteProductReview: (reviewId: string) => void;
   getProductReviews: (productId: string) => ProductReview[];
 
   orders: Order[];
@@ -652,81 +650,106 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     };
   }, [coupons]);
 
-  // Reviews (Public approved reviews loaded authoritatively from server, never stored in localStorage)
-  const [reviews, setReviews] = useState<ProductReview[]>([]);
+  // Reviews
+  const [reviews, setReviews] = useState<ProductReview[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.REVIEWS);
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
 
-  const getProductReviews = useCallback((productId: string) => {
-    return reviews.filter((r) => r.productId === productId && (r.status === 'approved' || (!r.status && !r.id.startsWith('rev-pending'))));
+  const lastSavedReviewsRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    try {
+      const data = JSON.stringify(reviews);
+      if (lastSavedReviewsRef.current === null) {
+        lastSavedReviewsRef.current = data;
+        const currentSaved = localStorage.getItem(STORAGE_KEYS.REVIEWS);
+        if (currentSaved === data) {
+          return;
+        }
+      }
+      if (lastSavedReviewsRef.current !== data) {
+        lastSavedReviewsRef.current = data;
+        localStorage.setItem(STORAGE_KEYS.REVIEWS, data);
+      }
+    } catch (e) {
+      console.error('Error saving reviews', e);
+    }
   }, [reviews]);
 
-  const refreshProductReviews = useCallback(async (productId?: string) => {
-    try {
-      const fresh = await reviewsApi.getAll(productId);
-      setReviews(fresh);
-    } catch (err) {
-      console.warn('Error refreshing reviews:', err);
-    }
-  }, []);
+  const getProductReviews = useCallback((productId: string) => {
+    return reviews.filter((r) => r.productId === productId);
+  }, [reviews]);
 
-  const submitCustomerReview = useCallback(
-    async (reviewData: {
-      productId: string;
-      authorName?: string;
-      author?: string;
-      rating: number;
-      comment: string;
-      orderNumber?: string;
-      phone?: string;
-    }): Promise<{ success: boolean; message: string; review?: ProductReview; error?: string }> => {
-      try {
-        const authorName = (reviewData.authorName || reviewData.author || 'Customer').trim();
-        const res = await reviewsApi.create({
-          productId: reviewData.productId,
-          authorName,
-          rating: reviewData.rating,
-          comment: reviewData.comment,
-          orderNumber: reviewData.orderNumber,
-          phone: reviewData.phone,
-        });
+  const addProductReview = useCallback((reviewData: Omit<ProductReview, 'id' | 'createdAt'>) => {
+    const authorName = reviewData.authorName || reviewData.author || 'Customer';
+    // Security Hardening: Use CSPRNG for collision-free review identifier
+    const revBuf = new Uint32Array(1);
+    crypto.getRandomValues(revBuf);
+    const revRand = 100 + (revBuf[0] % 900);
+    const newReview: ProductReview = {
+      ...reviewData,
+      author: authorName,
+      authorName: authorName,
+      id: `rev-${Date.now()}-${revRand}`,
+      createdAt: new Date().toISOString(),
+      date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+    };
+    const updatedReviews = [newReview, ...reviews];
+    setReviews(updatedReviews);
+    reviewsApi.create(newReview).catch(console.error);
 
-        // Review is saved with status 'pending' on the server.
-        // It does NOT leak into public review lists and does NOT alter public rating until approved.
-        return {
-          success: true,
-          message: res.message || 'Thank you! Your review has been submitted and is awaiting approval.',
-          review: res.review,
-        };
-      } catch (err: any) {
-        return {
-          success: false,
-          message: err?.message || 'Failed to submit review.',
-          error: err?.message || 'Failed to submit review.',
-        };
-      }
-    },
-    []
-  );
+    const productRevs = updatedReviews.filter((r) => r.productId === reviewData.productId);
+    const avgRating = productRevs.reduce((acc, r) => acc + r.rating, 0) / productRevs.length;
 
-  const addProductReview = submitCustomerReview;
+    setProducts((prev) =>
+      prev.map((p) =>
+        p.id === reviewData.productId
+          ? {
+              ...p,
+              rating: Number(avgRating.toFixed(1)),
+              reviewsCount: Math.max((p.reviewsCount ?? 0) + 1, productRevs.length),
+            }
+          : p
+      )
+    );
+  }, [reviews]);
 
-  const deleteProductReview = useCallback(
-    async (reviewId: string): Promise<boolean> => {
-      try {
-        await reviewsApi.delete(reviewId);
-        setReviews((prev) => prev.filter((r) => r.id !== reviewId));
-        showNotification(
-          'info',
-          'Review Removed 🗑️',
-          'The customer review has been deleted and rating score has been updated.'
-        );
-        return true;
-      } catch (err: any) {
-        showNotification('error', 'Delete Failed', err?.message || 'Could not delete review.');
-        return false;
-      }
-    },
-    [showNotification]
-  );
+  const deleteProductReview = useCallback((reviewId: string) => {
+    const target = reviews.find((r) => r.id === reviewId);
+    if (!target) return;
+    const prodId = target.productId;
+    const updatedReviews = reviews.filter((r) => r.id !== reviewId);
+    setReviews(updatedReviews);
+
+    const remainingForProduct = updatedReviews.filter((r) => r.productId === prodId);
+    const avgRating =
+      remainingForProduct.length > 0
+        ? remainingForProduct.reduce((acc, r) => acc + r.rating, 0) / remainingForProduct.length
+        : 5.0;
+
+    setProducts((prev) =>
+      prev.map((p) =>
+        p.id === prodId
+          ? {
+              ...p,
+              rating: Number(avgRating.toFixed(1)),
+              reviewsCount: Math.max(0, Math.max((p.reviewsCount ?? 0) - 1, remainingForProduct.length)),
+            }
+          : p
+      )
+    );
+
+    showNotification(
+      'info',
+      'Review Removed 🗑️',
+      'The customer review has been deleted and rating score has been updated.'
+    );
+  }, [reviews, showNotification]);
 
   // Product Loading & Sync
   const productsRef = useRef<Product[]>(products);
@@ -861,20 +884,15 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         const loadedProducts = hpData.products || [];
         setProducts(loadedProducts);
         setQuickViewProduct((prev) => (prev ? loadedProducts.find((p) => p.id === prev.id) || prev : null));
-        // Authoritatively fetch approved reviews
-        reviewsApi.getAll().then((revs) => {
-          if (Array.isArray(revs)) setReviews(revs);
-        }).catch(() => {});
         hasInitializedStoreRef.current = true;
         setIsStoreError(false);
       } else {
         // Optimized Fallback: Parallel requests; avoids 1 separate API request per category
-        const [catsRes, sldsRes, sttngsRes, prodsRes, revsRes] = await Promise.allSettled([
+        const [catsRes, sldsRes, sttngsRes, prodsRes] = await Promise.allSettled([
           categoriesApi.getAll({ force }),
           slidersApi.getAll({ force }),
           settingsApi.get({ force }),
           productsApi.getAll({ limit: 48 }),
-          reviewsApi.getAll(),
         ]);
 
         let freshCategories: Category[] = [];
@@ -892,9 +910,6 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         }
         if (sldsRes.status === 'fulfilled' && Array.isArray(sldsRes.value)) {
           setSlides(sldsRes.value);
-        }
-        if (revsRes.status === 'fulfilled' && Array.isArray(revsRes.value)) {
-          setReviews(revsRes.value);
         }
         if (sttngsRes.status === 'fulfilled' && sttngsRes.value) {
           const freshSettings = sttngsRes.value;
@@ -1531,8 +1546,6 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     reviews,
     setReviews,
     addProductReview,
-    submitCustomerReview,
-    refreshProductReviews,
     deleteProductReview,
     getProductReviews,
     orders,

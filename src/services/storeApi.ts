@@ -624,41 +624,6 @@ export const couponsApi = {
 // ==========================================
 // 6. REVIEWS API
 // ==========================================
-export interface AdminReviewsApiResponse {
-  success: boolean;
-  reviews: ProductReview[];
-  total: number;
-  page: number;
-  limit: number;
-  totalPages: number;
-  counts: {
-    all: number;
-    pending: number;
-    approved: number;
-    rejected: number;
-  };
-}
-
-export interface BatchReviewItemInput {
-  productId: string;
-  authorName: string;
-  rating: number;
-  comment: string;
-  status?: 'approved' | 'pending' | 'rejected';
-  verifiedPurchase?: boolean;
-  moderationNote?: string;
-}
-
-export interface AdminBatchReviewsResult {
-  success: boolean;
-  totalProcessed: number;
-  successfulCount: number;
-  failedCount: number;
-  reviews: ProductReview[];
-  errors: Array<{ index: number; error: string }>;
-  productAggregates?: Record<string, { rating: number; reviewsCount: number }>;
-}
-
 export const reviewsApi = {
   async getAll(productId?: string): Promise<ProductReview[]> {
     const url = new URL(`${API_BASE}/reviews`, window.location.origin);
@@ -671,126 +636,25 @@ export const reviewsApi = {
     throw new Error(res.error || 'Failed to fetch reviews. Please try again.');
   },
 
-  async create(review: Partial<ProductReview> & { orderNumber?: string; phone?: string }): Promise<{ review: ProductReview; message: string }> {
-    const res = await apiRequest<{ success: boolean; review: ProductReview; message?: string }>(`${API_BASE}/reviews`, {
+  async create(review: Partial<ProductReview>): Promise<ProductReview> {
+    const res = await apiRequest<{ success: boolean; review: ProductReview }>(`${API_BASE}/reviews`, {
       method: 'POST',
       body: JSON.stringify(review),
     });
     if (!res.success || !res.data?.review) {
       throw new Error(res.error || 'Failed to create review. Please try again.');
     }
-    return {
-      review: res.data.review,
-      message: res.data.message || 'Thank you! Your review has been submitted and is awaiting approval.',
-    };
-  },
-
-  async adminGetAll(params?: {
-    status?: string;
-    productId?: string;
-    rating?: number;
-    search?: string;
-    startDate?: string;
-    endDate?: string;
-    page?: number;
-    limit?: number;
-  }): Promise<AdminReviewsApiResponse> {
-    const url = new URL(`${API_BASE}/admin/reviews`, window.location.origin);
-    if (params?.status && params.status !== 'all') url.searchParams.set('status', params.status);
-    if (params?.productId && params.productId !== 'all') url.searchParams.set('productId', params.productId);
-    if (params?.rating) url.searchParams.set('rating', String(params.rating));
-    if (params?.search) url.searchParams.set('search', params.search);
-    if (params?.startDate) url.searchParams.set('startDate', params.startDate);
-    if (params?.endDate) url.searchParams.set('endDate', params.endDate);
-    if (params?.page) url.searchParams.set('page', String(params.page));
-    if (params?.limit) url.searchParams.set('limit', String(params.limit));
-
-    const res = await apiRequest<AdminReviewsApiResponse>(url.toString());
-    if (res.success && res.data) {
-      return res.data;
-    }
-    throw new Error(res.error || 'Failed to load reviews.');
-  },
-
-  async adminUpdateStatus(
-    id: string,
-    status: 'pending' | 'approved' | 'rejected',
-    note?: string
-  ): Promise<{ review: ProductReview; aggregate?: { rating: number; reviewsCount: number } | null }> {
-    const res = await apiRequest<{ success: boolean; review: ProductReview; aggregate?: { rating: number; reviewsCount: number } | null }>(
-      `${API_BASE}/admin/reviews/${encodeURIComponent(id)}/status`,
-      {
-        method: 'PATCH',
-        body: JSON.stringify({ status, note }),
-      }
-    );
-    if (!res.success || !res.data?.review) {
-      throw new Error(res.error || 'Failed to update review status.');
-    }
-    return { review: res.data.review, aggregate: res.data.aggregate };
-  },
-
-  async adminToggleVerified(
-    id: string,
-    verified: boolean
-  ): Promise<ProductReview> {
-    const res = await apiRequest<{ success: boolean; review: ProductReview }>(
-      `${API_BASE}/admin/reviews/${encodeURIComponent(id)}/verified`,
-      {
-        method: 'PATCH',
-        body: JSON.stringify({ verified }),
-      }
-    );
-    if (!res.success || !res.data?.review) {
-      throw new Error(res.error || 'Failed to update customer verification badge.');
-    }
     return res.data.review;
   },
 
-  async adminCreate(review: {
-    productId: string;
-    authorName: string;
-    rating: number;
-    comment: string;
-    status?: 'approved' | 'pending';
-    verifiedPurchase?: boolean;
-    moderationNote?: string;
-  }): Promise<{ review: ProductReview; aggregate?: { rating: number; reviewsCount: number } | null }> {
-    const res = await apiRequest<{ success: boolean; review: ProductReview; aggregate?: { rating: number; reviewsCount: number } | null }>(
-      `${API_BASE}/admin/reviews`,
-      {
-        method: 'POST',
-        body: JSON.stringify(review),
-      }
-    );
-    if (!res.success || !res.data?.review) {
-      throw new Error(res.error || 'Failed to create review.');
-    }
-    return { review: res.data.review, aggregate: res.data.aggregate };
-  },
-
-  async adminBatchCreate(items: BatchReviewItemInput[]): Promise<AdminBatchReviewsResult> {
-    const res = await apiRequest<AdminBatchReviewsResult>(`${API_BASE}/admin/reviews/batch`, {
-      method: 'POST',
-      body: JSON.stringify({ reviews: items }),
+  async delete(id: string): Promise<boolean> {
+    const res = await apiRequest<{ success: boolean }>(`${API_BASE}/reviews/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
     });
-    if (!res.success || !res.data) {
-      throw new Error(res.error || 'Failed to batch-create reviews.');
-    }
-    return res.data;
-  },
-
-  async delete(id: string): Promise<{ success: boolean; productId?: string; aggregate?: { rating: number; reviewsCount: number } | null }> {
-    const res = await apiRequest<{ success: boolean; productId?: string; aggregate?: { rating: number; reviewsCount: number } | null }>(
-      `${API_BASE}/reviews/${encodeURIComponent(id)}`,
-      {
-        method: 'DELETE',
-      }
-    );
     if (!res.success) {
       throw new Error(res.error || 'Failed to delete review. Please try again.');
     }
-    return { success: true, productId: res.data?.productId, aggregate: res.data?.aggregate };
+    return true;
   },
 };
 

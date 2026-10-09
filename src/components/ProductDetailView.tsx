@@ -26,7 +26,6 @@ import {
   HelpCircle,
   ExternalLink,
   AlertTriangle,
-  AlertCircle,
 } from 'lucide-react';
 import { Product } from '../types';
 import { useStore } from '../context/StoreContext';
@@ -90,8 +89,6 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
   const [reviewAuthor, setReviewAuthor] = useState('');
   const [reviewComment, setReviewComment] = useState('');
   const [reviewSuccessMsg, setReviewSuccessMsg] = useState('');
-  const [reviewErrorMsg, setReviewErrorMsg] = useState('');
-  const [isSubmittingReview, setIsSubmittingReview] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<{
     isOpen: boolean;
     title: string;
@@ -339,9 +336,8 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
   // 3. Normal Product Display
   const activeImage = imageList[selectedImageIdx] || product.imageUrl;
   const isSavedInWishlist = wishlist.includes(product.id);
-  // Storefront displays approved reviews only; pending reviews require admin moderation
   const productReviews = Array.isArray(reviews)
-    ? reviews.filter((r) => r && r.productId === product.id && (r.status === 'approved' || (!r.status && !r.id.startsWith('rev-pending'))))
+    ? reviews.filter((r) => r && r.productId === product.id)
     : [];
 
   const backendReviewsCount =
@@ -412,52 +408,21 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
     quickBuy(product, size, color);
   };
 
-  const handleReviewSubmit = async (e: React.FormEvent) => {
+  const handleReviewSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!product) return;
+    if (!product || !reviewComment.trim()) return;
 
-    const author = reviewAuthor.trim() || (currentUser?.name ? currentUser.name : 'Customer');
-    const comment = reviewComment.trim();
+    addProductReview({
+      productId: product.id,
+      authorName: reviewAuthor.trim() || 'Verified Shopper',
+      rating: reviewRating,
+      comment: reviewComment.trim(),
+      verifiedPurchase: true,
+    });
 
-    if (!comment) {
-      setReviewErrorMsg('Please write a review comment.');
-      return;
-    }
-
-    if (author.length < 2 || author.length > 60) {
-      setReviewErrorMsg('Your name must be between 2 and 60 characters.');
-      return;
-    }
-
-    if (comment.length < 3 || comment.length > 1000) {
-      setReviewErrorMsg('Review text must be between 3 and 1000 characters.');
-      return;
-    }
-
-    setIsSubmittingReview(true);
-    setReviewErrorMsg('');
-    setReviewSuccessMsg('');
-
-    try {
-      const res = await addProductReview({
-        productId: product.id,
-        authorName: author,
-        rating: reviewRating,
-        comment,
-      });
-
-      if (res.success) {
-        setReviewComment('');
-        setReviewSuccessMsg(res.message || 'Thank you! Your review has been submitted and is awaiting approval.');
-        setTimeout(() => setReviewSuccessMsg(''), 7000);
-      } else {
-        setReviewErrorMsg(res.error || res.message || 'Failed to submit review.');
-      }
-    } catch (err: any) {
-      setReviewErrorMsg(err?.message || 'Failed to submit review.');
-    } finally {
-      setIsSubmittingReview(false);
-    }
+    setReviewComment('');
+    setReviewSuccessMsg('Thank you! Your verified review has been submitted.');
+    setTimeout(() => setReviewSuccessMsg(''), 4000);
   };
 
   return (
@@ -1113,13 +1078,6 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
                     </div>
                   )}
 
-                  {reviewErrorMsg && (
-                    <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold flex items-center gap-2">
-                      <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
-                      <span>{reviewErrorMsg}</span>
-                    </div>
-                  )}
-
                   <form onSubmit={handleReviewSubmit} className="space-y-3">
                     <div>
                       <label className="block text-xs font-bold text-slate-700 mb-1">
@@ -1174,20 +1132,10 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
 
                     <button
                       type="submit"
-                      disabled={isSubmittingReview}
-                      className="w-full py-2.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-xs active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                      className="w-full py-2.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-xs active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
                     >
-                      {isSubmittingReview ? (
-                        <>
-                          <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                          <span>Submitting Review...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Send className="w-3.5 h-3.5" />
-                          <span>Submit Review</span>
-                        </>
-                      )}
+                      <Send className="w-3.5 h-3.5" />
+                      <span>Submit Review</span>
                     </button>
                   </form>
                 </div>

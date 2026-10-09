@@ -61,9 +61,6 @@ export const PERMISSION_KEYS = [
 
   // Audit Log Permission
   'audit_log.view',
-
-  // Review Moderation Permission
-  'review.manage',
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
@@ -84,8 +81,7 @@ export interface PermissionMetadata {
     | 'User / Admin'
     | 'Store'
     | 'Audit'
-    | 'Financial / Sensitive Data'
-    | 'Reviews';
+    | 'Financial / Sensitive Data';
   displayName: string;
   description: string;
   superAdminOnly: boolean;
@@ -455,17 +451,6 @@ export const PERMISSIONS_METADATA: Record<PermissionKey, PermissionMetadata> = {
     sensitive: false,
     dangerous: false,
   },
-
-  // Reviews
-  'review.manage': {
-    key: 'review.manage',
-    group: 'Reviews',
-    displayName: 'Manage Reviews',
-    description: 'Moderate customer reviews, approve, reject, manually add, and delete reviews.',
-    superAdminOnly: false,
-    sensitive: false,
-    dangerous: false,
-  },
 };
 
 /**
@@ -517,7 +502,6 @@ export const DEFAULT_ADMIN_1_PERMISSIONS: Readonly<Record<PermissionKey, boolean
 
   'settings.manage': false,
   'audit_log.view': true,
-  'review.manage': true,
 };
 
 export const DEFAULT_ADMIN_PERMISSIONS: Readonly<Record<PermissionKey, boolean>> = DEFAULT_ADMIN_1_PERMISSIONS;
@@ -571,7 +555,6 @@ export const DEFAULT_ADMIN_2_PERMISSIONS: Readonly<Record<PermissionKey, boolean
 
   'settings.manage': false,
   'audit_log.view': false,
-  'review.manage': false,
 };
 
 /**
@@ -623,7 +606,6 @@ export const DEFAULT_SUB_ADMIN_PERMISSIONS: Readonly<Record<PermissionKey, boole
 
   'settings.manage': false,
   'audit_log.view': false,
-  'review.manage': false,
 };
 
 /**
@@ -908,18 +890,6 @@ export const LEGACY_PERMISSION_MAPPINGS: Record<string, LegacyPermissionMapping>
     canonicalKey: 'coupon.manage',
     sensitivity: 'operational',
     description: 'Legacy alias for coupon update.',
-  },
-  'reviews.manage': {
-    legacyKey: 'reviews.manage',
-    canonicalKey: 'review.manage',
-    sensitivity: 'operational',
-    description: 'Plural reviews management alias.',
-  },
-  'manage_reviews': {
-    legacyKey: 'manage_reviews',
-    canonicalKey: 'review.manage',
-    sensitivity: 'operational',
-    description: 'Shorthand reviews management alias.',
   },
 };
 

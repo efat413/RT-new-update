@@ -18,7 +18,6 @@ import {
   CourierWebhookLog,
   CourierBooking,
   Coupon,
-  ProductReview,
 } from '../types';
 import { OrderQueryParams, OrderSummaryStats } from '../services/orderApi';
 
@@ -127,7 +126,7 @@ export interface AdminContextType {
   addExpense: (expense: { expenseType: ExpenseType; amount: number; date: string; note?: string }) => Promise<boolean>;
   deleteExpense: (id: string) => Promise<boolean>;
 
-  // Orders Pagination & Filters
+  // Pagination & Filters
   isOrdersLoading: boolean;
   refreshOrders: (overrideParams?: OrderQueryParams) => Promise<void>;
   orderPage: number;
@@ -139,43 +138,6 @@ export interface AdminContextType {
   orderSummary: OrderSummaryStats | null;
   orderQueryFilters: { status: string; payment: string; search: string; sortBy: string };
   setOrderQueryFilters: React.Dispatch<React.SetStateAction<{ status: string; payment: string; search: string; sortBy: string }>>;
-
-  // Reviews Moderation & Management
-  adminReviews: ProductReview[];
-  adminReviewsTotal: number;
-  adminReviewsPage: number;
-  setAdminReviewsPage: React.Dispatch<React.SetStateAction<number>>;
-  adminReviewsLimit: number;
-  setAdminReviewsLimit: React.Dispatch<React.SetStateAction<number>>;
-  adminReviewsTotalPages: number;
-  adminReviewsCounts: { all: number; pending: number; approved: number; rejected: number };
-  isAdminReviewsLoading: boolean;
-  adminReviewFilters: { status: string; productId: string; rating?: number; search: string; startDate?: string; endDate?: string };
-  setAdminReviewFilters: React.Dispatch<React.SetStateAction<{ status: string; productId: string; rating?: number; search: string; startDate?: string; endDate?: string }>>;
-  fetchAdminReviews: (overrideFilters?: any) => Promise<void>;
-  adminApproveReview: (id: string, note?: string) => Promise<{ success: boolean; review?: ProductReview; error?: string }>;
-  adminRejectReview: (id: string, note?: string) => Promise<{ success: boolean; review?: ProductReview; error?: string }>;
-  adminDeleteReview: (id: string) => Promise<{ success: boolean; error?: string }>;
-  adminToggleVerifiedReview?: (id: string, verified: boolean) => Promise<{ success: boolean; review?: ProductReview; error?: string }>;
-  adminCreateReview: (review: { productId: string; authorName: string; rating: number; comment: string; status?: 'approved' | 'pending'; verifiedPurchase?: boolean; moderationNote?: string }) => Promise<{ success: boolean; review?: ProductReview; error?: string }>;
-  reviewActionLoadingMap?: Record<string, string>;
-  adminBatchCreateReviews?: (items: Array<{
-    productId: string;
-    authorName: string;
-    rating: number;
-    comment: string;
-    status?: 'approved' | 'pending' | 'rejected';
-    verifiedPurchase?: boolean;
-    moderationNote?: string;
-  }>) => Promise<{
-    success: boolean;
-    totalProcessed?: number;
-    successfulCount?: number;
-    failedCount?: number;
-    reviews?: ProductReview[];
-    errors?: Array<{ index: number; error: string }>;
-    error?: string;
-  }>;
 }
 
 export const AdminContext = createContext<AdminContextType | null>(null);
