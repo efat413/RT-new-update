@@ -24,6 +24,9 @@ import {
   ChevronLeft,
   ChevronRight,
   Info,
+  Layers,
+  Copy,
+  PlusCircle,
 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { useAdmin } from '../context/AdminContextDefinition';
@@ -67,6 +70,43 @@ export const AdminReviewsTab: React.FC = () => {
   const [createModerationNote, setCreateModerationNote] = useState<string>('Staff Created');
   const [isSubmittingCreate, setIsSubmittingCreate] = useState(false);
   const [createFormError, setCreateFormError] = useState<string | null>(null);
+
+  // Batch Add Reviews Modal State
+  const [isBatchModalOpen, setIsBatchModalOpen] = useState(false);
+  const [batchDefaultProductId, setBatchDefaultProductId] = useState<string>('');
+  const [batchItems, setBatchItems] = useState<Array<{
+    id: string;
+    productId: string;
+    authorName: string;
+    rating: number;
+    comment: string;
+    status: 'approved' | 'pending';
+    verifiedPurchase: boolean;
+    moderationNote: string;
+  }>>([
+    {
+      id: 'batch-1',
+      productId: '',
+      authorName: 'Verified Customer',
+      rating: 5,
+      comment: 'Excellent product quality and very responsive delivery! Fully satisfied.',
+      status: 'approved',
+      verifiedPurchase: true,
+      moderationNote: 'Verified buyer batch upload',
+    },
+    {
+      id: 'batch-2',
+      productId: '',
+      authorName: 'Authentic Buyer',
+      rating: 5,
+      comment: 'Authentic item, matches description perfectly. Recommended seller!',
+      status: 'approved',
+      verifiedPurchase: true,
+      moderationNote: 'Verified buyer batch upload',
+    },
+  ]);
+  const [isSubmittingBatch, setIsSubmittingBatch] = useState(false);
+  const [batchFormError, setBatchFormError] = useState<string | null>(null);
 
   // Confirm delete modal
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -230,6 +270,125 @@ export const AdminReviewsTab: React.FC = () => {
     }
   };
 
+  const handleAddBatchRow = () => {
+    const defaultPid = batchDefaultProductId || (products[0]?.id || '');
+    setBatchItems((prev) => [
+      ...prev,
+      {
+        id: `batch-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        productId: defaultPid,
+        authorName: 'Verified Customer',
+        rating: 5,
+        comment: '',
+        status: 'approved',
+        verifiedPurchase: true,
+        moderationNote: 'Verified buyer batch upload',
+      },
+    ]);
+  };
+
+  const handleRemoveBatchRow = (rowId: string) => {
+    setBatchItems((prev) => (prev.length > 1 ? prev.filter((it) => it.id !== rowId) : prev));
+  };
+
+  const handleDuplicateBatchRow = (index: number) => {
+    setBatchItems((prev) => {
+      const target = prev[index];
+      if (!target) return prev;
+      const copy = {
+        ...target,
+        id: `batch-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      };
+      const next = [...prev];
+      next.splice(index + 1, 0, copy);
+      return next;
+    });
+  };
+
+  const handleApplyDefaultProductToAll = () => {
+    if (!batchDefaultProductId) return;
+    setBatchItems((prev) => prev.map((it) => ({ ...it, productId: batchDefaultProductId })));
+  };
+
+  const handleBatchSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!batchItems || batchItems.length === 0) {
+      setBatchFormError('At least one review row is required.');
+      return;
+    }
+
+    // Client-side pre-validation
+    for (let i = 0; i < batchItems.length; i++) {
+      const item = batchItems[i];
+      if (!item.productId) {
+        setBatchFormError(`Row #${i + 1}: Please select a product.`);
+        return;
+      }
+      if (!item.authorName.trim() || item.authorName.trim().length < 2) {
+        setBatchFormError(`Row #${i + 1}: Customer name must be at least 2 characters.`);
+        return;
+      }
+      if (!item.comment.trim() || item.comment.trim().length < 3) {
+        setBatchFormError(`Row #${i + 1}: Review text must be at least 3 characters.`);
+        return;
+      }
+    }
+
+    setIsSubmittingBatch(true);
+    setBatchFormError(null);
+
+    try {
+      if (!admin?.adminBatchCreateReviews) {
+        throw new Error('Batch review creation is not available in admin context.');
+      }
+
+      const res = await admin.adminBatchCreateReviews(
+        batchItems.map((it) => ({
+          productId: it.productId,
+          authorName: it.authorName.trim(),
+          rating: it.rating,
+          comment: it.comment.trim(),
+          status: it.status,
+          verifiedPurchase: it.verifiedPurchase,
+          moderationNote: it.moderationNote.trim() || undefined,
+        }))
+      );
+
+      if (res.success) {
+        setIsBatchModalOpen(false);
+        const defaultPid = products[0]?.id || '';
+        setBatchItems([
+          {
+            id: 'batch-1',
+            productId: defaultPid,
+            authorName: 'Verified Customer',
+            rating: 5,
+            comment: 'Excellent product quality and very responsive delivery! Fully satisfied.',
+            status: 'approved',
+            verifiedPurchase: true,
+            moderationNote: 'Verified buyer batch upload',
+          },
+          {
+            id: 'batch-2',
+            productId: defaultPid,
+            authorName: 'Satisfied Buyer',
+            rating: 5,
+            comment: 'Authentic item, matches description perfectly. Recommended seller!',
+            status: 'approved',
+            verifiedPurchase: true,
+            moderationNote: 'Verified buyer batch upload',
+          },
+        ]);
+      } else {
+        setBatchFormError(res.error || 'Failed to complete batch upload.');
+      }
+    } catch (err: any) {
+      setBatchFormError(err?.message || 'Failed to complete batch upload.');
+    } finally {
+      setIsSubmittingBatch(false);
+    }
+  };
+
   // Helper map for products
   const productMap = useMemo(() => {
     const map = new Map<string, Product>();
@@ -281,18 +440,40 @@ export const AdminReviewsTab: React.FC = () => {
           </button>
 
           {canManageReviews && (
-            <button
-              type="button"
-              id="admin-create-review-top-btn"
-              onClick={() => {
-                setCreateFormError(null);
-                setIsCreateModalOpen(true);
-              }}
-              className="px-4 py-2 rounded-xl bg-gradient-to-r from-rose-500 to-rose-600 hover:from-rose-600 hover:to-rose-700 text-white text-xs font-bold shadow-lg shadow-rose-500/20 flex items-center gap-1.5 transition-all cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Add Manual Review</span>
-            </button>
+            <>
+              <button
+                type="button"
+                id="admin-batch-create-reviews-top-btn"
+                onClick={() => {
+                  setBatchFormError(null);
+                  if (products.length > 0 && !batchDefaultProductId) {
+                    setBatchDefaultProductId(products[0].id);
+                    setBatchItems((prev) =>
+                      prev.map((it) => (it.productId ? it : { ...it, productId: products[0].id }))
+                    );
+                  }
+                  setIsBatchModalOpen(true);
+                }}
+                className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 text-white text-xs font-bold shadow-lg shadow-indigo-500/20 flex items-center gap-1.5 transition-all cursor-pointer"
+                title="Batch add multiple reviews in one step"
+              >
+                <Layers className="w-4 h-4" />
+                <span>Batch Add Reviews</span>
+              </button>
+
+              <button
+                type="button"
+                id="admin-create-review-top-btn"
+                onClick={() => {
+                  setCreateFormError(null);
+                  setIsCreateModalOpen(true);
+                }}
+                className="px-4 py-2 rounded-xl bg-gradient-to-r from-rose-500 to-rose-600 hover:from-rose-600 hover:to-rose-700 text-white text-xs font-bold shadow-lg shadow-rose-500/20 flex items-center gap-1.5 transition-all cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Add Manual Review</span>
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -494,15 +675,19 @@ export const AdminReviewsTab: React.FC = () => {
                             {canManageReviews && (
                               <button
                                 type="button"
+                                disabled={Boolean(admin?.reviewActionLoadingMap?.[r.id])}
                                 onClick={() => handleToggleVerified(r)}
-                                className={`px-1.5 py-0.5 rounded text-[9px] font-bold transition-all border cursor-pointer ${
+                                className={`px-1.5 py-0.5 rounded text-[9px] font-bold transition-all border cursor-pointer disabled:opacity-50 flex items-center gap-1 ${
                                   r.verifiedPurchase
                                     ? 'bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-700 border-slate-200 hover:border-rose-200'
                                     : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-200 hover:border-emerald-300'
                                 }`}
                                 title={r.verifiedPurchase ? 'Remove Verified Customer Badge' : 'Add Verified Customer Badge (ভেরিফাইড ব্যাজ যোগ করুন)'}
                               >
-                                {r.verifiedPurchase ? 'Remove Badge' : '+ Add Badge'}
+                                {admin?.reviewActionLoadingMap?.[r.id] === 'verified' && (
+                                  <RefreshCw className="w-2.5 h-2.5 animate-spin" />
+                                )}
+                                <span>{r.verifiedPurchase ? 'Remove Badge' : '+ Add Badge'}</span>
                               </button>
                             )}
                           </div>
@@ -614,11 +799,16 @@ export const AdminReviewsTab: React.FC = () => {
                             <button
                               type="button"
                               id={`admin-approve-review-${r.id}`}
+                              disabled={Boolean(admin?.reviewActionLoadingMap?.[r.id])}
                               onClick={() => handleOpenModerationNote(r, 'approve')}
-                              className="px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 font-bold text-[11px] flex items-center gap-1 transition-colors cursor-pointer"
+                              className="px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 font-bold text-[11px] flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-50"
                               title="Approve review (Makes public & updates rating)"
                             >
-                              <Check className="w-3.5 h-3.5 text-emerald-600" />
+                              {admin?.reviewActionLoadingMap?.[r.id] === 'approve' ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-600" />
+                              ) : (
+                                <Check className="w-3.5 h-3.5 text-emerald-600" />
+                              )}
                               <span>Approve</span>
                             </button>
                           )}
@@ -628,11 +818,16 @@ export const AdminReviewsTab: React.FC = () => {
                             <button
                               type="button"
                               id={`admin-reject-review-${r.id}`}
+                              disabled={Boolean(admin?.reviewActionLoadingMap?.[r.id])}
                               onClick={() => handleOpenModerationNote(r, 'reject')}
-                              className="px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 font-bold text-[11px] flex items-center gap-1 transition-colors cursor-pointer"
+                              className="px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 font-bold text-[11px] flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-50"
                               title="Reject review (Hides from public & removes from rating)"
                             >
-                              <X className="w-3.5 h-3.5 text-amber-600" />
+                              {admin?.reviewActionLoadingMap?.[r.id] === 'reject' ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-600" />
+                              ) : (
+                                <X className="w-3.5 h-3.5 text-amber-600" />
+                              )}
                               <span>Reject</span>
                             </button>
                           )}
@@ -642,11 +837,16 @@ export const AdminReviewsTab: React.FC = () => {
                             <button
                               type="button"
                               id={`admin-delete-review-${r.id}`}
+                              disabled={Boolean(admin?.reviewActionLoadingMap?.[r.id])}
                               onClick={() => handleDelete(r)}
-                              className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 transition-colors cursor-pointer"
+                              className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 transition-colors cursor-pointer disabled:opacity-50 flex items-center justify-center"
                               title="Delete review permanently"
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
+                              {admin?.reviewActionLoadingMap?.[r.id] === 'delete' ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin text-rose-600" />
+                              ) : (
+                                <Trash2 className="w-3.5 h-3.5" />
+                              )}
                             </button>
                           )}
                         </div>
@@ -1175,6 +1375,359 @@ export const AdminReviewsTab: React.FC = () => {
                     </>
                   )}
                 </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Batch Add Reviews Modal */}
+      {isBatchModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl max-w-4xl w-full max-h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden my-auto animate-in fade-in zoom-in-95 duration-150">
+            {/* Header */}
+            <div className="p-4 sm:p-5 border-b border-slate-100 bg-gradient-to-r from-indigo-50/70 via-white to-indigo-50/40 flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-md shadow-indigo-600/20">
+                  <Layers className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-base sm:text-lg text-slate-900 font-display flex items-center gap-2">
+                    Batch Add Verified Customer Reviews
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-indigo-100 text-indigo-700 border border-indigo-200">
+                      {batchItems.length} {batchItems.length === 1 ? 'Review' : 'Reviews'}
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Insert multiple authentic customer reviews with verified badges in a single operation.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsBatchModalOpen(false)}
+                className="p-2 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Quick Presets / Global Defaults Toolbar */}
+            <div className="px-4 sm:px-5 py-3 bg-slate-50/80 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3 shrink-0 text-xs">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-semibold text-slate-600 flex items-center gap-1.5">
+                  <Package className="w-3.5 h-3.5 text-slate-400" />
+                  Quick Default Product:
+                </span>
+                <select
+                  value={batchDefaultProductId}
+                  onChange={(e) => setBatchDefaultProductId(e.target.value)}
+                  className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-500 max-w-xs"
+                >
+                  <option value="">Select product to quick-fill...</option>
+                  {products.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.title}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={handleApplyDefaultProductToAll}
+                  disabled={!batchDefaultProductId}
+                  className="px-2.5 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-bold text-[11px] disabled:opacity-40 transition-colors cursor-pointer"
+                >
+                  Apply to All Rows
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleAddBatchRow}
+                  className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[11px] shadow-sm flex items-center gap-1 transition-colors cursor-pointer"
+                >
+                  <PlusCircle className="w-3.5 h-3.5" />
+                  <span>Add Another Row</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Scrollable Form Body */}
+            <form onSubmit={handleBatchSubmit} className="flex flex-col flex-1 overflow-hidden">
+              <div className="p-4 sm:p-5 overflow-y-auto space-y-4 flex-1">
+                {batchFormError && (
+                  <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
+                    <span>{batchFormError}</span>
+                  </div>
+                )}
+
+                {batchItems.map((item, idx) => (
+                  <div
+                    key={item.id}
+                    className="p-4 rounded-xl border border-slate-200 bg-white shadow-sm hover:border-slate-300 transition-all space-y-3"
+                  >
+                    <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                      <div className="flex items-center gap-2">
+                        <span className="w-6 h-6 rounded-full bg-indigo-100 text-indigo-700 font-bold text-xs flex items-center justify-center">
+                          {idx + 1}
+                        </span>
+                        <span className="font-bold text-xs text-slate-800">
+                          Review #{idx + 1}
+                        </span>
+                        {item.verifiedPurchase && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            <ShieldCheck className="w-3 h-3 text-emerald-600" />
+                            Verified Customer
+                          </span>
+                        )}
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                            item.status === 'approved'
+                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                              : 'bg-amber-50 text-amber-700 border border-amber-200'
+                          }`}
+                        >
+                          {item.status === 'approved' ? 'Approved (Live)' : 'Pending'}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleDuplicateBatchRow(idx)}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 text-xs flex items-center gap-1 transition-colors cursor-pointer"
+                          title="Duplicate this row"
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                          <span className="text-[11px] hidden sm:inline">Duplicate</span>
+                        </button>
+                        {batchItems.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveBatchRow(item.id)}
+                            className="p-1.5 rounded-lg text-rose-400 hover:text-rose-600 hover:bg-rose-50 text-xs flex items-center gap-1 transition-colors cursor-pointer"
+                            title="Remove this row"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span className="text-[11px] hidden sm:inline">Remove</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Row Form Grid */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+                      {/* Product Selection */}
+                      <div className="lg:col-span-2">
+                        <label className="block font-semibold text-slate-700 mb-1">
+                          Product *
+                        </label>
+                        <select
+                          value={item.productId}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setBatchItems((prev) =>
+                              prev.map((it) => (it.id === item.id ? { ...it, productId: val } : it))
+                            );
+                          }}
+                          required
+                          className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-slate-800 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-xs"
+                        >
+                          <option value="">-- Choose Product --</option>
+                          {products.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.title}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Author Name */}
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">
+                          Customer Name *
+                        </label>
+                        <input
+                          type="text"
+                          value={item.authorName}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setBatchItems((prev) =>
+                              prev.map((it) => (it.id === item.id ? { ...it, authorName: val } : it))
+                            );
+                          }}
+                          required
+                          placeholder="e.g. Tanvir Ahmed"
+                          className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-slate-800 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-xs"
+                        />
+                      </div>
+
+                      {/* Rating */}
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">
+                          Rating (1-5) *
+                        </label>
+                        <div className="flex items-center gap-1">
+                          {[1, 2, 3, 4, 5].map((star) => (
+                            <button
+                              key={star}
+                              type="button"
+                              onClick={() => {
+                                setBatchItems((prev) =>
+                                  prev.map((it) => (it.id === item.id ? { ...it, rating: star } : it))
+                                );
+                              }}
+                              className={`p-1.5 rounded-lg border transition-colors cursor-pointer ${
+                                item.rating >= star
+                                  ? 'bg-amber-50 border-amber-300 text-amber-500'
+                                  : 'bg-slate-50 border-slate-200 text-slate-300'
+                              }`}
+                            >
+                              <Star className={`w-3.5 h-3.5 ${item.rating >= star ? 'fill-amber-400' : ''}`} />
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Review Comment */}
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1 text-xs">
+                        Review Content *
+                      </label>
+                      <textarea
+                        value={item.comment}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setBatchItems((prev) =>
+                            prev.map((it) => (it.id === item.id ? { ...it, comment: val } : it))
+                          );
+                        }}
+                        rows={2}
+                        required
+                        placeholder="Authentic feedback, fabric quality notes, delivery experience..."
+                        className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-slate-800 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-xs"
+                      />
+                    </div>
+
+                    {/* Footer toggles for the row */}
+                    <div className="flex flex-wrap items-center justify-between gap-3 pt-2 text-xs border-t border-slate-50">
+                      <div className="flex items-center gap-4 flex-wrap">
+                        {/* Verified Toggle */}
+                        <label className="flex items-center gap-2 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={item.verifiedPurchase}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              setBatchItems((prev) =>
+                                prev.map((it) => (it.id === item.id ? { ...it, verifiedPurchase: checked } : it))
+                              );
+                            }}
+                            className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 border-slate-300 cursor-pointer"
+                          />
+                          <span className="font-semibold text-slate-700 flex items-center gap-1">
+                            <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                            Verified Customer
+                          </span>
+                        </label>
+
+                        {/* Status Toggle */}
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-slate-700">Status:</span>
+                          <label className="flex items-center gap-1 cursor-pointer">
+                            <input
+                              type="radio"
+                              name={`status-${item.id}`}
+                              value="approved"
+                              checked={item.status === 'approved'}
+                              onChange={() => {
+                                setBatchItems((prev) =>
+                                  prev.map((it) => (it.id === item.id ? { ...it, status: 'approved' } : it))
+                                );
+                              }}
+                              className="text-emerald-600 focus:ring-emerald-500"
+                            />
+                            <span className="text-slate-600">Approved</span>
+                          </label>
+                          <label className="flex items-center gap-1 cursor-pointer">
+                            <input
+                              type="radio"
+                              name={`status-${item.id}`}
+                              value="pending"
+                              checked={item.status === 'pending'}
+                              onChange={() => {
+                                setBatchItems((prev) =>
+                                  prev.map((it) => (it.id === item.id ? { ...it, status: 'pending' } : it))
+                                );
+                              }}
+                              className="text-amber-600 focus:ring-amber-500"
+                            />
+                            <span className="text-slate-600">Pending</span>
+                          </label>
+                        </div>
+                      </div>
+
+                      {/* Moderation note */}
+                      <div className="flex items-center gap-1.5 flex-1 max-w-xs">
+                        <input
+                          type="text"
+                          value={item.moderationNote}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setBatchItems((prev) =>
+                              prev.map((it) => (it.id === item.id ? { ...it, moderationNote: val } : it))
+                            );
+                          }}
+                          placeholder="Note (optional)"
+                          className="w-full px-2 py-1 rounded border border-slate-200 text-[11px] text-slate-600 focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Modal Footer */}
+              <div className="p-4 sm:p-5 border-t border-slate-100 bg-slate-50 flex items-center justify-between gap-3 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleAddBatchRow}
+                  className="px-3.5 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <Plus className="w-4 h-4 text-slate-500" />
+                  <span>Add Another Row</span>
+                </button>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsBatchModalOpen(false)}
+                    className="px-4 py-2 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-xs transition-colors cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    id="admin-submit-batch-reviews-btn"
+                    disabled={isSubmittingBatch}
+                    className="px-5 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 text-white font-bold text-xs shadow-md shadow-indigo-600/20 transition-all flex items-center gap-2 disabled:opacity-50 cursor-pointer"
+                  >
+                    {isSubmittingBatch ? (
+                      <>
+                        <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        <span>Uploading {batchItems.length} Reviews...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Check className="w-4 h-4" />
+                        <span>Submit Batch ({batchItems.length} Reviews)</span>
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
             </form>
           </div>

@@ -639,6 +639,26 @@ export interface AdminReviewsApiResponse {
   };
 }
 
+export interface BatchReviewItemInput {
+  productId: string;
+  authorName: string;
+  rating: number;
+  comment: string;
+  status?: 'approved' | 'pending' | 'rejected';
+  verifiedPurchase?: boolean;
+  moderationNote?: string;
+}
+
+export interface AdminBatchReviewsResult {
+  success: boolean;
+  totalProcessed: number;
+  successfulCount: number;
+  failedCount: number;
+  reviews: ProductReview[];
+  errors: Array<{ index: number; error: string }>;
+  productAggregates?: Record<string, { rating: number; reviewsCount: number }>;
+}
+
 export const reviewsApi = {
   async getAll(productId?: string): Promise<ProductReview[]> {
     const url = new URL(`${API_BASE}/reviews`, window.location.origin);
@@ -696,8 +716,8 @@ export const reviewsApi = {
     id: string,
     status: 'pending' | 'approved' | 'rejected',
     note?: string
-  ): Promise<ProductReview> {
-    const res = await apiRequest<{ success: boolean; review: ProductReview }>(
+  ): Promise<{ review: ProductReview; aggregate?: { rating: number; reviewsCount: number } | null }> {
+    const res = await apiRequest<{ success: boolean; review: ProductReview; aggregate?: { rating: number; reviewsCount: number } | null }>(
       `${API_BASE}/admin/reviews/${encodeURIComponent(id)}/status`,
       {
         method: 'PATCH',
@@ -707,7 +727,7 @@ export const reviewsApi = {
     if (!res.success || !res.data?.review) {
       throw new Error(res.error || 'Failed to update review status.');
     }
-    return res.data.review;
+    return { review: res.data.review, aggregate: res.data.aggregate };
   },
 
   async adminToggleVerified(
@@ -735,25 +755,42 @@ export const reviewsApi = {
     status?: 'approved' | 'pending';
     verifiedPurchase?: boolean;
     moderationNote?: string;
-  }): Promise<ProductReview> {
-    const res = await apiRequest<{ success: boolean; review: ProductReview }>(`${API_BASE}/admin/reviews`, {
-      method: 'POST',
-      body: JSON.stringify(review),
-    });
+  }): Promise<{ review: ProductReview; aggregate?: { rating: number; reviewsCount: number } | null }> {
+    const res = await apiRequest<{ success: boolean; review: ProductReview; aggregate?: { rating: number; reviewsCount: number } | null }>(
+      `${API_BASE}/admin/reviews`,
+      {
+        method: 'POST',
+        body: JSON.stringify(review),
+      }
+    );
     if (!res.success || !res.data?.review) {
       throw new Error(res.error || 'Failed to create review.');
     }
-    return res.data.review;
+    return { review: res.data.review, aggregate: res.data.aggregate };
   },
 
-  async delete(id: string): Promise<boolean> {
-    const res = await apiRequest<{ success: boolean }>(`${API_BASE}/reviews/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
+  async adminBatchCreate(items: BatchReviewItemInput[]): Promise<AdminBatchReviewsResult> {
+    const res = await apiRequest<AdminBatchReviewsResult>(`${API_BASE}/admin/reviews/batch`, {
+      method: 'POST',
+      body: JSON.stringify({ reviews: items }),
     });
+    if (!res.success || !res.data) {
+      throw new Error(res.error || 'Failed to batch-create reviews.');
+    }
+    return res.data;
+  },
+
+  async delete(id: string): Promise<{ success: boolean; productId?: string; aggregate?: { rating: number; reviewsCount: number } | null }> {
+    const res = await apiRequest<{ success: boolean; productId?: string; aggregate?: { rating: number; reviewsCount: number } | null }>(
+      `${API_BASE}/reviews/${encodeURIComponent(id)}`,
+      {
+        method: 'DELETE',
+      }
+    );
     if (!res.success) {
       throw new Error(res.error || 'Failed to delete review. Please try again.');
     }
-    return true;
+    return { success: true, productId: res.data?.productId, aggregate: res.data?.aggregate };
   },
 };
 

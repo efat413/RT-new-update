@@ -41,10 +41,12 @@ import {
   getAllReviews,
   getAdminReviews,
   insertReview,
+  insertBatchReviewsInD1,
   updateReviewStatusInD1,
   updateReviewVerifiedStatusInD1,
   deleteReviewFromD1,
   verifyCustomerPurchaseInD1,
+  recalculateProductReviewAggregates,
   // Users
   getAllUsers,
   getUserByEmail,
@@ -3875,11 +3877,69 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           });
         } catch {}
 
-        return jsonResponse({ success: true, review: created }, 201);
+        return jsonResponse({
+          success: true,
+          review: created,
+          aggregate: (created as any)?.aggregate || null,
+        }, 201);
       } catch (err: any) {
         logServerError({ route: path, method, error: err, action: 'admin.reviews.create' });
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
       }
+    }
+  }
+
+  // 6.1b Batch Review Creation Endpoint (Admin batch add with server validation and aggregate sync)
+  if ((path === '/api/admin/reviews/batch' || path === '/api/admin/reviews/batch/') && method === 'POST') {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    if (!hasPermission(auth!, 'review.manage')) {
+      return jsonResponse({ success: false, error: 'Forbidden: Insufficient review management permissions.' }, 403);
+    }
+
+    try {
+      const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+      if (jsonErr) return jsonErr;
+
+      const items = Array.isArray(body?.reviews) ? body.reviews : (Array.isArray(body) ? body : []);
+      if (!items || items.length === 0) {
+        return jsonResponse({ success: false, error: 'No review items provided in batch payload.' }, 400);
+      }
+
+      if (items.length > 50) {
+        return jsonResponse({ success: false, error: 'Batch size exceeds maximum limit of 50 reviews.' }, 400);
+      }
+
+      const batchResult = await insertBatchReviewsInD1(env.DB, items, auth!.dbUser.id);
+
+      // Audit log entry
+      try {
+        const isDev = isDevEnvironment(env);
+        const clientIp = getClientIp(request, isDev);
+        await insertAuditLogInD1(env.DB, {
+          actorId: auth!.dbUser.id,
+          actorEmail: auth!.dbUser.email,
+          actorRole: auth!.role,
+          action: 'REVIEW_BATCH_CREATED',
+          targetId: `batch-${Date.now()}`,
+          targetType: 'review',
+          details: `Batch-created ${batchResult.successfulCount} reviews (${batchResult.failedCount} failed)`,
+          ipAddress: clientIp,
+        });
+      } catch {}
+
+      return jsonResponse({
+        success: true,
+        totalProcessed: batchResult.totalProcessed,
+        successfulCount: batchResult.successfulCount,
+        failedCount: batchResult.failedCount,
+        reviews: batchResult.createdReviews,
+        errors: batchResult.errors,
+        productAggregates: batchResult.affectedProductAggregates,
+      }, 201);
+    } catch (err: any) {
+      logServerError({ route: path, method, error: err, action: 'admin.reviews.batch' });
+      return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
     }
   }
 
@@ -3931,7 +3991,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         });
       } catch {}
 
-      return jsonResponse({ success: true, review: updated });
+      return jsonResponse({
+        success: true,
+        review: updated,
+        aggregate: (updated as any)?.aggregate || null,
+      });
     } catch (err: any) {
       logServerError({ route: path, method, error: err, action: 'review.moderate' });
       return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
@@ -4156,7 +4220,22 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     }
 
     try {
+      let targetProductId: string | undefined = undefined;
+      if (env.DB) {
+        try {
+          const revRow = await env.DB.prepare('SELECT product_id FROM reviews WHERE id = ?').bind(revId).first<{ product_id: string }>();
+          if (revRow?.product_id) targetProductId = revRow.product_id;
+        } catch {}
+      }
+
       await deleteReviewFromD1(env.DB, revId);
+
+      let aggregate: { rating: number; reviewsCount: number } | null = null;
+      if (targetProductId && env.DB) {
+        try {
+          aggregate = await recalculateProductReviewAggregates(env.DB, targetProductId);
+        } catch {}
+      }
 
       // Record deletion in audit logs
       try {
@@ -4174,7 +4253,12 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         });
       } catch {}
 
-      return jsonResponse({ success: true, message: `Review deleted successfully.` });
+      return jsonResponse({
+        success: true,
+        message: `Review deleted successfully.`,
+        productId: targetProductId,
+        aggregate,
+      });
     } catch (err: any) {
       logServerError({ route: path, method, error: err, action: 'review.delete' });
       return jsonResponse({ success: false, error: 'Internal server error.' }, 500);

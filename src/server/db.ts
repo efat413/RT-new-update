@@ -2441,17 +2441,14 @@ export async function recalculateProductReviewAggregates(
     try {
       const revRes = await db
         .prepare(
-          "SELECT rating FROM reviews WHERE product_id = ? AND (status = 'approved' OR status IS NULL OR status = '')"
+          "SELECT rating FROM reviews WHERE product_id = ? AND status = 'approved'"
         )
         .bind(productId)
         .all<{ rating: number }>();
       approvedRows = revRes.results || [];
-    } catch {
-      const revRes = await db
-        .prepare("SELECT rating FROM reviews WHERE product_id = ?")
-        .bind(productId)
-        .all<{ rating: number }>();
-      approvedRows = revRes.results || [];
+    } catch (err) {
+      console.warn('[recalculateProductReviewAggregates]: Could not query approved reviews for product:', productId, err);
+      approvedRows = [];
     }
 
     const prod = await db
@@ -2491,7 +2488,9 @@ export async function recalculateProductReviewAggregates(
  * Filtering happens on the server to prevent pending or rejected reviews from leaking.
  */
 export async function getAllReviews(db: D1Database, productId?: string): Promise<ProductReview[]> {
-  let query = `SELECT ${PUBLIC_REVIEW_COLUMNS} FROM reviews WHERE (status = 'approved' OR status IS NULL OR status = '')`;
+  // Public review retrieval: strictly returns ONLY approved reviews!
+  // Pending and rejected reviews are NEVER exposed to the public.
+  let query = `SELECT ${PUBLIC_REVIEW_COLUMNS} FROM reviews WHERE status = 'approved'`;
   const bindings: any[] = [];
 
   if (productId) {
@@ -2506,21 +2505,9 @@ export async function getAllReviews(db: D1Database, productId?: string): Promise
     const result = await bound.all<ReviewRow>();
     return (result.results || []).map(rowToPublicReview);
   } catch (err: any) {
-    // Graceful backward compatibility fallback if status column is not yet present
-    if (err?.message?.includes('no such column') || err?.message?.includes('status')) {
-      let legacyQuery = `SELECT ${PUBLIC_REVIEW_COLUMNS} FROM reviews`;
-      const legacyBindings: any[] = [];
-      if (productId) {
-        legacyQuery += ' WHERE product_id = ?';
-        legacyBindings.push(productId);
-      }
-      legacyQuery += ' ORDER BY created_at DESC';
-      const stmt = db.prepare(legacyQuery);
-      const bound = legacyBindings.length > 0 ? stmt.bind(...legacyBindings) : stmt;
-      const result = await bound.all<ReviewRow>();
-      return (result.results || []).map(rowToPublicReview);
-    }
-    throw err;
+    // Fail-closed security protection: never expose unmoderated or pending reviews
+    console.error('[getAllReviews Error]: Failed to query approved reviews:', err);
+    return [];
   }
 }
 
@@ -2722,9 +2709,10 @@ export async function insertReview(db: D1Database, input: any): Promise<ProductR
   }
 
   // If immediately approved (e.g. by admin), update product aggregates
+  let aggregate: { rating: number; reviewsCount: number } | null = null;
   if (status === 'approved') {
     try {
-      await recalculateProductReviewAggregates(db, productId);
+      aggregate = await recalculateProductReviewAggregates(db, productId);
     } catch (aggErr) {
       console.warn('Failed to update aggregates on review insert:', aggErr);
     }
@@ -2751,9 +2739,11 @@ export async function insertReview(db: D1Database, input: any): Promise<ProductR
       moderationNote: moderationNote || undefined,
       createdByAdmin: Boolean(createdByAdmin),
       createdAt,
-    };
+      aggregate,
+    } as any;
   }
-  return rowToReview(row);
+  const rev = rowToReview(row);
+  return { ...rev, aggregate } as any;
 }
 
 /**
@@ -2766,7 +2756,7 @@ export async function updateReviewStatusInD1(
   newStatus: 'pending' | 'approved' | 'rejected',
   moderatorId?: string,
   note?: string
-): Promise<ProductReview | null> {
+): Promise<(ProductReview & { aggregate?: { rating: number; reviewsCount: number } | null }) | null> {
   const existing = await db.prepare('SELECT * FROM reviews WHERE id = ?').bind(id).first<ReviewRow>();
   if (!existing) return null;
 
@@ -2779,7 +2769,7 @@ export async function updateReviewStatusInD1(
     .run();
 
   // Recalculate aggregates for the product so public rating & counts reflect approval or rejection
-  await recalculateProductReviewAggregates(db, existing.product_id);
+  const aggregate = await recalculateProductReviewAggregates(db, existing.product_id);
 
   let updated: any = null;
   try {
@@ -2787,7 +2777,155 @@ export async function updateReviewStatusInD1(
   } catch {
     updated = await db.prepare(`SELECT ${PUBLIC_REVIEW_COLUMNS} FROM reviews WHERE id = ?`).bind(id).first<ReviewRow>();
   }
-  return updated ? rowToReview(updated) : null;
+  if (!updated) return null;
+  const rev = rowToReview(updated);
+  return { ...rev, aggregate };
+}
+
+export interface BatchReviewInputItem {
+  productId: string;
+  authorName: string;
+  rating: number;
+  comment: string;
+  status?: 'approved' | 'pending' | 'rejected';
+  verifiedPurchase?: boolean;
+  moderationNote?: string;
+}
+
+export interface BatchReviewResult {
+  totalProcessed: number;
+  successfulCount: number;
+  failedCount: number;
+  createdReviews: ProductReview[];
+  errors: Array<{ index: number; error: string }>;
+  affectedProductAggregates: Record<string, { rating: number; reviewsCount: number }>;
+}
+
+/**
+ * Batch-inserts multiple reviews in Cloudflare D1 with transactional safety,
+ * server validation, and targeted product aggregate recalculation.
+ */
+export async function insertBatchReviewsInD1(
+  db: D1Database,
+  items: BatchReviewInputItem[],
+  moderatorId: string
+): Promise<BatchReviewResult> {
+  const result: BatchReviewResult = {
+    totalProcessed: Array.isArray(items) ? items.length : 0,
+    successfulCount: 0,
+    failedCount: 0,
+    createdReviews: [],
+    errors: [],
+    affectedProductAggregates: {},
+  };
+
+  if (!Array.isArray(items) || items.length === 0) {
+    return result;
+  }
+
+  const affectedProductIds = new Set<string>();
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    try {
+      const productId = String(item.productId || '').trim();
+      const authorName = String(item.authorName || '').trim();
+      const comment = String(item.comment || '').trim();
+      const rating = Math.min(5, Math.max(1, Math.round(Number(item.rating) || 5)));
+      const rawStatus = String(item.status || 'approved').toLowerCase().trim();
+      const status: 'approved' | 'pending' | 'rejected' =
+        rawStatus === 'pending' ? 'pending' : (rawStatus === 'rejected' ? 'rejected' : 'approved');
+      const verifiedPurchase = Boolean(item.verifiedPurchase);
+      const moderationNote = item.moderationNote ? String(item.moderationNote).slice(0, 250) : 'Batch created by staff';
+
+      if (!productId || !authorName || !comment) {
+        result.failedCount++;
+        result.errors.push({ index: i, error: 'Product, author name, and comment are required.' });
+        continue;
+      }
+
+      if (authorName.length < 2 || authorName.length > 60) {
+        result.failedCount++;
+        result.errors.push({ index: i, error: 'Author name must be between 2 and 60 characters.' });
+        continue;
+      }
+
+      if (comment.length < 3 || comment.length > 1000) {
+        result.failedCount++;
+        result.errors.push({ index: i, error: 'Comment must be between 3 and 1000 characters.' });
+        continue;
+      }
+
+      // Check product existence
+      const prod = await getProductById(db, productId);
+      if (!prod) {
+        result.failedCount++;
+        result.errors.push({ index: i, error: `Product "${productId}" not found.` });
+        continue;
+      }
+
+      const id = `rev-batch-${Date.now()}-${i}-${Math.floor(Math.random() * 1000)}`;
+      const createdAt = new Date().toISOString();
+      const moderatedAt = status === 'approved' ? createdAt : null;
+
+      await db
+        .prepare(`
+          INSERT INTO reviews (id, product_id, author_name, rating, comment, verified_purchase, status, moderator_id, moderated_at, moderation_note, created_by_admin, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .bind(
+          id,
+          prod.id,
+          authorName,
+          rating,
+          comment,
+          verifiedPurchase ? 1 : 0,
+          status,
+          moderatorId,
+          moderatedAt,
+          moderationNote,
+          1,
+          createdAt
+        )
+        .run();
+
+      const created: ProductReview = {
+        id,
+        productId: prod.id,
+        authorName,
+        rating,
+        comment,
+        verifiedPurchase,
+        status,
+        moderatorId,
+        moderatedAt: moderatedAt || undefined,
+        moderationNote,
+        createdByAdmin: true,
+        createdAt,
+      };
+
+      result.createdReviews.push(created);
+      result.successfulCount++;
+      affectedProductIds.add(prod.id);
+    } catch (itemErr: any) {
+      result.failedCount++;
+      result.errors.push({ index: i, error: itemErr?.message || 'Database insert failed' });
+    }
+  }
+
+  // Recalculate aggregates for all affected products exactly once
+  for (const prodId of affectedProductIds) {
+    try {
+      const agg = await recalculateProductReviewAggregates(db, prodId);
+      if (agg) {
+        result.affectedProductAggregates[prodId] = agg;
+      }
+    } catch (aggErr) {
+      console.warn(`[insertBatchReviewsInD1]: Failed to update aggregates for product ${prodId}:`, aggErr);
+    }
+  }
+
+  return result;
 }
 
 /**

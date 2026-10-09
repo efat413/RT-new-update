@@ -1439,7 +1439,63 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     search: '',
   });
 
+  // Targeted request concurrency and stale-response guard
+  const fetchReviewSequenceRef = useRef<number>(0);
+  const [reviewActionLoadingMap, setReviewActionLoadingMap] = useState<Record<string, string>>({});
+
+  const setReviewLoading = useCallback((id: string, action?: string) => {
+    setReviewActionLoadingMap((prev) => {
+      if (!action) {
+        if (!prev[id]) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      }
+      return { ...prev, [id]: action };
+    });
+  }, []);
+
+  // Targeted helper: Synchronize product ratings and review count across all in-memory storefront states
+  // Eliminates excessive full store data refreshes while keeping ratings immediately synchronized
+  const updateProductAggregatesInState = useCallback((
+    productId: string,
+    aggregate: { rating: number; reviewsCount: number }
+  ) => {
+    if (!productId || !aggregate) return;
+    setProducts((prev) =>
+      prev.map((p) => (p.id === productId ? { ...p, rating: aggregate.rating, reviewsCount: aggregate.reviewsCount } : p))
+    );
+    setFeaturedProducts((prev) =>
+      prev.map((p) => (p.id === productId ? { ...p, rating: aggregate.rating, reviewsCount: aggregate.reviewsCount } : p))
+    );
+    setSingleProduct((prev) =>
+      prev && prev.id === productId ? { ...prev, rating: aggregate.rating, reviewsCount: aggregate.reviewsCount } : prev
+    );
+    setQuickViewProduct((prev) =>
+      prev && prev.id === productId ? { ...prev, rating: aggregate.rating, reviewsCount: aggregate.reviewsCount } : prev
+    );
+    setCategoryListingProducts((prev) =>
+      prev.map((p) => (p.id === productId ? { ...p, rating: aggregate.rating, reviewsCount: aggregate.reviewsCount } : p))
+    );
+    setHomepageCategoryProducts((prev) => {
+      let changed = false;
+      const next: Record<string, Product[]> = {};
+      for (const [catId, prods] of Object.entries(prev)) {
+        if (!Array.isArray(prods)) continue;
+        next[catId] = prods.map((p) => {
+          if (p.id === productId) {
+            changed = true;
+            return { ...p, rating: aggregate.rating, reviewsCount: aggregate.reviewsCount };
+          }
+          return p;
+        });
+      }
+      return changed ? next : prev;
+    });
+  }, [setProducts, setFeaturedProducts, setSingleProduct, setQuickViewProduct, setCategoryListingProducts, setHomepageCategoryProducts]);
+
   const fetchAdminReviews = useCallback(async (overrideFilters?: any) => {
+    const sequence = ++fetchReviewSequenceRef.current;
     setIsAdminReviewsLoading(true);
     try {
       const activeFilters = { ...adminReviewFilters, ...(overrideFilters || {}) };
@@ -1454,6 +1510,11 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         limit: overrideFilters?.limit ?? adminReviewsLimit,
       });
 
+      // Stale response guard: discard if a newer query has resolved or was issued
+      if (sequence !== fetchReviewSequenceRef.current) {
+        return;
+      }
+
       setAdminReviews(res.reviews || []);
       setAdminReviewsTotal(res.total || 0);
       setAdminReviewsPage(res.page || 1);
@@ -1463,64 +1524,103 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setAdminReviewsCounts(res.counts);
       }
     } catch (err: any) {
-      console.error('Error loading admin reviews:', err);
+      if (sequence === fetchReviewSequenceRef.current) {
+        console.error('Error loading admin reviews:', err);
+      }
     } finally {
-      setIsAdminReviewsLoading(false);
+      if (sequence === fetchReviewSequenceRef.current) {
+        setIsAdminReviewsLoading(false);
+      }
     }
   }, [adminReviewFilters, adminReviewsPage, adminReviewsLimit]);
 
   const adminApproveReview = useCallback(async (id: string, note?: string) => {
+    if (reviewActionLoadingMap[id]) return { success: false, error: 'Action already in progress' };
+    setReviewLoading(id, 'approve');
     try {
-      const updated = await reviewsApi.adminUpdateStatus(id, 'approved', note);
+      const res = await reviewsApi.adminUpdateStatus(id, 'approved', note);
+      const updated = res.review;
       setAdminReviews((prev) => prev.map((r) => r.id === id ? updated : r));
       setAdminReviewsCounts((prev) => ({
         ...prev,
         pending: Math.max(0, prev.pending - 1),
         approved: prev.approved + 1,
       }));
+      if (res.aggregate) {
+        updateProductAggregatesInState(updated.productId, res.aggregate);
+      }
       showNotification('success', 'Review Approved', 'Customer review is now approved and visible on the storefront.');
-      refreshAllStoreData(true);
       return { success: true, review: updated };
     } catch (err: any) {
-      showNotification('error', 'Approval Failed', err?.message || 'Failed to approve review');
-      return { success: false, error: err?.message || 'Failed to approve review' };
+      const msg = err?.message || 'Failed to approve review';
+      showNotification('error', 'Approval Failed', msg);
+      return { success: false, error: msg };
+    } finally {
+      setReviewLoading(id);
     }
-  }, [refreshAllStoreData, showNotification]);
+  }, [reviewActionLoadingMap, setReviewLoading, showNotification, updateProductAggregatesInState]);
 
   const adminRejectReview = useCallback(async (id: string, note?: string) => {
+    if (reviewActionLoadingMap[id]) return { success: false, error: 'Action already in progress' };
+    setReviewLoading(id, 'reject');
     try {
-      const updated = await reviewsApi.adminUpdateStatus(id, 'rejected', note);
+      const res = await reviewsApi.adminUpdateStatus(id, 'rejected', note);
+      const updated = res.review;
       setAdminReviews((prev) => prev.map((r) => r.id === id ? updated : r));
       setAdminReviewsCounts((prev) => ({
         ...prev,
         pending: Math.max(0, prev.pending - 1),
         rejected: prev.rejected + 1,
       }));
+      if (res.aggregate) {
+        updateProductAggregatesInState(updated.productId, res.aggregate);
+      }
       showNotification('info', 'Review Rejected', 'Review has been rejected and hidden from public display.');
-      refreshAllStoreData(true);
       return { success: true, review: updated };
     } catch (err: any) {
-      showNotification('error', 'Rejection Failed', err?.message || 'Failed to reject review');
-      return { success: false, error: err?.message || 'Failed to reject review' };
+      const msg = err?.message || 'Failed to reject review';
+      showNotification('error', 'Rejection Failed', msg);
+      return { success: false, error: msg };
+    } finally {
+      setReviewLoading(id);
     }
-  }, [refreshAllStoreData, showNotification]);
+  }, [reviewActionLoadingMap, setReviewLoading, showNotification, updateProductAggregatesInState]);
 
   const adminDeleteReview = useCallback(async (id: string) => {
+    if (reviewActionLoadingMap[id]) return { success: false, error: 'Action already in progress' };
+    setReviewLoading(id, 'delete');
     try {
-      await reviewsApi.delete(id);
+      const targetRev = adminReviews.find((r) => r.id === id);
+      const res = await reviewsApi.delete(id);
       setAdminReviews((prev) => prev.filter((r) => r.id !== id));
       setAdminReviewsTotal((prev) => Math.max(0, prev - 1));
+      if (targetRev) {
+        setAdminReviewsCounts((prev) => ({
+          ...prev,
+          all: Math.max(0, prev.all - 1),
+          pending: targetRev.status === 'pending' ? Math.max(0, prev.pending - 1) : prev.pending,
+          approved: targetRev.status === 'approved' ? Math.max(0, prev.approved - 1) : prev.approved,
+          rejected: targetRev.status === 'rejected' ? Math.max(0, prev.rejected - 1) : prev.rejected,
+        }));
+      }
+      const prodId = res.productId || targetRev?.productId;
+      if (prodId && res.aggregate) {
+        updateProductAggregatesInState(prodId, res.aggregate);
+      }
       showNotification('info', 'Review Deleted', 'Review has been permanently removed.');
-      fetchAdminReviews();
-      refreshAllStoreData(true);
       return { success: true };
     } catch (err: any) {
-      showNotification('error', 'Delete Failed', err?.message || 'Failed to delete review');
-      return { success: false, error: err?.message || 'Failed to delete review' };
+      const msg = err?.message || 'Failed to delete review';
+      showNotification('error', 'Delete Failed', msg);
+      return { success: false, error: msg };
+    } finally {
+      setReviewLoading(id);
     }
-  }, [fetchAdminReviews, refreshAllStoreData, showNotification]);
+  }, [adminReviews, reviewActionLoadingMap, setReviewLoading, showNotification, updateProductAggregatesInState]);
 
   const adminToggleVerifiedReview = useCallback(async (id: string, verified: boolean) => {
+    if (reviewActionLoadingMap[id]) return { success: false, error: 'Action already in progress' };
+    setReviewLoading(id, 'verified');
     try {
       const updated = await reviewsApi.adminToggleVerified(id, verified);
       setAdminReviews((prev) => prev.map((r) => r.id === id ? updated : r));
@@ -1531,13 +1631,15 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           ? 'Customer review has been marked with the Verified Customer badge.'
           : 'Verified Customer badge removed from this review.'
       );
-      refreshAllStoreData(true);
       return { success: true, review: updated };
     } catch (err: any) {
-      showNotification('error', 'Update Failed', err?.message || 'Failed to update verified badge');
-      return { success: false, error: err?.message || 'Failed to update verified badge' };
+      const msg = err?.message || 'Failed to update verified badge';
+      showNotification('error', 'Update Failed', msg);
+      return { success: false, error: msg };
+    } finally {
+      setReviewLoading(id);
     }
-  }, [refreshAllStoreData, showNotification]);
+  }, [reviewActionLoadingMap, setReviewLoading, showNotification]);
 
   const adminCreateReview = useCallback(async (review: {
     productId: string;
@@ -1549,22 +1651,99 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     moderationNote?: string;
   }) => {
     try {
-      const created = await reviewsApi.adminCreate(review);
+      const res = await reviewsApi.adminCreate(review);
+      const created = res.review;
       setAdminReviews((prev) => [created, ...prev]);
       setAdminReviewsTotal((prev) => prev + 1);
+      setAdminReviewsCounts((prev) => ({
+        ...prev,
+        all: prev.all + 1,
+        pending: created.status === 'pending' ? prev.pending + 1 : prev.pending,
+        approved: created.status === 'approved' ? prev.approved + 1 : prev.approved,
+      }));
+      if (res.aggregate) {
+        updateProductAggregatesInState(created.productId, res.aggregate);
+      }
       showNotification(
         'success',
         'Review Created',
         `Review created successfully with status: ${created.status || 'pending'}.`
       );
-      fetchAdminReviews();
-      refreshAllStoreData(true);
       return { success: true, review: created };
     } catch (err: any) {
-      showNotification('error', 'Creation Failed', err?.message || 'Failed to create review');
-      return { success: false, error: err?.message || 'Failed to create review' };
+      const msg = err?.message || 'Failed to create review';
+      showNotification('error', 'Creation Failed', msg);
+      return { success: false, error: msg };
     }
-  }, [fetchAdminReviews, refreshAllStoreData, showNotification]);
+  }, [showNotification, updateProductAggregatesInState]);
+
+  const adminBatchCreateReviews = useCallback(async (items: Array<{
+    productId: string;
+    authorName: string;
+    rating: number;
+    comment: string;
+    status?: 'approved' | 'pending' | 'rejected';
+    verifiedPurchase?: boolean;
+    moderationNote?: string;
+  }>) => {
+    try {
+      const res = await reviewsApi.adminBatchCreate(items);
+      if (res.reviews && res.reviews.length > 0) {
+        setAdminReviews((prev) => [...res.reviews, ...prev]);
+        setAdminReviewsTotal((prev) => prev + res.successfulCount);
+
+        let addedPending = 0;
+        let addedApproved = 0;
+        let addedRejected = 0;
+        for (const r of res.reviews) {
+          if (r.status === 'pending') addedPending++;
+          else if (r.status === 'rejected') addedRejected++;
+          else addedApproved++;
+        }
+        setAdminReviewsCounts((prev) => ({
+          ...prev,
+          all: prev.all + res.successfulCount,
+          pending: prev.pending + addedPending,
+          approved: prev.approved + addedApproved,
+          rejected: prev.rejected + addedRejected,
+        }));
+      }
+
+      // Targeted update of affected product aggregates in single pass
+      if (res.productAggregates) {
+        for (const [pid, agg] of Object.entries(res.productAggregates)) {
+          updateProductAggregatesInState(pid, agg);
+        }
+      }
+
+      if (res.successfulCount > 0) {
+        showNotification(
+          'success',
+          'Batch Reviews Added! 🌟',
+          `Successfully created ${res.successfulCount} review${res.successfulCount === 1 ? '' : 's'}.${res.failedCount > 0 ? ` (${res.failedCount} failed)` : ''}`
+        );
+      } else {
+        showNotification(
+          'error',
+          'Batch Creation Failed',
+          `Failed to create reviews. ${res.errors?.[0]?.error || 'Check input details.'}`
+        );
+      }
+
+      return {
+        success: res.successfulCount > 0,
+        totalProcessed: res.totalProcessed,
+        successfulCount: res.successfulCount,
+        failedCount: res.failedCount,
+        reviews: res.reviews,
+        errors: res.errors,
+      };
+    } catch (err: any) {
+      const msg = err?.message || 'Failed to process review batch';
+      showNotification('error', 'Batch Failed', msg);
+      return { success: false, error: msg };
+    }
+  }, [showNotification, updateProductAggregatesInState]);
 
   const value = useMemo<AdminContextType>(() => ({
     adminActiveTab,
@@ -1661,6 +1840,8 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     adminDeleteReview,
     adminToggleVerifiedReview,
     adminCreateReview,
+    reviewActionLoadingMap,
+    adminBatchCreateReviews,
   }), [
     adminActiveTab,
     adminSettingsSection,
@@ -1746,6 +1927,8 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     adminDeleteReview,
     adminToggleVerifiedReview,
     adminCreateReview,
+    reviewActionLoadingMap,
+    adminBatchCreateReviews,
   ]);
 
   return <AdminContext.Provider value={value}>{children}</AdminContext.Provider>;

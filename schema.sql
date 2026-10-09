@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS reviews (
   rating INTEGER NOT NULL DEFAULT 5,
   comment TEXT NOT NULL,
   verified_purchase INTEGER DEFAULT 0,
-  status TEXT NOT NULL DEFAULT 'approved',
+  status TEXT NOT NULL DEFAULT 'pending',
   moderator_id TEXT,
   moderated_at TEXT,
   moderation_note TEXT,

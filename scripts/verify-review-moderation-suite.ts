@@ -437,6 +437,13 @@ class MockPreparedStatement {
     }
 
     // Public reviews for a product:
+    if (s.includes('FROM reviews') && s.includes("status = 'approved'") && s.includes('product_id = ?')) {
+      const prodId = this.params[0];
+      const approved = this.db
+        .getReviews()
+        .filter((r) => r.product_id === prodId && r.status === 'approved');
+      return { results: approved as T[] };
+    }
     if (s.includes('FROM reviews WHERE (status = \'approved\' OR status IS NULL OR status = \'\') AND product_id = ?')) {
       const prodId = this.params[0];
       const approved = this.db

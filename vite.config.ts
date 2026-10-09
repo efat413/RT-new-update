@@ -3288,13 +3288,126 @@ function localApiDevPlugin(): Plugin {
         const recalculateDevProductReviews = (prodId: string) => {
           const approved = devReviews.filter((r) => r.productId === prodId && (r.status === 'approved' || !r.status));
           const prod = devProducts.find((p) => p.id === prodId);
-          if (!prod) return;
+          if (!prod) return null;
           if (approved.length > 0) {
             const sum = approved.reduce((acc, r) => acc + (Number(r.rating) || 5), 0);
             prod.rating = Math.round((sum / approved.length) * 10) / 10;
-            prod.reviewsCount = Math.max(approved.length, prod.reviewsCount || 0);
+            prod.reviewsCount = approved.length;
+          } else {
+            prod.rating = 5.0;
+            prod.reviewsCount = 0;
           }
+          return { rating: prod.rating, reviewsCount: prod.reviewsCount };
         };
+
+        // 6.1b Admin Batch Review Creation endpoint
+        if (url.pathname === '/api/admin/reviews/batch' || url.pathname === '/api/admin/reviews/batch/') {
+          if (method === 'POST') {
+            const authResult = requireDevAuth(req);
+            if (authResult.error) return sendDevError(res, authResult.error);
+            if (!hasDevPermission(authResult.auth!, 'review.manage')) {
+              return sendDevError(res, {
+                status: 403,
+                body: { success: false, error: 'Forbidden: Insufficient review management permissions.' },
+              });
+            }
+
+            return readBody((body) => {
+              const items = Array.isArray(body?.reviews) ? body.reviews : (Array.isArray(body) ? body : []);
+              if (!items || items.length === 0) {
+                res.statusCode = 400;
+                return res.end(JSON.stringify({ success: false, error: 'No review items provided in batch payload.' }));
+              }
+              if (items.length > 50) {
+                res.statusCode = 400;
+                return res.end(JSON.stringify({ success: false, error: 'Batch size exceeds maximum limit of 50 reviews.' }));
+              }
+
+              const createdReviews: any[] = [];
+              const errors: Array<{ index: number; error: string }> = [];
+              const affectedProductIds = new Set<string>();
+              let successfulCount = 0;
+              let failedCount = 0;
+
+              for (let i = 0; i < items.length; i++) {
+                const item = items[i];
+                const productId = String(item.productId || '').trim();
+                const authorName = String(item.authorName || item.author || '').trim();
+                const comment = String(item.comment || '').trim();
+                const rating = Math.min(5, Math.max(1, Math.round(Number(item.rating) || 5)));
+                const rawStatus = String(item.status || 'approved').toLowerCase().trim();
+                const status = rawStatus === 'pending' ? 'pending' : (rawStatus === 'rejected' ? 'rejected' : 'approved');
+                const verifiedPurchase = Boolean(item.verifiedPurchase);
+                const moderationNote = item.moderationNote ? String(item.moderationNote).slice(0, 250) : 'Batch created by staff';
+
+                if (!productId || !authorName || !comment) {
+                  failedCount++;
+                  errors.push({ index: i, error: 'Product, author name, and comment are required.' });
+                  continue;
+                }
+
+                if (authorName.length < 2 || authorName.length > 60) {
+                  failedCount++;
+                  errors.push({ index: i, error: 'Author name must be between 2 and 60 characters.' });
+                  continue;
+                }
+
+                if (comment.length < 3 || comment.length > 1000) {
+                  failedCount++;
+                  errors.push({ index: i, error: 'Comment must be between 3 and 1000 characters.' });
+                  continue;
+                }
+
+                const targetProd = devProducts.find((p) => p.id === productId || p.slug === productId);
+                if (!targetProd) {
+                  failedCount++;
+                  errors.push({ index: i, error: `Product "${productId}" not found.` });
+                  continue;
+                }
+
+                const id = `rev-batch-${Date.now()}-${i}-${Math.floor(Math.random() * 1000)}`;
+                const createdAt = new Date().toISOString();
+                const newRev = {
+                  id,
+                  productId: targetProd.id,
+                  authorName,
+                  author: authorName,
+                  rating,
+                  comment,
+                  verifiedPurchase,
+                  status,
+                  moderatorId: authResult.auth!.user.id,
+                  moderatedAt: status === 'approved' ? createdAt : undefined,
+                  moderationNote,
+                  createdByAdmin: true,
+                  createdAt,
+                };
+
+                devReviews.unshift(newRev);
+                createdReviews.push(newRev);
+                successfulCount++;
+                affectedProductIds.add(targetProd.id);
+              }
+
+              const productAggregates: Record<string, { rating: number; reviewsCount: number }> = {};
+              for (const pid of affectedProductIds) {
+                const agg = recalculateDevProductReviews(pid);
+                if (agg) productAggregates[pid] = agg;
+              }
+
+              res.statusCode = 201;
+              return res.end(JSON.stringify({
+                success: true,
+                totalProcessed: items.length,
+                successfulCount,
+                failedCount,
+                reviews: createdReviews,
+                errors,
+                productAggregates,
+              }));
+            });
+          }
+        }
 
         // 6.1 Admin Review Management endpoints
         if (url.pathname === '/api/admin/reviews' || url.pathname === '/api/admin/reviews/') {
@@ -3407,12 +3520,13 @@ function localApiDevPlugin(): Plugin {
               };
 
               devReviews.unshift(newR);
+              let aggregate: { rating: number; reviewsCount: number } | null = null;
               if (allowedStatus === 'approved') {
-                recalculateDevProductReviews(targetProduct.id);
+                aggregate = recalculateDevProductReviews(targetProduct.id);
               }
 
               res.statusCode = 201;
-              return res.end(JSON.stringify({ success: true, review: newR }));
+              return res.end(JSON.stringify({ success: true, review: newR, aggregate }));
             });
           }
         }
@@ -3449,10 +3563,10 @@ function localApiDevPlugin(): Plugin {
             if (body?.note) targetRev.moderationNote = String(body.note).slice(0, 250);
             if (body?.verified !== undefined) targetRev.verifiedPurchase = Boolean(body.verified);
 
-            recalculateDevProductReviews(targetRev.productId);
+            const agg = recalculateDevProductReviews(targetRev.productId);
 
             res.statusCode = 200;
-            return res.end(JSON.stringify({ success: true, review: targetRev }));
+            return res.end(JSON.stringify({ success: true, review: targetRev, aggregate: agg }));
           });
         }
 
@@ -3673,14 +3787,21 @@ function localApiDevPlugin(): Plugin {
 
           const revId = decodeURIComponent(devReviewDeleteMatch[1]);
           const targetRev = devReviews.find((r) => r.id === revId);
+          let agg: { rating: number; reviewsCount: number } | null = null;
+          let prodId: string | undefined = undefined;
           if (targetRev) {
-            const prodId = targetRev.productId;
+            prodId = targetRev.productId;
             devReviews = devReviews.filter((r) => r.id !== revId);
-            recalculateDevProductReviews(prodId);
+            agg = recalculateDevProductReviews(prodId);
           }
 
           res.statusCode = 200;
-          return res.end(JSON.stringify({ success: true, message: 'Review deleted successfully.' }));
+          return res.end(JSON.stringify({
+            success: true,
+            message: 'Review deleted successfully.',
+            productId: prodId,
+            aggregate: agg,
+          }));
         }
 
         // 7. USERS
