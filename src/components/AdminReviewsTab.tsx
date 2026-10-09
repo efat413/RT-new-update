@@ -83,21 +83,23 @@ const REVIEW_SOURCE_CONFIG: Record<
   },
 };
 
+const MAX_REVIEW_IMAGE_SIZE_BYTES = 2 * 1024 * 1024; // 2MB for review photos
+
 /**
- * Client-side file signature & magic byte validator.
- * Validates file size (<= 10MB) and inspects binary headers to reject
+ * Client-side file signature & magic byte validator for review photos.
+ * Validates file size (<= 2MB) and inspects binary headers to reject
  * SVGs, HTML, script polyglots, and unsupported formats before upload.
  */
 async function validateClientImageFile(file: File): Promise<{ valid: boolean; error?: string }> {
   if (!file) return { valid: false, error: 'No file selected.' };
-  if (file.size > 10 * 1024 * 1024) {
-    return { valid: false, error: `File "${file.name}" exceeds the 10MB maximum limit.` };
+  if (file.size > MAX_REVIEW_IMAGE_SIZE_BYTES) {
+    return { valid: false, error: `File "${file.name}" exceeds the 2MB maximum limit for review photos.` };
   }
-  const allowedMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+  const allowedMimes = ['image/jpeg', 'image/png', 'image/webp'];
   if (!allowedMimes.includes(file.type.toLowerCase())) {
     return {
       valid: false,
-      error: `File "${file.name}" is not a supported format. Please select a JPG, PNG, WebP, or GIF image.`,
+      error: `File "${file.name}" is not a supported format. Please select a JPG, PNG, or WebP image.`,
     };
   }
 
@@ -1820,24 +1822,27 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                 <div className="flex items-center justify-between mb-1">
                   <label className="text-xs font-bold text-slate-700 flex items-center gap-1">
                     <ImageIcon className="w-3.5 h-3.5 text-slate-500" />
-                    <span>Review Photos ({editImages.length}/5)</span>
+                    <span>Optional Review Photos ({editImages.length}/5)</span>
                   </label>
-                  {canEdit && editImages.length < 5 && (
-                    <label className="text-[11px] font-bold text-blue-600 hover:text-blue-700 cursor-pointer flex items-center gap-1">
-                      <Plus className="w-3 h-3" />
-                      <span>Add Photo</span>
+                  <span className="text-[10px] text-slate-400">Max 2MB each (JPG, PNG, WebP)</span>
+                </div>
+                {canEdit && editImages.length < 5 && (
+                  <div className="mb-2">
+                    <label className="text-[11px] font-bold text-blue-600 hover:text-blue-700 cursor-pointer inline-flex items-center gap-1 py-1 px-2.5 rounded-lg bg-blue-50 border border-blue-200/60">
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Attach Photos</span>
                       <input
                         ref={editFileInputRef}
                         type="file"
-                        accept="image/jpeg,image/png,image/webp,image/gif"
+                        accept="image/jpeg,image/png,image/webp"
                         multiple
                         onChange={handleEditPhotoUpload}
                         className="hidden"
                         disabled={isUploadingEditImages}
                       />
                     </label>
-                  )}
-                </div>
+                  </div>
+                )}
 
                 {isUploadingEditImages && (
                   <div className="p-2 bg-blue-50 border border-blue-200 rounded-xl text-blue-700 text-xs flex items-center gap-2 mb-2">
@@ -2173,7 +2178,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                     <ImageIcon className="w-3.5 h-3.5 text-slate-500" />
                     <span>Optional Review Photos ({formImages.length}/5)</span>
                   </label>
-                  <span className="text-[10px] text-slate-400">Max 10MB each (JPG, PNG, WebP)</span>
+                  <span className="text-[10px] text-slate-400">Max 2MB each (JPG, PNG, WebP)</span>
                 </div>
 
                 {/* Upload Trigger / Dropzone */}
@@ -2187,7 +2192,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                     <input
                       ref={fileInputRef}
                       type="file"
-                      accept="image/jpeg,image/png,image/webp,image/gif"
+                      accept="image/jpeg,image/png,image/webp"
                       multiple
                       onChange={handlePhotoUpload}
                       className="hidden"
