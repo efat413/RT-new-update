@@ -320,7 +320,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const adminLogin = useCallback(async (usernameOrEmail: string, password: string): Promise<boolean> => {
-    const res = await loginUser(usernameOrEmail, password);
+    setIsAuthInitializing(true);
+    const trimmedInput = usernameOrEmail.trim();
+    const trimmedPassword = password.trim();
+
+    if (!trimmedInput || !trimmedPassword) {
+      setIsAuthInitializing(false);
+      return false;
+    }
+
+    try {
+      const apiRes = await authApi.adminLogin(trimmedInput, trimmedPassword);
+      if (apiRes.success && apiRes.user) {
+        hadActiveSessionRef.current = true;
+        const isPrivileged =
+          apiRes.user.role === 'admin' ||
+          apiRes.user.role === 'super_admin' ||
+          apiRes.user.role === 'sub_admin';
+
+        if (apiRes.token) {
+          setAuthToken(apiRes.token);
+        }
+        persistAdminAuthToStorage(isPrivileged);
+        persistCurrentUserToStorage(apiRes.user);
+
+        setIsAuthInitializing(false);
+        setCurrentUser(apiRes.user);
+        setIsAdminLoggedIn(isPrivileged);
+        return isPrivileged;
+      }
+    } catch {}
+
+    const res = await loginUser(trimmedInput, trimmedPassword);
     if (res.success && res.user) {
       const isPrivileged =
         res.user.role === 'admin' ||
@@ -333,6 +364,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return true;
       }
     }
+    setIsAuthInitializing(false);
     return false;
   }, [loginUser]);
 

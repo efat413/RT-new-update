@@ -411,7 +411,7 @@ function localApiDevPlugin(): Plugin {
       reqHost.endsWith('.run.app') ||
       (Boolean(reqOrigin) && !reqOrigin.includes(reqHost.split(':')[0]));
     const sameSite = isHttps && isCrossSite ? 'None' : 'Lax';
-    const secureAttr = isHttps ? '; Secure' : '';
+    const secureAttr = (isHttps || sameSite === 'None') ? '; Secure' : '';
     const encodedVal = token ? encodeURIComponent(token) : '';
     const expiresAttr = maxAgeSeconds <= 0 ? '; Expires=Thu, 01 Jan 1970 00:00:00 GMT' : '';
     return `auth_token=${encodedVal}; Path=/; HttpOnly${secureAttr}; SameSite=${sameSite}; Max-Age=${maxAgeSeconds}${expiresAttr}`;
@@ -642,14 +642,16 @@ function localApiDevPlugin(): Plugin {
 
   const requireDevAuth = (req: any): DevAuthResult => {
     let token = '';
-    const cookieHeader = (req.headers['cookie'] || '') as string;
-    const match = cookieHeader.match(/(?:^|;\s*)auth_token=([^;]+)/);
+    const cookieHeader = (req.headers['cookie'] || req.headers['Cookie'] || '') as string;
+    const match = cookieHeader.match(/(?:^|;\s*)(?:auth_token|session_token)=([^;]+)/);
     if (match) {
       token = decodeURIComponent(match[1]).trim();
     } else {
-      const authHeader = (req.headers['authorization'] || '') as string;
-      if (authHeader && authHeader.startsWith('Bearer ')) {
-        token = authHeader.substring(7).trim();
+      const authHeader = (req.headers['authorization'] || req.headers['Authorization'] || '') as string;
+      if (authHeader && /^bearer\s+/i.test(authHeader.trim())) {
+        token = authHeader.trim().replace(/^bearer\s+/i, '').trim().replace(/^["']|["']$/g, '');
+      } else if (req.headers['x-auth-token']) {
+        token = ((req.headers['x-auth-token'] as string) || '').trim();
       }
     }
 
@@ -1738,7 +1740,7 @@ function localApiDevPlugin(): Plugin {
         }
 
         // AUTHENTICATION ROUTES (Development D1 Emulation)
-        if (url.pathname === '/api/auth/login' && method === 'POST') {
+        if ((url.pathname === '/api/auth/login' || url.pathname === '/api/admin/login') && method === 'POST') {
           return readBody(async (body) => {
             const identifier = (body.usernameOrEmail || body.email || body.username || '').trim().toLowerCase();
             const password = (body.password || '').trim();
@@ -1821,6 +1823,10 @@ function localApiDevPlugin(): Plugin {
             }
 
             const isPrivileged = isDevAdminRole(foundUser.role);
+            if (url.pathname === '/api/admin/login' && !isPrivileged) {
+              res.statusCode = 403;
+              return res.end(JSON.stringify({ success: false, error: 'Forbidden: Admin access required.' }));
+            }
             const now = Math.floor(Date.now() / 1000);
             const sessionDuration = isPrivileged ? ADMIN_SESSION_IDLE_TIMEOUT_SECONDS : CUSTOMER_SESSION_EXPIRATION_SECONDS;
             const currentHash = devUserPasswordHashes.get(foundUser.email?.toLowerCase()) || storedHash || '';

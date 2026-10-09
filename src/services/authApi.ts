@@ -189,6 +189,51 @@ export const authApi = {
   },
 
   /**
+   * Logs in an admin targeting /api/admin/login.
+   * Ensures token is set synchronously and cookies are received.
+   */
+  async adminLogin(
+    usernameOrEmail: string,
+    password: string
+  ): Promise<{ success: boolean; user?: UserAccount; token?: string; error?: string }> {
+    cachedMeResult = null;
+    try {
+      const res = await fetch(`/api/admin/login`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+        },
+        body: JSON.stringify({ usernameOrEmail, password }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        return {
+          success: false,
+          error: data.error || `Admin login failed (HTTP ${res.status})`,
+        };
+      }
+
+      if (data.token) {
+        setAuthToken(data.token);
+      }
+
+      return {
+        success: true,
+        user: data.user,
+        token: data.token,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err?.message || 'Network error during admin login',
+      };
+    }
+  },
+
+  /**
    * Registers a new customer account.
    */
   async register(data: {

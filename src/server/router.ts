@@ -261,20 +261,22 @@ function buildAuthCookieHeader(request: Request, token: string, maxAgeSeconds: n
     isHttps = true;
   }
 
-  const currentEnv = env || activeEnv;
-  const isDev = Boolean(
-    currentEnv?.ENVIRONMENT === 'development' ||
-    process.env.NODE_ENV === 'development' ||
-    process.env.DEV === 'true' ||
-    process.env.VITE
-  );
+  const originHeader = request.headers.get('origin') || request.headers.get('referer');
+  let isCrossOrigin = false;
+  if (originHeader) {
+    try {
+      const parsedOrigin = new URL(originHeader);
+      if (parsedOrigin.hostname && reqHostname && parsedOrigin.hostname !== reqHostname) {
+        isCrossOrigin = true;
+      }
+    } catch {}
+  }
 
   const secFetchSite = (request.headers.get('sec-fetch-site') || '').toLowerCase();
-  // Only permit SameSite=None for HTTPS cross-site requests in development preview environments
-  const isDevCrossSite = isDev && isHttps && (secFetchSite === 'cross-site' || reqHostname.endsWith('.run.app'));
+  const isCrossSite = isHttps && (secFetchSite === 'cross-site' || isCrossOrigin || reqHostname.endsWith('.run.app'));
 
-  const sameSite = isDevCrossSite ? 'None' : 'Lax';
-  const secureAttr = isHttps ? '; Secure' : '';
+  const sameSite = isCrossSite ? 'None' : 'Lax';
+  const secureAttr = (isHttps || sameSite === 'None') ? '; Secure' : '';
   const encodedVal = token ? encodeURIComponent(token) : '';
   const expiresAttr = maxAgeSeconds <= 0 ? '; Expires=Thu, 01 Jan 1970 00:00:00 GMT' : '';
 
@@ -478,18 +480,29 @@ export function logServerError(ctx: SafeLogContext): void {
  */
 function extractTokenFromRequest(request: Request): string | null {
   // 1. Authoritative: HttpOnly Cookie 'auth_token'
-  const cookieHeader = request.headers.get('Cookie');
+  const cookieHeader = request.headers.get('Cookie') || request.headers.get('cookie');
   if (cookieHeader) {
-    const match = cookieHeader.match(/(?:^|;\s*)auth_token=([^;]+)/);
+    const match = cookieHeader.match(/(?:^|;\s*)(?:auth_token|session_token)=([^;]+)/);
     if (match) {
-      return decodeURIComponent(match[1]).trim();
+      const val = decodeURIComponent(match[1]).trim();
+      if (val) return val;
     }
   }
 
-  // 2. Fallback: Authorization header (for test scripts / automated checks)
-  const authHeader = request.headers.get('Authorization');
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const t = authHeader.substring(7).trim();
+  // 2. Fallback: Authorization header (Bearer <token>)
+  const authHeader = request.headers.get('Authorization') || request.headers.get('authorization');
+  if (authHeader) {
+    const trimmed = authHeader.trim();
+    if (/^bearer\s+/i.test(trimmed)) {
+      const t = trimmed.replace(/^bearer\s+/i, '').trim().replace(/^["']|["']$/g, '');
+      if (t) return t;
+    }
+  }
+
+  // 3. Fallback: Custom session headers
+  const customHeader = request.headers.get('x-auth-token') || request.headers.get('X-Auth-Token');
+  if (customHeader) {
+    const t = customHeader.trim();
     if (t) return t;
   }
 
@@ -1614,7 +1627,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
   // ==========================================
   // AUTHENTICATION ROUTES (Authoritative D1 + PBKDF2)
   // ==========================================
-  if (path === '/api/auth/login' && method === 'POST') {
+  if ((path === '/api/auth/login' || path === '/api/admin/login') && method === 'POST') {
     const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
     if (jsonErr) return jsonErr;
 
@@ -1725,6 +1738,12 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
       const secret = await resolveAuthSecret(env);
       const isPrivilegedAdmin = isAdminRole(userRow.role);
+      if (path === '/api/admin/login' && !isPrivilegedAdmin) {
+        return jsonResponse(
+          { success: false, error: 'Forbidden: Admin access required.' },
+          403
+        );
+      }
       const now = Math.floor(Date.now() / 1000);
       const maxAgeSeconds = isPrivilegedAdmin ? ADMIN_SESSION_IDLE_TIMEOUT_SECONDS : CUSTOMER_SESSION_EXPIRATION_SECONDS;
 
