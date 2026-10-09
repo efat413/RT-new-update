@@ -2483,7 +2483,11 @@ export function rowToReview(row: ReviewRow): ProductReview {
     ? (rawStatus as ReviewStatus)
     : (row.status ? 'pending' : 'approved');
 
-  const source: ReviewSource = row.source === 'admin' ? 'admin' : 'customer';
+  const rawSource = String(row.source || '').toLowerCase().trim();
+  const validSources: ReviewSource[] = ['admin', 'manual', 'whatsapp', 'facebook', 'messenger', 'instagram', 'customer'];
+  const source: ReviewSource = validSources.includes(rawSource as ReviewSource)
+    ? (rawSource as ReviewSource)
+    : 'customer';
 
   return {
     id: row.id,
@@ -2623,7 +2627,11 @@ export async function insertReview(db: D1Database, input: any): Promise<ProductR
     ? (rawStatus as ReviewStatus)
     : 'pending';
 
-  const source: ReviewSource = input.source === 'admin' ? 'admin' : 'customer';
+  const rawInputSource = String(input.source || '').toLowerCase().trim();
+  const validInsertSources: ReviewSource[] = ['admin', 'manual', 'whatsapp', 'facebook', 'messenger', 'instagram', 'customer'];
+  const source: ReviewSource = validInsertSources.includes(rawInputSource as ReviewSource)
+    ? (rawInputSource as ReviewSource)
+    : 'customer';
   const createdAt = input.createdAt || new Date().toISOString();
   const approvedAt = status === 'approved' ? (input.approvedAt || createdAt) : null;
   const approvedBy = status === 'approved' ? (input.approvedBy || (source === 'admin' ? 'admin' : 'system')) : null;

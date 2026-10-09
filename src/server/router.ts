@@ -4003,7 +4003,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         // 6. Security Rule: Customer-submitted reviews default strictly to 'pending' on the server.
         // Client attempts to set approval status, approved_by, approved_at, or source are strictly stripped.
         const initialStatus: ReviewStatus = isAdminCreation && reviewData.status ? reviewData.status : (isAdminCreation ? 'approved' : 'pending');
-        const initialSource: ReviewSource = isAdminCreation ? (reviewData.source === 'admin' ? 'admin' : 'customer') : 'customer';
+        const validReqSources: ReviewSource[] = ['admin', 'manual', 'whatsapp', 'facebook', 'messenger', 'instagram'];
+        const reqSrc = String(reviewData.source || '').toLowerCase().trim();
+        const initialSource: ReviewSource = isAdminCreation && validReqSources.includes(reqSrc as ReviewSource)
+          ? (reqSrc as ReviewSource)
+          : (isAdminCreation ? 'admin' : 'customer');
         const now = new Date().toISOString();
         const approvedBy = initialStatus === 'approved' ? (adminUser?.dbUser?.name || adminUser?.tokenUser?.email || 'admin') : null;
         const approvedAt = initialStatus === 'approved' ? now : null;

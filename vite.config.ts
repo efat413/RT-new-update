@@ -3507,7 +3507,11 @@ function localApiDevPlugin(): Plugin {
 
               // Security Rule: Customer submissions default strictly to 'pending' on the server
               const initialStatus = isAdminCreation && r.status ? r.status : (isAdminCreation ? 'approved' : 'pending');
-              const initialSource = isAdminCreation ? (r.source === 'admin' ? 'admin' : 'customer') : 'customer';
+              const validDevSources = ['admin', 'manual', 'whatsapp', 'facebook', 'messenger', 'instagram'];
+              const devSrc = String(r.source || '').toLowerCase().trim();
+              const initialSource = isAdminCreation && validDevSources.includes(devSrc)
+                ? devSrc
+                : (isAdminCreation ? 'admin' : 'customer');
               const now = new Date().toISOString();
               const approvedBy = initialStatus === 'approved' ? (auth?.user?.name || auth?.user?.email || 'admin') : undefined;
               const approvedAt = initialStatus === 'approved' ? now : undefined;

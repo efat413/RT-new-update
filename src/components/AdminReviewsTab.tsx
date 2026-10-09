@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { ProductReview, Product, ReviewStatus, ReviewSource, UserAccount } from '../types';
-import { reviewsApi } from '../services/storeApi';
+import { reviewsApi, uploadApi } from '../services/storeApi';
 import { hasUserPermission } from '../utils/permissions';
 import {
   MessageSquare,
@@ -16,7 +16,6 @@ import {
   ShieldCheck,
   Image as ImageIcon,
   AlertTriangle,
-  ExternalLink,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -27,10 +26,11 @@ import {
   Package,
   Calendar,
   User,
-  Sparkles,
-  Check,
   RotateCcw,
-  SlidersHorizontal,
+  UploadCloud,
+  Loader2,
+  MessageCircle,
+  Share2,
 } from 'lucide-react';
 
 export interface AdminReviewsTabProps {
@@ -39,6 +39,104 @@ export interface AdminReviewsTabProps {
   onRefreshProducts?: () => void;
   initialProductFilter?: string;
   onBackToProducts?: () => void;
+}
+
+const REVIEW_SOURCE_CONFIG: Record<
+  ReviewSource,
+  { label: string; badgeClass: string; iconClass: string }
+> = {
+  manual: {
+    label: 'Manual Entry',
+    badgeClass: 'bg-indigo-50 text-indigo-800 border-indigo-200/80',
+    iconClass: 'text-indigo-600',
+  },
+  whatsapp: {
+    label: 'WhatsApp',
+    badgeClass: 'bg-emerald-50 text-emerald-800 border-emerald-200/80',
+    iconClass: 'text-emerald-600',
+  },
+  facebook: {
+    label: 'Facebook',
+    badgeClass: 'bg-blue-50 text-blue-800 border-blue-200/80',
+    iconClass: 'text-blue-600',
+  },
+  messenger: {
+    label: 'Messenger',
+    badgeClass: 'bg-sky-50 text-sky-800 border-sky-200/80',
+    iconClass: 'text-sky-600',
+  },
+  instagram: {
+    label: 'Instagram',
+    badgeClass: 'bg-pink-50 text-pink-800 border-pink-200/80',
+    iconClass: 'text-pink-600',
+  },
+  admin: {
+    label: 'Staff Endorsement',
+    badgeClass: 'bg-purple-50 text-purple-800 border-purple-200/80',
+    iconClass: 'text-purple-600',
+  },
+  customer: {
+    label: 'Customer Submission',
+    badgeClass: 'bg-slate-100 text-slate-800 border-slate-200/80',
+    iconClass: 'text-slate-600',
+  },
+};
+
+/**
+ * Client-side file signature & magic byte validator.
+ * Validates file size (<= 10MB) and inspects binary headers to reject
+ * SVGs, HTML, script polyglots, and unsupported formats before upload.
+ */
+async function validateClientImageFile(file: File): Promise<{ valid: boolean; error?: string }> {
+  if (!file) return { valid: false, error: 'No file selected.' };
+  if (file.size > 10 * 1024 * 1024) {
+    return { valid: false, error: `File "${file.name}" exceeds the 10MB maximum limit.` };
+  }
+  const allowedMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+  if (!allowedMimes.includes(file.type.toLowerCase())) {
+    return {
+      valid: false,
+      error: `File "${file.name}" is not a supported format. Please select a JPG, PNG, WebP, or GIF image.`,
+    };
+  }
+
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onerror = () => resolve({ valid: false, error: `Failed to read "${file.name}".` });
+    reader.onload = () => {
+      const arr = new Uint8Array(reader.result as ArrayBuffer);
+      if (arr.length < 12) {
+        resolve({ valid: false, error: `File "${file.name}" is too small or truncated.` });
+        return;
+      }
+      // Check JPEG: FF D8 FF
+      const isJpeg = arr[0] === 0xff && arr[1] === 0xd8 && arr[2] === 0xff;
+      // Check PNG: 89 50 4E 47
+      const isPng = arr[0] === 0x89 && arr[1] === 0x50 && arr[2] === 0x4e && arr[3] === 0x47;
+      // Check WebP: RIFF ... WEBP
+      const isWebp =
+        arr[0] === 0x52 &&
+        arr[1] === 0x49 &&
+        arr[2] === 0x46 &&
+        arr[3] === 0x46 &&
+        arr[8] === 0x57 &&
+        arr[9] === 0x45 &&
+        arr[10] === 0x42 &&
+        arr[11] === 0x50;
+      // Check GIF: GIF8
+      const isGif = arr[0] === 0x47 && arr[1] === 0x49 && arr[2] === 0x46 && arr[3] === 0x38;
+
+      if (!isJpeg && !isPng && !isWebp && !isGif) {
+        resolve({
+          valid: false,
+          error: `File "${file.name}" contains invalid image headers. SVG, HTML, and script files are strictly blocked.`,
+        });
+        return;
+      }
+      resolve({ valid: true });
+    };
+    reader.readAsArrayBuffer(file.slice(0, 32));
+  });
 }
 
 export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
@@ -71,22 +169,32 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
 
   // Add review form state
   const [formProductId, setFormProductId] = useState(products[0]?.id || '');
-  const [formAuthor, setFormAuthor] = useState(currentUser?.name || 'Store Staff');
+  const [formAuthor, setFormAuthor] = useState('');
   const [formRating, setFormRating] = useState(5);
   const [formComment, setFormComment] = useState('');
-  const [formVerified, setFormVerified] = useState(true);
+  const [formVerified, setFormVerified] = useState(false); // Default verifiedPurchase to false
   const [formStatus, setFormStatus] = useState<ReviewStatus>('approved');
+  const [formSource, setFormSource] = useState<ReviewSource>('manual');
+  const [formImages, setFormImages] = useState<string[]>([]);
+  const [isUploadingImages, setIsUploadingImages] = useState(false);
+  const [imageUploadProgressText, setImageUploadProgressText] = useState<string | null>(null);
   const [formSubmitting, setFormSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Edit review form state
   const [editAuthor, setEditAuthor] = useState('');
   const [editRating, setEditRating] = useState(5);
   const [editComment, setEditComment] = useState('');
-  const [editVerified, setEditVerified] = useState(true);
+  const [editVerified, setEditVerified] = useState(false);
   const [editStatus, setEditStatus] = useState<ReviewStatus>('approved');
+  const [editSource, setEditSource] = useState<ReviewSource>('manual');
+  const [editImages, setEditImages] = useState<string[]>([]);
+  const [isUploadingEditImages, setIsUploadingEditImages] = useState(false);
+  const [editUploadProgressText, setEditUploadProgressText] = useState<string | null>(null);
   const [editSubmitting, setEditSubmitting] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
+  const editFileInputRef = useRef<HTMLInputElement>(null);
 
   const canView = currentUser ? hasUserPermission(currentUser, 'review.view') : false;
   const canManage = currentUser ? hasUserPermission(currentUser, 'review.manage') : false;
@@ -111,7 +219,11 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
   // Identify scoped product when a specific product ID is filtered
   const scopedProduct = useMemo(() => {
     if (selectedProductId && selectedProductId !== 'all') {
-      return productMap.get(selectedProductId) || products.find((p) => p.id === selectedProductId || p.slug === selectedProductId) || null;
+      return (
+        productMap.get(selectedProductId) ||
+        products.find((p) => p.id === selectedProductId || p.slug === selectedProductId) ||
+        null
+      );
     }
     return null;
   }, [productMap, products, selectedProductId]);
@@ -253,7 +365,6 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
     return filteredReviews.slice(start, start + itemsPerPage);
   }, [filteredReviews, currentPage, itemsPerPage]);
 
-  // Reset page when filters change
   const handleStatusFilterChange = (st: 'all' | ReviewStatus) => {
     setStatusFilter(st);
     setCurrentPage(1);
@@ -301,7 +412,107 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
     setEditComment(rev.comment || '');
     setEditVerified(Boolean(rev.verifiedPurchase));
     setEditStatus(rev.status || 'approved');
+    setEditSource(rev.source || 'manual');
+    setEditImages(Array.isArray(rev.images) ? [...rev.images] : []);
     setEditError(null);
+  };
+
+  // Image upload handler for Add Review form
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    if (formImages.length + files.length > 5) {
+      setFormError('You can attach a maximum of 5 photos per review.');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
+    setIsUploadingImages(true);
+    setFormError(null);
+
+    const uploadedUrls: string[] = [];
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        setImageUploadProgressText(`Verifying and uploading photo ${i + 1} of ${files.length}...`);
+
+        // Client-side magic byte & size validation
+        const val = await validateClientImageFile(file);
+        if (!val.valid) {
+          throw new Error(val.error || `Invalid image file "${file.name}".`);
+        }
+
+        // Upload to server
+        const res = await uploadApi.upload(file);
+        if (!res.success || !res.url) {
+          throw new Error(res.error || `Failed to upload "${file.name}".`);
+        }
+
+        uploadedUrls.push(res.url);
+      }
+
+      setFormImages((prev) => [...prev, ...uploadedUrls]);
+    } catch (err: any) {
+      console.error('Image upload failed:', err);
+      setFormError(err.message || 'Image upload failed. Storage service may be unconfigured or offline.');
+    } finally {
+      setIsUploadingImages(false);
+      setImageUploadProgressText(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const handleRemoveFormImage = (indexToRemove: number) => {
+    setFormImages((prev) => prev.filter((_, idx) => idx !== indexToRemove));
+  };
+
+  // Image upload handler for Edit Review form
+  const handleEditPhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    if (editImages.length + files.length > 5) {
+      setEditError('You can attach a maximum of 5 photos per review.');
+      if (editFileInputRef.current) editFileInputRef.current.value = '';
+      return;
+    }
+
+    setIsUploadingEditImages(true);
+    setEditError(null);
+
+    const uploadedUrls: string[] = [];
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        setEditUploadProgressText(`Uploading photo ${i + 1} of ${files.length}...`);
+
+        const val = await validateClientImageFile(file);
+        if (!val.valid) {
+          throw new Error(val.error || `Invalid image file "${file.name}".`);
+        }
+
+        const res = await uploadApi.upload(file);
+        if (!res.success || !res.url) {
+          throw new Error(res.error || `Failed to upload "${file.name}".`);
+        }
+
+        uploadedUrls.push(res.url);
+      }
+
+      setEditImages((prev) => [...prev, ...uploadedUrls]);
+    } catch (err: any) {
+      console.error('Edit image upload failed:', err);
+      setEditError(err.message || 'Image upload failed.');
+    } finally {
+      setIsUploadingEditImages(false);
+      setEditUploadProgressText(null);
+      if (editFileInputRef.current) editFileInputRef.current.value = '';
+    }
+  };
+
+  const handleRemoveEditImage = (indexToRemove: number) => {
+    setEditImages((prev) => prev.filter((_, idx) => idx !== indexToRemove));
   };
 
   // Submit Edit Review
@@ -321,6 +532,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
         comment: editComment.trim(),
         verifiedPurchase: editVerified,
         status: editStatus,
+        images: editImages,
       });
       setReviews((prev) => prev.map((r) => (r.id === editingReview.id ? updated : r)));
       if (viewingReview && viewingReview.id === editingReview.id) {
@@ -359,12 +571,15 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
   // Add review handler (locked to scoped product if applicable)
   const handleCreateStaffReview = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!canManage) return;
     const targetId = scopedProduct ? scopedProduct.id : formProductId;
     if (!targetId || !formAuthor.trim() || !formComment.trim()) {
-      setFormError('Please fill in all required fields.');
+      setFormError('Please fill in all required fields (Author name, rating, comment).');
       return;
     }
+
+    // Permission enforcement: only users with review.manage can create directly approved reviews
+    const effectiveStatus: ReviewStatus = canManage ? formStatus : 'pending';
+
     setFormSubmitting(true);
     setFormError(null);
     try {
@@ -375,13 +590,28 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
         rating: formRating,
         comment: formComment.trim(),
         verifiedPurchase: formVerified,
-        status: formStatus,
-        source: 'admin',
+        status: effectiveStatus,
+        source: formSource,
+        images: formImages,
       });
+
       setReviews((prev) => [created, ...prev]);
       setIsAddModalOpen(false);
+
+      // Reset form
       setFormComment('');
-      showSuccessFeedback('Review added successfully.');
+      setFormAuthor('');
+      setFormRating(5);
+      setFormVerified(false);
+      setFormImages([]);
+      setFormStatus(canManage ? 'approved' : 'pending');
+      setFormSource('manual');
+
+      showSuccessFeedback(
+        effectiveStatus === 'approved'
+          ? 'Review published directly to the product page!'
+          : 'Review saved in Pending queue for moderation.'
+      );
       if (onRefreshProducts) onRefreshProducts();
     } catch (err: any) {
       setFormError(err.message || 'Failed to create review.');
@@ -395,6 +625,36 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
       onBackToProducts();
     } else {
       setSelectedProductId('all');
+    }
+  };
+
+  const getSourceBadge = (source?: ReviewSource) => {
+    const s = source || 'customer';
+    const cfg = REVIEW_SOURCE_CONFIG[s] || REVIEW_SOURCE_CONFIG.customer;
+    return (
+      <span
+        className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-md border ${cfg.badgeClass}`}
+      >
+        <Share2 className={`w-3 h-3 ${cfg.iconClass}`} />
+        <span>{cfg.label}</span>
+      </span>
+    );
+  };
+
+  const getRatingDescription = (r: number) => {
+    switch (r) {
+      case 5:
+        return '5 Stars - Excellent / অসাধারণ';
+      case 4:
+        return '4 Stars - Very Good / খুব ভালো';
+      case 3:
+        return '3 Stars - Good / ভালো';
+      case 2:
+        return '2 Stars - Fair / মোটামুটি';
+      case 1:
+        return '1 Star - Poor / সন্তোষজনক নয়';
+      default:
+        return `${r} Stars`;
     }
   };
 
@@ -428,9 +688,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
           </button>
 
           <div className="flex items-center gap-2">
-            <span className="text-[11px] font-bold text-slate-500 hidden sm:inline">
-              Scoped Mode:
-            </span>
+            <span className="text-[11px] font-bold text-slate-500 hidden sm:inline">Scoped Mode:</span>
             <span className="text-xs font-bold text-amber-900 bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200 truncate max-w-xs">
               {scopedProduct.title}
             </span>
@@ -466,9 +724,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                   Product Reviews
                 </span>
                 {scopedProduct.sku && (
-                  <span className="text-[11px] text-slate-300 font-mono">
-                    SKU: {scopedProduct.sku}
-                  </span>
+                  <span className="text-[11px] text-slate-300 font-mono">SKU: {scopedProduct.sku}</span>
                 )}
                 <span
                   className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
@@ -477,7 +733,9 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                       : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
                   }`}
                 >
-                  {scopedProduct.stock <= 5 ? `Low Stock (${scopedProduct.stock})` : `${scopedProduct.stock} in stock`}
+                  {scopedProduct.stock <= 5
+                    ? `Low Stock (${scopedProduct.stock})`
+                    : `${scopedProduct.stock} in stock`}
                 </span>
               </div>
 
@@ -495,9 +753,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                   <span className="font-bold text-white">
                     {scopedProduct.rating !== undefined ? scopedProduct.rating.toFixed(1) : '5.0'}★
                   </span>
-                  <span className="text-slate-400 text-[11px]">
-                    ({counts.approved} Approved)
-                  </span>
+                  <span className="text-slate-400 text-[11px]">({counts.approved} Approved)</span>
                 </div>
                 {counts.pending > 0 && (
                   <>
@@ -523,17 +779,20 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
               <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin text-rose-400' : ''}`} />
             </button>
 
-            {canManage && (
-              <button
-                type="button"
-                id="add-review-scoped-btn"
-                onClick={() => setIsAddModalOpen(true)}
-                className="py-2.5 px-4 rounded-xl bg-gradient-to-r from-rose-600 to-rose-700 hover:from-rose-500 hover:to-rose-600 text-white text-xs font-bold flex items-center gap-2 shadow-sm transition-all cursor-pointer whitespace-nowrap"
-              >
-                <Plus className="w-4 h-4" />
-                <span>+ Add Review</span>
-              </button>
-            )}
+            <button
+              type="button"
+              id="add-review-scoped-btn"
+              onClick={() => {
+                setFormProductId(scopedProduct.id);
+                setFormStatus(canManage ? 'approved' : 'pending');
+                setFormVerified(false);
+                setIsAddModalOpen(true);
+              }}
+              className="py-2.5 px-4 rounded-xl bg-gradient-to-r from-rose-600 to-rose-700 hover:from-rose-500 hover:to-rose-600 text-white text-xs font-bold flex items-center gap-2 shadow-sm transition-all cursor-pointer whitespace-nowrap"
+            >
+              <Plus className="w-4 h-4" />
+              <span>+ Add Review</span>
+            </button>
           </div>
         </div>
       ) : (
@@ -560,17 +819,19 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
               <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin text-rose-500' : ''}`} />
             </button>
 
-            {canManage && (
-              <button
-                type="button"
-                id="add-review-global-btn"
-                onClick={() => setIsAddModalOpen(true)}
-                className="py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-black text-white text-xs font-bold flex items-center gap-2 shadow-xs transition-colors cursor-pointer"
-              >
-                <Plus className="w-4 h-4" />
-                <span>+ Add Review</span>
-              </button>
-            )}
+            <button
+              type="button"
+              id="add-review-global-btn"
+              onClick={() => {
+                setFormStatus(canManage ? 'approved' : 'pending');
+                setFormVerified(false);
+                setIsAddModalOpen(true);
+              }}
+              className="py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-black text-white text-xs font-bold flex items-center gap-2 shadow-xs transition-colors cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>+ Add Review</span>
+            </button>
           </div>
         </div>
       )}
@@ -885,7 +1146,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
           </p>
 
           <div className="flex items-center justify-center gap-2 pt-2">
-            {(searchQuery || statusFilter !== 'all' || ratingFilter !== 'all' || dateFilter !== 'all') ? (
+            {searchQuery || statusFilter !== 'all' || ratingFilter !== 'all' || dateFilter !== 'all' ? (
               <button
                 type="button"
                 onClick={handleResetFilters}
@@ -893,16 +1154,21 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
               >
                 Reset Filters
               </button>
-            ) : canManage ? (
+            ) : (
               <button
                 type="button"
-                onClick={() => setIsAddModalOpen(true)}
+                onClick={() => {
+                  if (scopedProduct) setFormProductId(scopedProduct.id);
+                  setFormStatus(canManage ? 'approved' : 'pending');
+                  setFormVerified(false);
+                  setIsAddModalOpen(true);
+                }}
                 className="px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-black text-white text-xs font-bold transition-colors inline-flex items-center gap-1.5 cursor-pointer shadow-xs"
               >
                 <Plus className="w-4 h-4" />
                 <span>+ Add First Review</span>
               </button>
-            ) : null}
+            )}
           </div>
         </div>
       ) : (
@@ -965,6 +1231,9 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                           </span>
                         )}
 
+                        {/* Review Source Badge */}
+                        {getSourceBadge(rev.source)}
+
                         <span className="text-slate-300">•</span>
 
                         <span className="text-[11px] text-slate-500 flex items-center gap-1">
@@ -978,12 +1247,6 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                               : rev.date || 'Unknown date'}
                           </span>
                         </span>
-
-                        {rev.source === 'admin' && (
-                          <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded-md border border-indigo-200">
-                            Staff Review
-                          </span>
-                        )}
                       </div>
 
                       {/* Star Rating Display */}
@@ -992,15 +1255,11 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                           <Star
                             key={s}
                             className={`w-4 h-4 ${
-                              s <= rev.rating
-                                ? 'text-amber-400 fill-amber-400'
-                                : 'text-slate-200'
+                              s <= rev.rating ? 'text-amber-400 fill-amber-400' : 'text-slate-200'
                             }`}
                           />
                         ))}
-                        <span className="text-xs font-bold text-slate-800 ml-1">
-                          {rev.rating}.0
-                        </span>
+                        <span className="text-xs font-bold text-slate-800 ml-1">{rev.rating}.0</span>
                       </div>
 
                       {/* Review Text */}
@@ -1041,7 +1300,9 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                       {/* Moderation Audit Attribution */}
                       {rev.approvedBy && (
                         <div className="text-[11px] text-slate-500 flex items-center gap-1.5">
-                          <span>Moderated by: <strong className="text-slate-700">{rev.approvedBy}</strong></span>
+                          <span>
+                            Moderated by: <strong className="text-slate-700">{rev.approvedBy}</strong>
+                          </span>
                           {rev.approvedAt && (
                             <span>({new Date(rev.approvedAt).toLocaleDateString('en-GB')})</span>
                           )}
@@ -1138,7 +1399,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                           id={`edit-review-btn-${rev.id}`}
                           onClick={() => handleOpenEditModal(rev)}
                           className="p-1.5 px-2 rounded-xl bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer"
-                          title="Edit review text, rating, or status"
+                          title="Edit review text, rating, or photos"
                         >
                           <Edit2 className="w-3.5 h-3.5 text-blue-600" />
                           <span className="hidden md:inline">Edit</span>
@@ -1257,7 +1518,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                       <img
                         src={prod.imageUrl}
                         alt={prod.title}
-                        className="w-12 h-12 rounded-xl object-cover border border-slate-200"
+                        className="w-12 h-12 rounded-xl object-cover border border-slate-200 bg-white"
                       />
                     )}
                     <div className="min-w-0 flex-1">
@@ -1279,7 +1540,9 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
               <div className="grid grid-cols-2 gap-3 p-3.5 bg-slate-50 rounded-2xl text-xs border border-slate-100">
                 <div>
                   <span className="text-slate-400 block text-[11px] font-semibold">Author</span>
-                  <strong className="text-slate-900">{viewingReview.authorName || viewingReview.author || 'Customer'}</strong>
+                  <strong className="text-slate-900">
+                    {viewingReview.authorName || viewingReview.author || 'Customer'}
+                  </strong>
                 </div>
                 <div>
                   <span className="text-slate-400 block text-[11px] font-semibold">Verification</span>
@@ -1288,23 +1551,29 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                   </span>
                 </div>
                 <div>
-                  <span className="text-slate-400 block text-[11px] font-semibold">Date Submitted</span>
-                  <span className="text-slate-700">
-                    {viewingReview.createdAt
-                      ? new Date(viewingReview.createdAt).toLocaleString('en-US')
-                      : viewingReview.date || 'Unknown'}
-                  </span>
+                  <span className="text-slate-400 block text-[11px] font-semibold">Source Origin</span>
+                  <div className="mt-0.5">{getSourceBadge(viewingReview.source)}</div>
                 </div>
                 <div>
                   <span className="text-slate-400 block text-[11px] font-semibold">Status</span>
-                  <span className={`font-bold capitalize ${
-                    viewingReview.status === 'approved'
-                      ? 'text-emerald-600'
-                      : viewingReview.status === 'rejected'
-                      ? 'text-rose-600'
-                      : 'text-amber-600'
-                  }`}>
+                  <span
+                    className={`font-bold capitalize ${
+                      viewingReview.status === 'approved'
+                        ? 'text-emerald-600'
+                        : viewingReview.status === 'rejected'
+                        ? 'text-rose-600'
+                        : 'text-amber-600'
+                    }`}
+                  >
                     {viewingReview.status || 'approved'}
+                  </span>
+                </div>
+                <div className="col-span-2">
+                  <span className="text-slate-400 block text-[11px] font-semibold">Date Submitted</span>
+                  <span className="text-slate-700 font-medium">
+                    {viewingReview.createdAt
+                      ? new Date(viewingReview.createdAt).toLocaleString('en-US')
+                      : viewingReview.date || 'Unknown'}
                   </span>
                 </div>
               </div>
@@ -1317,14 +1586,12 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                     <Star
                       key={s}
                       className={`w-5 h-5 ${
-                        s <= viewingReview.rating
-                          ? 'text-amber-400 fill-amber-400'
-                          : 'text-slate-200'
+                        s <= viewingReview.rating ? 'text-amber-400 fill-amber-400' : 'text-slate-200'
                       }`}
                     />
                   ))}
                   <span className="text-sm font-bold text-slate-800 ml-1">
-                    {viewingReview.rating} out of 5 Stars
+                    {viewingReview.rating} out of 5 Stars ({getRatingDescription(viewingReview.rating)})
                   </span>
                 </div>
               </div>
@@ -1349,7 +1616,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                         key={idx}
                         type="button"
                         onClick={() => setPreviewImage(img)}
-                        className="relative group rounded-xl overflow-hidden aspect-square border border-slate-200 hover:border-rose-400 transition-all cursor-pointer"
+                        className="relative group rounded-xl overflow-hidden aspect-square border border-slate-200 hover:border-rose-400 transition-all cursor-pointer shadow-2xs"
                       >
                         <img src={img} alt="Attachment" className="w-full h-full object-cover" />
                         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
@@ -1420,7 +1687,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
       {/* 2. Edit Review Modal */}
       {editingReview && (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 backdrop-blur-xs">
-          <div className="bg-white rounded-3xl p-6 max-w-lg w-full border border-slate-200 shadow-2xl space-y-4">
+          <div className="bg-white rounded-3xl p-6 max-w-lg w-full border border-slate-200 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5">
                 <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
@@ -1428,7 +1695,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                 </div>
                 <div>
                   <h3 className="text-base font-bold text-slate-900 font-display">Edit Customer Review</h3>
-                  <p className="text-xs text-slate-500">Update rating, comment, or moderation status</p>
+                  <p className="text-xs text-slate-500">Update rating, comment, photos, or moderation status</p>
                 </div>
               </div>
               <button
@@ -1449,7 +1716,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
             <form onSubmit={handleSaveEditedReview} className="space-y-3.5">
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Author Name</label>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Author Name *</label>
                   <input
                     type="text"
                     value={editAuthor}
@@ -1472,9 +1739,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                       >
                         <Star
                           className={`w-5 h-5 ${
-                            star <= editRating
-                              ? 'text-amber-400 fill-amber-400'
-                              : 'text-slate-200'
+                            star <= editRating ? 'text-amber-400 fill-amber-400' : 'text-slate-200'
                           }`}
                         />
                       </button>
@@ -1485,7 +1750,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Review Feedback</label>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Review Feedback *</label>
                 <textarea
                   rows={3}
                   value={editComment}
@@ -1496,18 +1761,77 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div className="flex items-center gap-2 pt-2">
-                  <input
-                    type="checkbox"
-                    id="editVerifiedCheck"
-                    checked={editVerified}
-                    onChange={(e) => setEditVerified(e.target.checked)}
-                    className="rounded text-rose-600 focus:ring-rose-500 cursor-pointer"
-                  />
-                  <label htmlFor="editVerifiedCheck" className="text-xs font-semibold text-slate-700 cursor-pointer">
-                    Verified Purchase Badge
+              {/* Photos Management */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-bold text-slate-700 flex items-center gap-1">
+                    <ImageIcon className="w-3.5 h-3.5 text-slate-500" />
+                    <span>Review Photos ({editImages.length}/5)</span>
                   </label>
+                  {editImages.length < 5 && (
+                    <label className="text-[11px] font-bold text-blue-600 hover:text-blue-700 cursor-pointer flex items-center gap-1">
+                      <Plus className="w-3 h-3" />
+                      <span>Add Photo</span>
+                      <input
+                        ref={editFileInputRef}
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp,image/gif"
+                        multiple
+                        onChange={handleEditPhotoUpload}
+                        className="hidden"
+                        disabled={isUploadingEditImages}
+                      />
+                    </label>
+                  )}
+                </div>
+
+                {isUploadingEditImages && (
+                  <div className="p-2 bg-blue-50 border border-blue-200 rounded-xl text-blue-700 text-xs flex items-center gap-2 mb-2">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>{editUploadProgressText || 'Uploading image...'}</span>
+                  </div>
+                )}
+
+                {editImages.length > 0 ? (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {editImages.map((img, idx) => (
+                      <div
+                        key={idx}
+                        className="relative group w-16 h-16 rounded-xl overflow-hidden border border-slate-200 shrink-0"
+                      >
+                        <img src={img} alt="Thumb" className="w-full h-full object-cover" />
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveEditImage(idx)}
+                          className="absolute top-1 right-1 p-1 rounded-full bg-rose-600 text-white hover:bg-rose-700 transition-colors shadow-xs cursor-pointer"
+                          title="Remove image"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-slate-400">No photos attached.</p>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Review Source</label>
+                  <select
+                    value={editSource}
+                    onChange={(e) => setEditSource(e.target.value as ReviewSource)}
+                    className="w-full py-1.5 px-3 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-800 cursor-pointer"
+                  >
+                    <option value="manual">Manual (Direct / Staff)</option>
+                    <option value="whatsapp">WhatsApp</option>
+                    <option value="facebook">Facebook</option>
+                    <option value="messenger">Messenger</option>
+                    <option value="instagram">Instagram</option>
+                    <option value="admin">Official Staff Review</option>
+                    <option value="customer">Customer Submission</option>
+                  </select>
                 </div>
 
                 <div>
@@ -1524,6 +1848,19 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                 </div>
               </div>
 
+              <div className="flex items-center gap-2 pt-1">
+                <input
+                  type="checkbox"
+                  id="editVerifiedCheck"
+                  checked={editVerified}
+                  onChange={(e) => setEditVerified(e.target.checked)}
+                  className="rounded text-rose-600 focus:ring-rose-500 cursor-pointer"
+                />
+                <label htmlFor="editVerifiedCheck" className="text-xs font-semibold text-slate-700 cursor-pointer">
+                  Verified Purchase Badge
+                </label>
+              </div>
+
               <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
                 <button
                   type="button"
@@ -1534,7 +1871,7 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
                 </button>
                 <button
                   type="submit"
-                  disabled={editSubmitting}
+                  disabled={editSubmitting || isUploadingEditImages}
                   className="py-2 px-5 rounded-xl bg-slate-900 hover:bg-black text-white text-xs font-bold shadow-xs transition-colors cursor-pointer disabled:opacity-50"
                 >
                   {editSubmitting ? 'Saving...' : 'Save Changes'}
@@ -1587,7 +1924,8 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
 
             <p className="text-xs text-slate-600 bg-slate-50 p-3 rounded-xl border border-slate-100">
               Are you sure you want to permanently delete the review by{' '}
-              <strong>"{deleteCandidate.authorName || deleteCandidate.author}"</strong>? Public product ratings and counts will be recalculated automatically.
+              <strong>"{deleteCandidate.authorName || deleteCandidate.author}"</strong>? Public product ratings and
+              counts will be recalculated automatically.
             </p>
 
             <div className="flex items-center justify-end gap-2 pt-2">
@@ -1612,18 +1950,19 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
         </div>
       )}
 
-      {/* 5. Add Staff Review Modal */}
+      {/* 5. Complete Add Review Modal with Photos, Source, and Status Gating */}
       {isAddModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 backdrop-blur-xs">
-          <div className="bg-white rounded-3xl p-6 max-w-lg w-full border border-slate-200 shadow-2xl space-y-4">
+          <div className="bg-white rounded-3xl p-6 max-w-xl w-full border border-slate-200 shadow-2xl space-y-4 max-h-[92vh] overflow-y-auto">
+            {/* Header */}
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5">
-                <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
-                  <Star className="w-5 h-5 fill-amber-500" />
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-rose-500 text-white flex items-center justify-center shadow-xs">
+                  <Star className="w-5 h-5 fill-white" />
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-slate-900 font-display">Add Official Review</h3>
-                  <p className="text-xs text-slate-500">Publish staff review or store endorsement</p>
+                  <h3 className="text-base font-bold text-slate-900 font-display">Add Product Review</h3>
+                  <p className="text-xs text-slate-500">Record customer feedback or authentic staff review</p>
                 </div>
               </div>
               <button
@@ -1636,125 +1975,282 @@ export const AdminReviewsTab: React.FC<AdminReviewsTabProps> = ({
             </div>
 
             {formError && (
-              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs">
-                {formError}
+              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
+                <span>{formError}</span>
               </div>
             )}
 
-            <form onSubmit={handleCreateStaffReview} className="space-y-3.5">
+            <form onSubmit={handleCreateStaffReview} className="space-y-4">
+              {/* Selected Product (Clearly Identified) */}
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Target Product</label>
-                {scopedProduct ? (
-                  <div className="py-2 px-3 rounded-xl bg-slate-100 border border-slate-200 text-xs font-bold text-slate-900">
-                    {scopedProduct.title} (Locked to current product)
-                  </div>
-                ) : (
-                  <select
-                    value={formProductId}
-                    onChange={(e) => setFormProductId(e.target.value)}
-                    className="w-full py-2 px-3 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500/20 cursor-pointer"
-                  >
-                    {products.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.title}
-                      </option>
-                    ))}
-                  </select>
-                )}
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">Target Product *</label>
+                {(() => {
+                  const targetProd = scopedProduct || productMap.get(formProductId) || products[0];
+                  if (!targetProd) return null;
+                  return (
+                    <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 flex items-center gap-3">
+                      {targetProd.imageUrl && (
+                        <img
+                          src={targetProd.imageUrl}
+                          alt={targetProd.title}
+                          className="w-12 h-12 rounded-xl object-cover border border-slate-200 shrink-0 bg-white"
+                        />
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <span className="text-[10px] uppercase font-bold text-slate-400 block">
+                          {scopedProduct ? 'Locked to Selected Product' : 'Selected Catalog Product'}
+                        </span>
+                        <h4 className="text-xs font-bold text-slate-900 truncate">{targetProd.title}</h4>
+                        <div className="flex items-center gap-2 text-[11px] text-slate-500 mt-0.5">
+                          <span className="font-semibold text-slate-700">
+                            ৳{targetProd.price.toLocaleString('en-BD')}
+                          </span>
+                          <span>•</span>
+                          <span>Rating: {targetProd.rating?.toFixed(1) || '5.0'}★</span>
+                        </div>
+                      </div>
+
+                      {!scopedProduct && products.length > 1 && (
+                        <select
+                          value={formProductId}
+                          onChange={(e) => setFormProductId(e.target.value)}
+                          className="py-1 px-2 rounded-lg bg-white border border-slate-300 text-xs font-semibold text-slate-700 cursor-pointer"
+                        >
+                          {products.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              Change...
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              {/* Reviewer Display Name & Rating */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Author Name</label>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Reviewer Display Name *
+                  </label>
                   <input
                     type="text"
+                    id="add-review-author-name"
                     value={formAuthor}
                     onChange={(e) => setFormAuthor(e.target.value)}
+                    placeholder="e.g. Tanvir Ahmed or Farhana"
                     required
                     maxLength={60}
-                    className="w-full py-2 px-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500/20"
+                    className="w-full py-2 px-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500/20"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Rating (1 to 5 Stars)</label>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Rating (1 to 5 Stars) *
+                  </label>
                   <div className="flex items-center gap-1 py-1">
                     {[1, 2, 3, 4, 5].map((star) => (
                       <button
                         key={star}
                         type="button"
+                        id={`star-btn-${star}`}
                         onClick={() => setFormRating(star)}
-                        className="p-1 focus:outline-none cursor-pointer"
+                        className="p-1 focus:outline-none cursor-pointer transition-transform hover:scale-110"
+                        title={getRatingDescription(star)}
                       >
                         <Star
                           className={`w-5 h-5 ${
-                            star <= formRating
-                              ? 'text-amber-400 fill-amber-400'
-                              : 'text-slate-200'
+                            star <= formRating ? 'text-amber-400 fill-amber-400' : 'text-slate-200'
                           }`}
                         />
                       </button>
                     ))}
                     <span className="text-xs font-bold text-slate-700 ml-1.5">{formRating}★</span>
                   </div>
+                  <span className="text-[10px] text-slate-500 block">{getRatingDescription(formRating)}</span>
                 </div>
               </div>
 
+              {/* Review Text */}
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Review Feedback</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-bold text-slate-700">Review Feedback Text *</label>
+                  <span className="text-[10px] text-slate-400">{formComment.length}/1000</span>
+                </div>
                 <textarea
+                  id="add-review-comment-text"
                   rows={3}
                   value={formComment}
                   onChange={(e) => setFormComment(e.target.value)}
-                  placeholder="Share authentic product feedback, quality highlights, or staff test impressions..."
+                  placeholder="Share customer feedback, unboxing impression, or staff review..."
                   required
                   maxLength={1000}
-                  className="w-full py-2 px-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500/20"
+                  className="w-full py-2 px-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500/20"
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div className="flex items-center gap-2 pt-2">
-                  <input
-                    type="checkbox"
-                    id="verifiedCheck"
-                    checked={formVerified}
-                    onChange={(e) => setFormVerified(e.target.checked)}
-                    className="rounded text-rose-600 focus:ring-rose-500 cursor-pointer"
-                  />
-                  <label htmlFor="verifiedCheck" className="text-xs font-semibold text-slate-700 cursor-pointer">
-                    Verified Purchase Badge
+              {/* Optional Review Photos Upload Section */}
+              <div className="p-3.5 bg-slate-50/80 rounded-2xl border border-slate-200/80 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                    <ImageIcon className="w-3.5 h-3.5 text-slate-500" />
+                    <span>Optional Review Photos ({formImages.length}/5)</span>
                   </label>
+                  <span className="text-[10px] text-slate-400">Max 10MB each (JPG, PNG, WebP)</span>
                 </div>
 
+                {/* Upload Trigger / Dropzone */}
+                {formImages.length < 5 && (
+                  <div
+                    onClick={() => fileInputRef.current?.click()}
+                    className={`border-2 border-dashed border-slate-300 hover:border-rose-400 bg-white rounded-xl p-3.5 text-center cursor-pointer transition-colors ${
+                      isUploadingImages ? 'opacity-50 pointer-events-none' : ''
+                    }`}
+                  >
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp,image/gif"
+                      multiple
+                      onChange={handlePhotoUpload}
+                      className="hidden"
+                    />
+                    <UploadCloud className="w-5 h-5 text-slate-400 mx-auto mb-1" />
+                    <span className="text-xs font-bold text-slate-700 block">
+                      Click to browse or drop photos
+                    </span>
+                    <span className="text-[10px] text-slate-400">
+                      Upload real customer unboxing photos or staff product images
+                    </span>
+                  </div>
+                )}
+
+                {/* Upload Progress Indicator */}
+                {isUploadingImages && (
+                  <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-xs flex items-center gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin text-rose-600 shrink-0" />
+                    <span className="font-semibold">{imageUploadProgressText || 'Uploading photo...'}</span>
+                  </div>
+                )}
+
+                {/* Uploaded Images Preview Grid */}
+                {formImages.length > 0 && (
+                  <div className="flex items-center gap-2.5 flex-wrap pt-1">
+                    {formImages.map((imgUrl, idx) => (
+                      <div
+                        key={idx}
+                        className="relative group w-16 h-16 rounded-xl overflow-hidden border border-slate-200 bg-white shadow-2xs shrink-0"
+                      >
+                        <img src={imgUrl} alt="Upload preview" className="w-full h-full object-cover" />
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveFormImage(idx)}
+                          className="absolute top-1 right-1 p-1 rounded-full bg-rose-600 text-white hover:bg-rose-700 transition-colors shadow-xs cursor-pointer"
+                          title="Remove photo"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Source & Status Configuration */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                {/* Source Selection */}
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Initial Status</label>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Review Source</label>
                   <select
-                    value={formStatus}
+                    id="add-review-source-select"
+                    value={formSource}
+                    onChange={(e) => setFormSource(e.target.value as ReviewSource)}
+                    className="w-full py-2 px-3 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-800 cursor-pointer focus:outline-none focus:ring-2 focus:ring-rose-500/20"
+                  >
+                    <option value="manual">Manual (Staff / Direct Entry)</option>
+                    <option value="whatsapp">WhatsApp (Customer Chat)</option>
+                    <option value="facebook">Facebook (Page / Post)</option>
+                    <option value="messenger">Messenger (Direct Message)</option>
+                    <option value="instagram">Instagram (DM / Story)</option>
+                    <option value="admin">Official Staff Review</option>
+                  </select>
+                </div>
+
+                {/* Status Selection (Subject to permissions) */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Initial Status {canManage ? '' : '(Restricted)'}
+                  </label>
+                  <select
+                    id="add-review-status-select"
+                    value={canManage ? formStatus : 'pending'}
+                    disabled={!canManage}
                     onChange={(e) => setFormStatus(e.target.value as ReviewStatus)}
-                    className="w-full py-1.5 px-3 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-800 cursor-pointer"
+                    className={`w-full py-2 px-3 rounded-xl border text-xs font-semibold cursor-pointer ${
+                      canManage
+                        ? 'bg-slate-50 border-slate-200 text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500/20'
+                        : 'bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed'
+                    }`}
                   >
                     <option value="approved">Approved (Live on Catalog)</option>
                     <option value="pending">Pending Moderation</option>
                   </select>
+                  {!canManage && (
+                    <span className="text-[10px] text-amber-600 mt-0.5 block">
+                      Requires Review Manager permission to publish immediately.
+                    </span>
+                  )}
                 </div>
               </div>
 
+              {/* Verified Purchase Checkbox (Default false) */}
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 flex items-center justify-between">
+                <div>
+                  <label
+                    htmlFor="addVerifiedCheck"
+                    className="text-xs font-bold text-slate-800 cursor-pointer block"
+                  >
+                    Verified Purchase Badge
+                  </label>
+                  <p className="text-[10px] text-slate-500">
+                    Default is false. Check only when customer order has been independently confirmed.
+                  </p>
+                </div>
+                <input
+                  type="checkbox"
+                  id="addVerifiedCheck"
+                  checked={formVerified}
+                  onChange={(e) => setFormVerified(e.target.checked)}
+                  className="rounded text-rose-600 focus:ring-rose-500 w-4 h-4 cursor-pointer"
+                />
+              </div>
+
+              {/* Action Buttons */}
               <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => setIsAddModalOpen(false)}
-                  className="py-2 px-4 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
+                  className="py-2.5 px-4 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   id="submit-staff-review-btn"
-                  disabled={formSubmitting}
-                  className="py-2 px-5 rounded-xl bg-slate-900 hover:bg-black text-white text-xs font-bold shadow-xs transition-colors cursor-pointer disabled:opacity-50"
+                  disabled={formSubmitting || isUploadingImages}
+                  className="py-2.5 px-6 rounded-xl bg-slate-900 hover:bg-black text-white text-xs font-bold shadow-xs transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
                 >
-                  {formSubmitting ? 'Publishing...' : 'Save Review'}
+                  {formSubmitting ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Saving Review...</span>
+                    </>
+                  ) : (
+                    <span>Publish Review</span>
+                  )}
                 </button>
               </div>
             </form>

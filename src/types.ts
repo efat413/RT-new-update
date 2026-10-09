@@ -148,7 +148,14 @@ export interface DbblPaymentDetails {
 }
 
 export type ReviewStatus = 'pending' | 'approved' | 'rejected';
-export type ReviewSource = 'customer' | 'admin';
+export type ReviewSource =
+  | 'customer'
+  | 'admin'
+  | 'manual'
+  | 'whatsapp'
+  | 'facebook'
+  | 'messenger'
+  | 'instagram';
 
 export interface ProductReview {
   id: string;
