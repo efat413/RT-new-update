@@ -45,7 +45,7 @@ export interface AdminContextType {
   orders: Order[];
   setOrders: React.Dispatch<React.SetStateAction<Order[]>>;
   updateOrderStatus: (orderId: string, status: ShippingStatus) => Promise<{ success: boolean; error?: string }>;
-  updateOrder: (orderId: string, updates: Partial<Order>) => Promise<void> | void;
+  updateOrder: (orderId: string, updates: Partial<Order>) => Promise<{ success: boolean; order?: Order; error?: string } | void> | void;
   verifyAndMarkPaid: (orderId: string) => void;
   deleteOrder: (orderId: string, restoreStock?: boolean) => Promise<void> | void;
   bookCourier: (orderId: string, provider: CourierProvider, parcelData?: any) => Promise<CourierBooking>;

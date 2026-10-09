@@ -80,6 +80,7 @@ import {
   Ruler,
   Video,
   Play,
+  Printer,
 } from 'lucide-react';
 import { extractYouTubeVideoId } from '../utils/youtube';
 import { generateProductSlug } from '../utils/seo';
@@ -139,6 +140,9 @@ const AdminProfitAnalyticsTab = React.lazy(() =>
 );
 const AdminReviewsTab = React.lazy(() =>
   import('./AdminReviewsTab').then((m) => ({ default: m.AdminReviewsTab }))
+);
+const InvoiceModal = React.lazy(() =>
+  import('./InvoiceModal').then((m) => ({ default: m.InvoiceModal }))
 );
 
 const AdminTabFallback: React.FC = () => (
@@ -474,6 +478,8 @@ const AdminPanelContent: React.FC = () => {
   const [editAdvancePayment, setEditAdvancePayment] = useState<number | string>(0);
   const [editAdvanceMethod, setEditAdvanceMethod] = useState<string>('Cash / Advance');
   const [editAdvanceNote, setEditAdvanceNote] = useState<string>('');
+  const [invoiceOrderId, setInvoiceOrderId] = useState<string | null>(null);
+  const [persistedInvoiceSnapshot, setPersistedInvoiceSnapshot] = useState<Order | null>(null);
 
   // Password Reset Modal state
   const [resettingUser, setResettingUser] = useState<UserAccount | null>(null);
@@ -2072,7 +2078,36 @@ const AdminPanelContent: React.FC = () => {
     }
   };
 
-  const handleSaveOrderEdit = (e: React.FormEvent) => {
+  // Data Source Guard: Resolves ONLY the persisted saved order record (never unsaved form state)
+  const persistedInvoiceOrder = useMemo<Order | null>(() => {
+    if (!invoiceOrderId) return null;
+    const savedInStore = orders.find((o) => o.id === invoiceOrderId);
+    if (savedInStore) return savedInStore;
+    if (persistedInvoiceSnapshot && persistedInvoiceSnapshot.id === invoiceOrderId) {
+      return persistedInvoiceSnapshot;
+    }
+    return null;
+  }, [invoiceOrderId, orders, persistedInvoiceSnapshot]);
+
+  // Pure read-only invoice action handler: Does NOT mutate order status, inventory, or payment data
+  const handleOpenOrderInvoice = useCallback(
+    (targetOrderOrId: Order | string) => {
+      const targetId = typeof targetOrderOrId === 'string' ? targetOrderOrId : targetOrderOrId.id;
+      const savedOrder =
+        orders.find((o) => o.id === targetId) ||
+        (editingOrder && editingOrder.id === targetId ? editingOrder : null) ||
+        (typeof targetOrderOrId === 'object' ? targetOrderOrId : null);
+
+      if (!savedOrder) return;
+
+      // Deep-freeze snapshot of the persisted record so draft edits cannot leak into the invoice
+      setPersistedInvoiceSnapshot(JSON.parse(JSON.stringify(savedOrder)));
+      setInvoiceOrderId(savedOrder.id);
+    },
+    [orders, editingOrder]
+  );
+
+  const handleSaveOrderEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingOrder) return;
 
@@ -2155,7 +2190,7 @@ const AdminPanelContent: React.FC = () => {
       nextPaymentStatus = (editingOrder.paymentMethod === 'dbbl' ? 'UNVERIFIED' : 'DUE') as any;
     }
 
-    updateOrder(editingOrder.id, {
+    const saveRes = await updateOrder(editingOrder.id, {
       items: enrichedItems,
       subtotal,
       deliveryFee: editDeliveryFee,
@@ -2203,6 +2238,17 @@ const AdminPanelContent: React.FC = () => {
           ? undefined
           : editingOrder.courierBooking,
     });
+
+    if (saveRes && saveRes.success === false) {
+      return;
+    }
+
+    if (saveRes && saveRes.order) {
+      setEditingOrder(saveRes.order);
+      if (invoiceOrderId === saveRes.order.id) {
+        setPersistedInvoiceSnapshot(JSON.parse(JSON.stringify(saveRes.order)));
+      }
+    }
 
     showNotification(
       'success',
@@ -4212,9 +4258,18 @@ const AdminPanelContent: React.FC = () => {
                               )}
                             </td>
 
-                            {/* Order Actions (Edit & Delete) */}
+                            {/* Order Actions (Invoice, Edit & Delete) */}
                             <td className="p-3.5 align-top text-right">
                               <div className="flex items-center justify-end gap-1.5">
+                                <button
+                                  type="button"
+                                  id={`invoice-order-btn-${ord.id}`}
+                                  onClick={() => handleOpenOrderInvoice(ord)}
+                                  className="p-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 hover:text-indigo-900 transition-colors cursor-pointer"
+                                  title="Download / Print Invoice"
+                                >
+                                  <Printer className="w-3.5 h-3.5" />
+                                </button>
                                 <button
                                   type="button"
                                   id={`edit-order-btn-${ord.id}`}
@@ -9583,7 +9638,7 @@ const AdminPanelContent: React.FC = () => {
           <div className="relative w-full max-w-2xl sm:max-w-3xl bg-white rounded-3xl shadow-2xl overflow-hidden border border-slate-200 my-4 sm:my-6 flex flex-col max-h-[calc(100vh-2rem)] sm:max-h-[calc(100vh-3rem)]">
             <div className="h-2 w-full rainbow-gradient-bg shrink-0" />
 
-            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-white shrink-0">
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between gap-3 bg-white shrink-0">
               <div>
                 <h3 className="font-display font-bold text-lg text-slate-900 flex items-center gap-2">
                   <Package className="w-5 h-5 text-rose-600" />
@@ -9593,14 +9648,26 @@ const AdminPanelContent: React.FC = () => {
                   Modify customer details, increase or decrease product prices, and adjust delivery &amp; payment data.
                 </p>
               </div>
-              <button
-                type="button"
-                id="close-order-modal-btn"
-                onClick={() => setEditingOrder(null)}
-                className="p-1.5 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition-colors cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  id="order-edit-header-invoice-btn"
+                  onClick={() => handleOpenOrderInvoice(editingOrder.id)}
+                  className="px-3 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer active:scale-95"
+                  title="Download or print invoice from saved order record"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  <span>Download / Print Invoice</span>
+                </button>
+                <button
+                  type="button"
+                  id="close-order-modal-btn"
+                  onClick={() => setEditingOrder(null)}
+                  className="p-1.5 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
 
             <form onSubmit={handleSaveOrderEdit} className="flex-1 flex flex-col overflow-hidden">
@@ -10467,7 +10534,17 @@ const AdminPanelContent: React.FC = () => {
               </div>
 
               {/* Modal Buttons (Sticky Footer) */}
-              <div className="sticky bottom-0 bg-slate-50 border-t border-slate-200 px-6 py-3.5 flex items-center gap-3 shrink-0 z-10">
+              <div className="sticky bottom-0 bg-slate-50 border-t border-slate-200 px-6 py-3.5 flex flex-wrap items-center gap-2.5 shrink-0 z-10">
+                <button
+                  type="button"
+                  id="order-edit-footer-invoice-btn"
+                  onClick={() => handleOpenOrderInvoice(editingOrder.id)}
+                  className="py-2.5 px-4 rounded-xl bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-200 font-bold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer active:scale-95"
+                  title="Prints saved order record (save changes first to reflect edits)"
+                >
+                  <Printer className="w-4 h-4" />
+                  <span>Download / Print Invoice</span>
+                </button>
                 <button
                   type="button"
                   onClick={() => setEditingOrder(null)}
@@ -10488,6 +10565,24 @@ const AdminPanelContent: React.FC = () => {
             </form>
           </div>
         </div>
+      )}
+
+      {/* ============================================================ */}
+      {/* MODAL: ORDER INVOICE (PERSISTED SAVED ORDER RECORD ONLY)     */}
+      {/* ============================================================ */}
+      {persistedInvoiceOrder && (
+        <ErrorBoundary compact fallbackTitle="Invoice Unavailable" fallbackMessage="Could not load order invoice.">
+          <React.Suspense fallback={null}>
+            <InvoiceModal
+              order={persistedInvoiceOrder}
+              isOpen={Boolean(persistedInvoiceOrder)}
+              onClose={() => {
+                setInvoiceOrderId(null);
+                setPersistedInvoiceSnapshot(null);
+              }}
+            />
+          </React.Suspense>
+        </ErrorBoundary>
       )}
 
       {/* ============================================================ */}

@@ -1117,14 +1117,17 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return { success: false, message: res.error || 'Courier synchronization failed.', updatedCount: 0 };
   }, []);
 
-  const updateOrder = useCallback(async (orderId: string, updates: Partial<Order>) => {
+  const updateOrder = useCallback(async (orderId: string, updates: Partial<Order>): Promise<{ success: boolean; order?: Order; error?: string }> => {
     lastMutationTimestampRef.current = Date.now();
     const res = await orderApi.updateOrder(orderId, updates);
     if (res.success && res.order) {
       setOrders((prev) => prev.map((ord) => (ord.id === orderId ? res.order! : ord)));
+      return { success: true, order: res.order };
     } else if (!res.success) {
       showNotification('error', 'Update Failed', res.error || 'Failed to update order');
+      return { success: false, error: res.error };
     }
+    return { success: false };
   }, [showNotification]);
 
   const verifyAndMarkPaid = useCallback((orderId: string) => {
