@@ -98,14 +98,24 @@
 
 @page {
   size: A4 portrait;
-  margin: 12mm;
+  margin: 10mm;
 }
 
 @media print {
   html,
-  body {
+  body,
+  #root {
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
     background: #ffffff !important;
     color: #0f172a !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  #invoice-printable-card,
+  #invoice-printable-card * {
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
   }
@@ -114,24 +124,59 @@
     display: none !important;
   }
 
+  table {
+    page-break-inside: auto !important;
+    break-inside: auto !important;
+  }
+
+  thead {
+    display: table-header-group !important;
+  }
+
+  tfoot {
+    display: table-footer-group !important;
+  }
+
   tr,
+  .invoice-card,
   .print-avoid-break {
-    page-break-inside: avoid;
-    break-inside: avoid;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  svg.invoice-print-svg {
+    display: inline-block !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
   }
 
   body.invoice-printing-active > #root > *:not(.invoice-print-portal) {
     display: none !important;
   }
 
+  .invoice-print-portal {
+    position: static !important;
+    inset: auto !important;
+    height: auto !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    display: block !important;
+  }
+
   #invoice-printable-card {
     width: 100% !important;
-    max-width: 100% !important;
-    margin: 0 !important;
+    max-width: 210mm !important;
+    margin: 0 auto !important;
     padding: 0 !important;
     border: none !important;
     box-shadow: none !important;
+    overflow: visible !important;
   }
 }
+
 
 

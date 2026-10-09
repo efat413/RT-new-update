@@ -89,12 +89,14 @@ export function generateInvoiceHtml(order: Order, settings: StoreSettings): stri
   <style>
     @page {
       size: A4 portrait;
-      margin: 12mm;
+      margin: 10mm;
     }
     * {
       box-sizing: border-box;
       margin: 0;
       padding: 0;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
     }
     body {
       font-family: 'Plus Jakarta Sans', 'Noto Sans Bengali', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -104,18 +106,24 @@ export function generateInvoiceHtml(order: Order, settings: StoreSettings): stri
       -webkit-print-color-adjust: exact !important;
       print-color-adjust: exact !important;
     }
-    tr, .print-avoid-break {
-      page-break-inside: avoid;
-      break-inside: avoid;
+    table {
+      page-break-inside: auto;
+      break-inside: auto;
+    }
+    tr, .invoice-card, .print-avoid-break {
+      page-break-inside: avoid !important;
+      break-inside: avoid !important;
     }
     .invoice-container {
-      max-width: 820px;
+      max-width: 210mm;
       margin: 0 auto;
       background: #ffffff;
       padding: 32px 36px;
       border-radius: 16px;
       box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
       border: 1px solid #e2e8f0;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
     }
     .rainbow-bar {
       height: 4px;
