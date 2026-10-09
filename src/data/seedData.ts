@@ -37,7 +37,70 @@ export const INITIAL_CATEGORIES: Category[] = [
   },
 ];
 
-export const INITIAL_PRODUCTS: Product[] = [
+export const INITIAL_REVIEWS: ProductReview[] = [
+  {
+    id: 'rev-1',
+    productId: 'prod-wallet-01',
+    authorName: 'Siam Ahmed',
+    rating: 5,
+    comment: 'Authentic pure cowhide leather! RFID works as expected and stitching is top-notch. Fast delivery within Dhaka in 24 hours.',
+    status: 'approved',
+    approvedAt: '2026-03-05T14:20:00.000Z',
+    approvedBy: 'admin',
+    createdAt: '2026-03-05T14:20:00.000Z',
+    verifiedPurchase: true,
+  },
+  {
+    id: 'rev-2',
+    productId: 'prod-wallet-01',
+    authorName: 'Mohammad Faruk',
+    rating: 5,
+    comment: 'Very slim design. Fits 8 cards easily without feeling bulky in the pocket. High quality packaging.',
+    status: 'approved',
+    approvedAt: '2026-03-08T09:15:00.000Z',
+    approvedBy: 'admin',
+    createdAt: '2026-03-08T09:15:00.000Z',
+    verifiedPurchase: true,
+  },
+  {
+    id: 'rev-3',
+    productId: 'prod-watch-03',
+    authorName: 'Tanvir Hasan',
+    rating: 5,
+    comment: 'Sublime finish on the watch dial. The sapphire glass is scratch-proof and looks exceptionally elegant with formal shirts.',
+    status: 'approved',
+    approvedAt: '2026-03-09T18:40:00.000Z',
+    approvedBy: 'admin',
+    createdAt: '2026-03-09T18:40:00.000Z',
+    verifiedPurchase: true,
+  },
+  {
+    id: 'rev-4',
+    productId: 'prod-tws-01',
+    authorName: 'Rayhan Chowdhury',
+    rating: 5,
+    comment: 'Active noise cancellation (ANC) works surprisingly well for the price. Deep bass and crystal clear call microphones.',
+    status: 'approved',
+    approvedAt: '2026-03-10T11:30:00.000Z',
+    approvedBy: 'admin',
+    createdAt: '2026-03-10T11:30:00.000Z',
+    verifiedPurchase: true,
+  },
+  {
+    id: 'rev-5',
+    productId: 'prod-gift-01',
+    authorName: 'Nusrat Jahan',
+    rating: 5,
+    comment: 'Bought this as an anniversary gift. The engraving quality and velvet packaging made it very special. Highly recommended!',
+    status: 'approved',
+    approvedAt: '2026-03-12T16:50:00.000Z',
+    approvedBy: 'admin',
+    createdAt: '2026-03-12T16:50:00.000Z',
+    verifiedPurchase: true,
+  },
+];
+
+const RAW_INITIAL_PRODUCTS: Product[] = [
   // 1. Men's Accessories
   {
     id: 'prod-wallet-01',
@@ -348,6 +411,25 @@ export const INITIAL_PRODUCTS: Product[] = [
   },
 ];
 
+/**
+ * Products statistics: Derived strictly from approved reviews as the single source of truth.
+ * Products with no approved reviews strictly have 0 reviews and 0.0 rating.
+ */
+export const INITIAL_PRODUCTS: Product[] = RAW_INITIAL_PRODUCTS.map((prod) => {
+  const approved = INITIAL_REVIEWS.filter(
+    (r) => r.productId === prod.id && r.status === 'approved'
+  );
+  const reviewsCount = approved.length;
+  const rating = reviewsCount > 0
+    ? Math.round((approved.reduce((acc, r) => acc + r.rating, 0) / reviewsCount) * 10) / 10
+    : 0;
+  return {
+    ...prod,
+    rating,
+    reviewsCount,
+  };
+});
+
 export const INITIAL_ORDERS: Order[] = [
   {
     id: 'ord-80124',
@@ -529,54 +611,6 @@ export const INITIAL_COUPONS: Coupon[] = [
     minSpend: 1500,
     description: 'Special Eid Festival ৳150 Off on orders above ৳1,500',
     isActive: true,
-  },
-];
-
-export const INITIAL_REVIEWS: ProductReview[] = [
-  {
-    id: 'rev-1',
-    productId: 'prod-wallet-01',
-    authorName: 'Siam Ahmed',
-    rating: 5,
-    comment: 'Authentic pure cowhide leather! RFID works as expected and stitching is top-notch. Fast delivery within Dhaka in 24 hours.',
-    createdAt: '2026-03-05T14:20:00.000Z',
-    verifiedPurchase: true,
-  },
-  {
-    id: 'rev-2',
-    productId: 'prod-wallet-01',
-    authorName: 'Mohammad Faruk',
-    rating: 5,
-    comment: 'Very slim design. Fits 8 cards easily without feeling bulky in the pocket. High quality packaging.',
-    createdAt: '2026-03-08T09:15:00.000Z',
-    verifiedPurchase: true,
-  },
-  {
-    id: 'rev-3',
-    productId: 'prod-watch-03',
-    authorName: 'Tanvir Hasan',
-    rating: 5,
-    comment: 'Sublime finish on the watch dial. The sapphire glass is scratch-proof and looks exceptionally elegant with formal shirts.',
-    createdAt: '2026-03-09T18:40:00.000Z',
-    verifiedPurchase: true,
-  },
-  {
-    id: 'rev-4',
-    productId: 'prod-tws-01',
-    authorName: 'Rayhan Chowdhury',
-    rating: 5,
-    comment: 'Active noise cancellation (ANC) works surprisingly well for the price. Deep bass and crystal clear call microphones.',
-    createdAt: '2026-03-10T11:30:00.000Z',
-    verifiedPurchase: true,
-  },
-  {
-    id: 'rev-5',
-    productId: 'prod-gift-01',
-    authorName: 'Nusrat Jahan',
-    rating: 5,
-    comment: 'Bought this as an anniversary gift. The engraving quality and velvet packaging made it very special. Highly recommended!',
-    createdAt: '2026-03-12T16:50:00.000Z',
-    verifiedPurchase: true,
   },
 ];
 

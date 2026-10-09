@@ -2790,6 +2790,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           }, 403);
         }
 
+        // Security: Stop normal product creation from accepting manual rating/review-count changes
+        delete productData.rating;
+        delete productData.reviewsCount;
+        delete productData.reviews_count;
+
         const created = await insertProduct(env.DB, productData);
         const isSuperAdmin = auth!.role === 'super_admin';
         const canViewBuyingPrice = isSuperAdmin || hasPermission(auth!, 'product.view_buying_price') || hasPermission(auth!, 'product.buying_price');
@@ -2957,6 +2962,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
             requiredPermission: 'product.manage_buying_price',
           }, 403);
         }
+
+        // Security: Stop normal product editing from accepting manual rating/review-count changes
+        delete updates.rating;
+        delete updates.reviewsCount;
+        delete updates.reviews_count;
 
         const updated = await updateProductInD1(env.DB, prodId, updates);
         const isSuperAdmin = auth!.role === 'super_admin';

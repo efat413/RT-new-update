@@ -33,7 +33,6 @@ export interface AdminContextType {
   updateProduct: (id: string, updates: Partial<Product>) => Promise<{ success: boolean; product?: Product; error?: string }>;
   deleteProduct: (id: string) => Promise<{ success: boolean; error?: string }>;
   increaseStock: (productId: string, amount: number) => Promise<void>;
-  adjustProductRating: (productId: string, rating: number, reviewsCount?: number) => Promise<void>;
   toggleProductFeatured: (productId: string, isFeatured?: boolean, sortOrder?: number) => Promise<{ success: boolean; error?: string }>;
   loadAdminAllProducts: () => Promise<void>;
 

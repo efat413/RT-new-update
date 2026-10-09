@@ -169,11 +169,10 @@ class MockReviewD1Database {
   }
 
   querySql(sql: string, bindings: any[] = []) {
-    if (sql.includes('FROM users') && sql.includes('WHERE id = ?')) {
-      return this.users.filter((u) => u.id === bindings[0]);
-    }
-    if (sql.includes('FROM users') && sql.includes('WHERE email = ?')) {
-      return this.users.filter((u) => u.email.toLowerCase() === String(bindings[0]).toLowerCase());
+    if (sql.includes('FROM users')) {
+      return this.users.filter((u) =>
+        bindings.some((b) => b && (u.id === b || u.email.toLowerCase() === String(b).toLowerCase()))
+      );
     }
     if (sql.includes('FROM reviews WHERE id = ?')) {
       return this.reviews.filter((r) => r.id === bindings[0]);

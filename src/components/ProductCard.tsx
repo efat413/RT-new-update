@@ -12,6 +12,7 @@ interface ProductCardProps {
 
 const ProductCardComponent: React.FC<ProductCardProps> = ({ product, priority = false }) => {
   const {
+    reviews,
     addToCart,
     quickBuy,
     setQuickViewProduct,
@@ -29,6 +30,20 @@ const ProductCardComponent: React.FC<ProductCardProps> = ({ product, priority = 
   } = useStore();
   const [isAdded, setIsAdded] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
+
+  const approvedReviews = Array.isArray(reviews)
+    ? reviews.filter((r) => r && r.productId === product.id && r.status === 'approved')
+    : [];
+
+  const reviewsCount = approvedReviews.length > 0
+    ? approvedReviews.length
+    : (Array.isArray(reviews) && reviews.length > 0
+        ? 0
+        : (typeof product.reviewsCount === 'number' && product.reviewsCount > 0 ? product.reviewsCount : 0));
+
+  const averageRating = approvedReviews.length > 0
+    ? Math.round((approvedReviews.reduce((sum, r) => sum + (Number(r.rating) || 0), 0) / approvedReviews.length) * 10) / 10
+    : (reviewsCount > 0 && typeof product.rating === 'number' && product.rating > 0 ? product.rating : 0);
 
   const category = categories.find((c) => c.id === product.categoryId);
   const isSavedInWishlist = wishlist.includes(product.id);
@@ -242,20 +257,12 @@ const ProductCardComponent: React.FC<ProductCardProps> = ({ product, priority = 
                 Category
               </span>
             )}
-            {typeof product.reviewsCount === 'number' && product.reviewsCount > 0 ? (
+            {reviewsCount > 0 && averageRating > 0 ? (
               <div className="flex items-center gap-0.5 sm:gap-1 text-amber-500 font-bold text-[10px] sm:text-xs shrink-0">
                 <Star className="w-3 h-3 sm:w-3.5 sm:h-3.5 fill-amber-400 text-amber-400" />
-                <span>{typeof product.rating === 'number' ? product.rating.toFixed(1) : product.rating}</span>
+                <span>{averageRating.toFixed(1)}</span>
                 <span className="text-[9px] sm:text-[10px] text-slate-400 font-normal">
-                  ({product.reviewsCount})
-                </span>
-              </div>
-            ) : (product.reviewsCount !== undefined && Number(product.reviewsCount) > 0) ? (
-              <div className="flex items-center gap-0.5 sm:gap-1 text-amber-500 font-bold text-[10px] sm:text-xs shrink-0">
-                <Star className="w-3 h-3 sm:w-3.5 sm:h-3.5 fill-amber-400 text-amber-400" />
-                <span>{typeof product.rating === 'number' ? product.rating.toFixed(1) : product.rating}</span>
-                <span className="text-[9px] sm:text-[10px] text-slate-400 font-normal">
-                  ({Number(product.reviewsCount)})
+                  ({reviewsCount})
                 </span>
               </div>
             ) : (

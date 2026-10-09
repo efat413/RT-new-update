@@ -158,6 +158,26 @@ export async function ensureProductTableSchema(db: D1Database): Promise<Set<stri
     } catch (err: any) {
       console.warn('[D1] product_slug_history table self-heal notice:', err?.message || err);
     }
+
+    // Self-heal: ensure product review stats strictly reflect approved reviews
+    try {
+      await db.prepare(`
+        UPDATE products
+        SET 
+          reviews_count = COALESCE((
+            SELECT COUNT(*) 
+            FROM reviews 
+            WHERE reviews.product_id = products.id AND reviews.status = 'approved'
+          ), 0),
+          rating = COALESCE((
+            SELECT ROUND(AVG(CAST(rating AS REAL)), 1) 
+            FROM reviews 
+            WHERE reviews.product_id = products.id AND reviews.status = 'approved'
+          ), 0.0)
+      `).run();
+    } catch (err: any) {
+      console.warn('[D1] Product review stats self-heal notice:', err?.message || err);
+    }
   }
 
   return columns;
@@ -643,7 +663,14 @@ export function rowToProduct(row: ProductRow): Product {
     stock: Number(row.stock) || 0,
     featured: Boolean(row.featured),
     featuredSortOrder: row.featured_sort_order != null ? Number(row.featured_sort_order) : 0,
-    rating: Number(row.rating) || 5.0,
+    rating: (() => {
+      const count = row.reviews_count != null && Number.isFinite(Number(row.reviews_count))
+        ? Math.max(0, Math.floor(Number(row.reviews_count)))
+        : 0;
+      return count > 0 && row.rating != null && Number.isFinite(Number(row.rating))
+        ? Math.min(5, Math.max(1, Math.round(Number(row.rating) * 10) / 10))
+        : 0;
+    })(),
     reviewsCount: row.reviews_count != null && Number.isFinite(Number(row.reviews_count))
       ? Math.max(0, Math.floor(Number(row.reviews_count)))
       : 0,
@@ -1211,15 +1238,10 @@ export async function insertProduct(db: D1Database, input: any): Promise<Product
   const featuredSortOrder = input.featuredSortOrder != null && !isNaN(Number(input.featuredSortOrder))
     ? Math.max(0, Math.floor(Number(input.featuredSortOrder)))
     : 0;
-  const rating = input.rating != null && !isNaN(Number(input.rating))
-    ? Math.max(1, Math.min(5, Number(input.rating)))
-    : 5.0;
-  const parsedReviewsCount = input.reviewsCount !== undefined && input.reviewsCount !== null
-    ? Number(input.reviewsCount)
-    : 0;
-  const reviewsCount = Number.isFinite(parsedReviewsCount)
-    ? Math.max(0, Math.floor(parsedReviewsCount))
-    : 0;
+  // Manual rating & review count inputs are obsolete.
+  // Approved review records are the only source of truth for public rating and review count.
+  const rating = 0;
+  const reviewsCount = 0;
   const specs = Array.isArray(input.specs) ? input.specs : [];
   const sizes = Array.isArray(input.sizes) ? input.sizes : [];
   const colors = Array.isArray(input.colors) ? input.colors : [];
@@ -1310,14 +1332,6 @@ export async function updateProductInD1(
   const images = updates.images !== undefined ? updates.images : existing.images;
   const stock = updates.stock !== undefined ? Math.max(0, Math.floor(Number(updates.stock))) : existing.stock;
   const featured = updates.featured !== undefined ? (updates.featured ? 1 : 0) : (existing.featured ? 1 : 0);
-  const rating = updates.rating !== undefined ? Number(updates.rating) : existing.rating;
-  let reviewsCount = existing.reviewsCount ?? 0;
-  if (updates.reviewsCount !== undefined) {
-    const parsedRev = updates.reviewsCount !== null
-      ? Number(updates.reviewsCount)
-      : 0;
-    reviewsCount = Number.isFinite(parsedRev) ? Math.max(0, Math.floor(parsedRev)) : 0;
-  }
   const specs = updates.specs !== undefined ? updates.specs : existing.specs;
   const sizes = updates.sizes !== undefined ? updates.sizes : existing.sizes;
   const colors = updates.colors !== undefined ? updates.colors : existing.colors;
@@ -1347,6 +1361,8 @@ export async function updateProductInD1(
     }
   }
 
+  // Approved review statistics (rating, reviews_count) are strictly maintained via syncProductReviewStatsInD1.
+  // Normal product editing updates only product content, inventory, pricing, and category.
   const candidateUpdates: { col: string; val: any }[] = [
     { col: 'slug', val: resolvedSlug },
     { col: 'title', val: title },
@@ -1360,8 +1376,6 @@ export async function updateProductInD1(
     { col: 'stock', val: stock },
     { col: 'featured', val: featured },
     { col: 'featured_sort_order', val: featuredSortOrder },
-    { col: 'rating', val: rating },
-    { col: 'reviews_count', val: reviewsCount },
     { col: 'specs_json', val: JSON.stringify(specs) },
     { col: 'sizes_json', val: JSON.stringify(sizes) },
     { col: 'colors_json', val: JSON.stringify(colors) },
@@ -2478,6 +2492,9 @@ export async function insertReview(db: D1Database, input: any): Promise<ProductR
 
   const row = await db.prepare('SELECT * FROM reviews WHERE id = ?').bind(id).first<ReviewRow>();
   if (!row) throw new Error('Failed to retrieve inserted review');
+  if (status === 'approved') {
+    await syncProductReviewStatsInD1(db, productId);
+  }
   const rev = rowToReview(row);
   rev.status = status;
   rev.approvedAt = approvedAt;
@@ -2572,7 +2589,11 @@ export async function verifyCustomerPurchaseInD1(
 }
 
 export async function deleteReviewFromD1(db: D1Database, id: string): Promise<boolean> {
+  const existing = await db.prepare('SELECT product_id FROM reviews WHERE id = ?').bind(id).first<{ product_id: string }>();
   const res = await db.prepare('DELETE FROM reviews WHERE id = ?').bind(id).run();
+  if (existing?.product_id) {
+    await syncProductReviewStatsInD1(db, existing.product_id);
+  }
   return res.success;
 }
 
@@ -2598,6 +2619,7 @@ export async function updateReviewStatusInD1(
   }
   const row = await db.prepare('SELECT * FROM reviews WHERE id = ?').bind(id).first<ReviewRow>();
   if (!row) return null;
+  await syncProductReviewStatsInD1(db, row.product_id);
   const rev = rowToReview(row);
   rev.status = cleanStatus;
   rev.approvedAt = nowIso;
@@ -2663,9 +2685,47 @@ export async function updateReviewInD1(
   }
   const row = await db.prepare('SELECT * FROM reviews WHERE id = ?').bind(id).first<ReviewRow>();
   if (!row) return null;
+  await syncProductReviewStatsInD1(db, row.product_id);
   const rev = rowToReview(row);
   if (updates.status) rev.status = updates.status;
   return rev;
+}
+
+/**
+ * Synchronizes products.rating and products.reviews_count strictly from approved reviews in D1.
+ * Ensures approved review records are the only source of truth for public review statistics.
+ */
+export async function syncProductReviewStatsInD1(
+  db: D1Database,
+  productId: string
+): Promise<{ rating: number; reviewsCount: number }> {
+  try {
+    const stats = await db
+      .prepare(`
+        SELECT 
+          COUNT(*) as approved_count,
+          AVG(CAST(rating AS REAL)) as approved_avg
+        FROM reviews
+        WHERE product_id = ? AND status = 'approved'
+      `)
+      .bind(productId)
+      .first<{ approved_count: number; approved_avg: number | null }>();
+
+    const reviewsCount = stats && stats.approved_count != null ? Math.max(0, Number(stats.approved_count)) : 0;
+    const rating = reviewsCount > 0 && stats?.approved_avg != null
+      ? Math.min(5, Math.max(1, Math.round(Number(stats.approved_avg) * 10) / 10))
+      : 0;
+
+    await db
+      .prepare('UPDATE products SET rating = ?, reviews_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .bind(rating, reviewsCount, productId)
+      .run();
+
+    return { rating, reviewsCount };
+  } catch (err) {
+    console.warn(`[D1] Failed to sync product review stats for ${productId}:`, err);
+    return { rating: 0, reviewsCount: 0 };
+  }
 }
 
 // ==============================================================

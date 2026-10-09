@@ -175,6 +175,17 @@ function localApiDevPlugin(): Plugin {
   let devCoupons: any[] = [...INITIAL_COUPONS];
   let devReviews: any[] = [...INITIAL_REVIEWS];
 
+  function syncDevProductReviewStats(productId: string) {
+    const prod = devProducts.find((p) => p.id === productId);
+    if (!prod) return;
+    const approved = devReviews.filter((r) => r.productId === productId && r.status === 'approved');
+    prod.reviewsCount = approved.length;
+    prod.rating = approved.length > 0
+      ? Number((approved.reduce((acc, r) => acc + (Number(r.rating) || 0), 0) / approved.length).toFixed(1))
+      : 0;
+  }
+  devProducts.forEach((p) => syncDevProductReviewStats(p.id));
+
   // Resolve Super Admin identities server-side from environment variables
   // Real production Super Admin identities must NEVER be hardcoded into source code fallbacks
   const configuredSuperAdminEmails: string[] = (
@@ -2702,10 +2713,8 @@ function localApiDevPlugin(): Plugin {
                 images: Array.isArray(product.images) ? product.images : [product.imageUrl].filter(Boolean),
                 stock: Number(product.stock) || 0,
                 featured: Boolean(product.featured),
-                rating: Number(product.rating) || 5.0,
-                reviewsCount: (product.reviewsCount !== undefined && product.reviewsCount !== null && product.reviewsCount !== '')
-                  ? (Number.isFinite(Number(product.reviewsCount)) ? Math.max(0, Math.floor(Number(product.reviewsCount))) : 0)
-                  : 0,
+                rating: 0,
+                reviewsCount: 0,
                 specs: product.specs || [],
                 sizes: product.sizes || [],
                 colors: product.colors || [],
@@ -2869,14 +2878,9 @@ function localApiDevPlugin(): Plugin {
                 if ('videoUrl' in updates) {
                   updates.videoUrl = updates.videoUrl ? String(updates.videoUrl).trim() : undefined;
                 }
-                if (updates.reviewsCount !== undefined) {
-                  const parsedRev = updates.reviewsCount !== null && updates.reviewsCount !== '' ? Number(updates.reviewsCount) : 0;
-                  updates.reviewsCount = Number.isFinite(parsedRev) ? Math.max(0, Math.floor(parsedRev)) : 0;
-                }
-                if (updates.rating !== undefined) {
-                  const parsedRating = Number(updates.rating);
-                  updates.rating = Number.isFinite(parsedRating) ? Math.max(1, Math.min(5, Number(parsedRating.toFixed(1)))) : 5.0;
-                }
+                delete updates.rating;
+                delete updates.reviewsCount;
+                delete (updates as any).reviews_count;
                 // Handle slug updates or stabilization
                 const oldSlug = devProducts[idx].slug;
                 let slugChanged = false;
@@ -3379,6 +3383,7 @@ function localApiDevPlugin(): Plugin {
                 createdAt: r.createdAt || new Date().toISOString(),
               };
               devReviews.unshift(newR);
+              syncDevProductReviewStats(newR.productId);
               res.statusCode = 201;
               return res.end(JSON.stringify({ success: true, review: newR }));
             });
@@ -3407,6 +3412,7 @@ function localApiDevPlugin(): Plugin {
           target.status = 'approved';
           target.approvedAt = new Date().toISOString();
           target.approvedBy = authResult.auth!.user?.email || authResult.auth!.user?.id || 'admin';
+          syncDevProductReviewStats(target.productId);
           res.statusCode = 200;
           return res.end(JSON.stringify({ success: true, message: 'Review approved successfully.', review: target }));
         }
@@ -3439,6 +3445,7 @@ function localApiDevPlugin(): Plugin {
             target.status = newStatus;
             target.approvedAt = newStatus === 'approved' ? new Date().toISOString() : null;
             target.approvedBy = newStatus === 'approved' ? (authResult.auth!.user?.email || authResult.auth!.user?.id || 'admin') : null;
+            syncDevProductReviewStats(target.productId);
             res.statusCode = 200;
             return res.end(JSON.stringify({ success: true, message: `Review status updated to ${newStatus}.`, review: target }));
           });
@@ -3469,6 +3476,7 @@ function localApiDevPlugin(): Plugin {
             if (r.comment !== undefined) target.comment = String(r.comment).trim();
             if (r.authorName !== undefined || r.author !== undefined) target.authorName = String(r.authorName || r.author).trim();
             if (r.status !== undefined) target.status = String(r.status).trim();
+            syncDevProductReviewStats(target.productId);
 
             res.statusCode = 200;
             return res.end(JSON.stringify({ success: true, message: 'Review updated successfully.', review: target }));
@@ -3488,8 +3496,12 @@ function localApiDevPlugin(): Plugin {
 
           const targetId = decodeURIComponent(devSingleReviewMatch[1]);
           const targetIdx = devReviews.findIndex((r) => r.id === targetId);
+          const delProdId = targetIdx >= 0 ? devReviews[targetIdx].productId : null;
           if (targetIdx >= 0) {
             devReviews.splice(targetIdx, 1);
+          }
+          if (delProdId) {
+            syncDevProductReviewStats(delProdId);
           }
           res.statusCode = 200;
           return res.end(JSON.stringify({ success: true, message: 'Review deleted successfully.' }));
@@ -3498,7 +3510,7 @@ function localApiDevPlugin(): Plugin {
         if (url.pathname === '/api/reviews') {
           if (method === 'GET') {
             const productId = url.searchParams.get('productId') || undefined;
-            const approvedReviews = devReviews.filter((r) => (r.status || 'approved') === 'approved');
+            const approvedReviews = devReviews.filter((r) => r.status === 'approved');
             const filteredReviews = productId ? approvedReviews.filter((r) => r.productId === productId) : approvedReviews;
             res.setHeader('Cache-Control', 'public, max-age=30, s-maxage=60, stale-while-revalidate=30');
             res.setHeader('Vary', 'Origin');
