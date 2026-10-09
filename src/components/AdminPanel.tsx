@@ -21,6 +21,7 @@ import {
   ArrowLeft,
   Search,
   Check,
+  Download,
   X,
   Lock,
   Eye,
@@ -437,6 +438,17 @@ const AdminPanelContent: React.FC = () => {
   const [showInlineSfKeys, setShowInlineSfKeys] = useState(false);
   const [isTestingSettingsSf, setIsTestingSettingsSf] = useState(false);
   const [settingsSfTestResult, setSettingsSfTestResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  // Order Export Modal states
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [exportDatePreset, setExportDatePreset] = useState<'all' | 'today' | 'yesterday' | 'last_7_days' | 'this_month' | 'custom'>('all');
+  const [exportStartDate, setExportStartDate] = useState('');
+  const [exportEndDate, setExportEndDate] = useState('');
+  const [exportStatusFilter, setExportStatusFilter] = useState<string>('all');
+  const [exportPaymentFilter, setExportPaymentFilter] = useState<string>('all');
+  const [exportScope, setExportScope] = useState<'filter' | 'selected'>('filter');
+  const [isExporting, setIsExporting] = useState(false);
+  const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
 
   // Order Edit Modal state
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
@@ -2201,6 +2213,111 @@ const AdminPanelContent: React.FC = () => {
     setEditingOrder(null);
   };
 
+  // --- ORDER EXPORT HANDLERS ---
+  const handleOpenExportModal = () => {
+    // Sync current table filters as default in modal
+    setExportStatusFilter(orderStatusFilter);
+    setExportPaymentFilter(orderPaymentFilter);
+    if (selectedOrderIds.length > 0) {
+      setExportScope('selected');
+    } else {
+      setExportScope('filter');
+    }
+    setIsExportModalOpen(true);
+  };
+
+  const handleApplyExportDatePreset = (preset: 'all' | 'today' | 'yesterday' | 'last_7_days' | 'this_month' | 'custom') => {
+    setExportDatePreset(preset);
+    const now = new Date();
+    const toYMD = (d: Date) => {
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
+
+    if (preset === 'all') {
+      setExportStartDate('');
+      setExportEndDate('');
+    } else if (preset === 'today') {
+      const todayStr = toYMD(now);
+      setExportStartDate(todayStr);
+      setExportEndDate(todayStr);
+    } else if (preset === 'yesterday') {
+      const y = new Date(now);
+      y.setDate(y.getDate() - 1);
+      const yStr = toYMD(y);
+      setExportStartDate(yStr);
+      setExportEndDate(yStr);
+    } else if (preset === 'last_7_days') {
+      const past = new Date(now);
+      past.setDate(past.getDate() - 6);
+      setExportStartDate(toYMD(past));
+      setExportEndDate(toYMD(now));
+    } else if (preset === 'this_month') {
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      setExportStartDate(toYMD(startOfMonth));
+      setExportEndDate(toYMD(now));
+    }
+  };
+
+  const handleDownloadExport = async () => {
+    setIsExporting(true);
+    try {
+      const exportParams: {
+        startDate?: string;
+        endDate?: string;
+        status?: string;
+        paymentStatus?: string;
+        search?: string;
+        orderIds?: string[];
+      } = {};
+
+      if (exportScope === 'selected') {
+        if (selectedOrderIds.length === 0) {
+          showNotification('error', 'No Orders Selected', 'Please select at least one order to export, or choose "Export All Matching Filter".');
+          setIsExporting(false);
+          return;
+        }
+        exportParams.orderIds = selectedOrderIds;
+      } else {
+        if (exportStartDate.trim()) exportParams.startDate = exportStartDate.trim();
+        if (exportEndDate.trim()) exportParams.endDate = exportEndDate.trim();
+        if (exportStatusFilter !== 'all') exportParams.status = exportStatusFilter;
+        if (exportPaymentFilter !== 'all') exportParams.paymentStatus = exportPaymentFilter;
+        if (orderSearch.trim()) exportParams.search = orderSearch.trim();
+      }
+
+      const res = await orderApi.exportOrders(exportParams);
+      if (!res.success || !res.blob) {
+        showNotification('error', 'Export Failed', res.error || 'Failed to generate order export CSV.');
+        setIsExporting(false);
+        return;
+      }
+
+      // Native file download via blob URL
+      const blobUrl = window.URL.createObjectURL(res.blob);
+      const downloadAnchor = document.createElement('a');
+      downloadAnchor.href = blobUrl;
+      downloadAnchor.download = res.filename || `orders-export-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(downloadAnchor);
+      downloadAnchor.click();
+      document.body.removeChild(downloadAnchor);
+
+      // Revoke blob URL after small delay
+      setTimeout(() => {
+        window.URL.revokeObjectURL(blobUrl);
+      }, 1000);
+
+      showNotification('success', 'Export Downloaded', `Successfully exported orders to ${res.filename || 'CSV file'}.`);
+      setIsExportModalOpen(false);
+    } catch (err: any) {
+      showNotification('error', 'Export Error', err?.message || 'An error occurred while downloading order export.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   // --- PASSWORD RESET HANDLERS ---
   const handleGenerateRandomPassword = () => {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%';
@@ -3420,6 +3537,17 @@ const AdminPanelContent: React.FC = () => {
               <div className="flex items-center gap-2">
                 <button
                   type="button"
+                  id="admin-export-orders-btn"
+                  onClick={handleOpenExportModal}
+                  disabled={!hasPermission('canManageOrders')}
+                  className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold flex items-center gap-2 shadow-xs transition-all active:scale-95 cursor-pointer"
+                  title="Export orders as CSV for spreadsheets and accounting"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Export Orders</span>
+                </button>
+                <button
+                  type="button"
                   id="sync-all-courier-btn"
                   onClick={handleSyncAllCouriers}
                   disabled={isSyncingCouriers || !hasPermission('canManageOrders')}
@@ -3610,6 +3738,24 @@ const AdminPanelContent: React.FC = () => {
                 <table className="w-full text-left text-xs border-collapse">
                   <thead>
                     <tr className="bg-slate-100 text-slate-600 font-bold uppercase tracking-wider text-[10px] border-b border-slate-200">
+                      <th className="p-3.5 w-10 text-center">
+                        <input
+                          type="checkbox"
+                          id="select-all-orders-checkbox"
+                          aria-label="Select all orders on this page"
+                          checked={displayedOrders.length > 0 && displayedOrders.every((o) => selectedOrderIds.includes(o.id))}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              const newIds = Array.from(new Set([...selectedOrderIds, ...displayedOrders.map((o) => o.id)]));
+                              setSelectedOrderIds(newIds);
+                            } else {
+                              const pageIds = new Set(displayedOrders.map((o) => o.id));
+                              setSelectedOrderIds(selectedOrderIds.filter((id) => !pageIds.has(id)));
+                            }
+                          }}
+                          className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                        />
+                      </th>
                       <th className="p-3.5">Order / Date</th>
                       <th className="p-3.5">Customer & Delivery</th>
                       <th className="p-3.5">Items Ordered</th>
@@ -3622,14 +3768,14 @@ const AdminPanelContent: React.FC = () => {
                   <tbody className="divide-y divide-slate-100">
                     {totalOrdersCount === 0 && displayedOrders.length === 0 ? (
                       <tr>
-                        <td colSpan={7} className="p-8 text-center text-slate-400">
+                        <td colSpan={8} className="p-8 text-center text-slate-400">
                           <ShoppingBag className="w-8 h-8 mx-auto mb-2 text-slate-300" />
                           No customer orders placed yet.
                         </td>
                       </tr>
                     ) : displayedOrders.length === 0 ? (
                       <tr>
-                        <td colSpan={7} className="p-8 text-center text-slate-500">
+                        <td colSpan={8} className="p-8 text-center text-slate-500">
                           <Filter className="w-8 h-8 mx-auto mb-2 text-slate-400" />
                           <p className="font-bold text-sm text-slate-800">
                             No {orderStatusFilter !== 'all' ? `"${orderStatusFilter}"` : ''} orders match your current filter.
@@ -3655,9 +3801,28 @@ const AdminPanelContent: React.FC = () => {
                       displayedOrders.map((ord) => {
                         const isPaid = ord.paymentStatus === 'Paid' || ord.paymentStatus === 'PAID';
                         const isDbbl = ord.paymentMethod === 'dbbl';
+                        const isSelected = selectedOrderIds.includes(ord.id);
 
                         return (
-                          <tr key={ord.id} className="hover:bg-slate-50/80 transition-colors">
+                          <tr key={ord.id} className={`transition-colors ${isSelected ? 'bg-emerald-50/60 hover:bg-emerald-50' : 'hover:bg-slate-50/80'}`}>
+                            {/* Row Checkbox */}
+                            <td className="p-3.5 align-top text-center">
+                              <input
+                                type="checkbox"
+                                id={`select-order-${ord.id}`}
+                                aria-label={`Select order ${ord.orderNumber}`}
+                                checked={isSelected}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setSelectedOrderIds((prev) => [...prev, ord.id]);
+                                  } else {
+                                    setSelectedOrderIds((prev) => prev.filter((id) => id !== ord.id));
+                                  }
+                                }}
+                                className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer mt-1"
+                              />
+                            </td>
+
                             {/* Order & Date */}
                             <td className="p-3.5 align-top">
                               <span className="font-mono font-bold text-slate-900 block">
@@ -10630,6 +10795,233 @@ const AdminPanelContent: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================ */}
+      {/* MODAL: EXPORT ORDERS (CSV / EXCEL SPREADSHEET)               */}
+      {/* ============================================================ */}
+      {isExportModalOpen && (
+        <div
+          id="export-orders-modal-backdrop"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-in fade-in duration-150"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !isExporting) setIsExportModalOpen(false);
+          }}
+        >
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-5 animate-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                  <Download className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-display font-bold text-base text-slate-900">
+                    Export Orders
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Download UTF-8 BOM CSV spreadsheet compatible with Excel & accounting
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                id="close-export-modal-btn"
+                disabled={isExporting}
+                onClick={() => setIsExportModalOpen(false)}
+                className="p-1.5 rounded-xl hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors disabled:opacity-50 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Scope Selection */}
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-slate-700 block">
+                Export Scope
+              </label>
+              <div className="grid grid-cols-2 gap-2.5">
+                <label className={`flex items-center gap-2.5 p-3 rounded-2xl border cursor-pointer transition-all ${
+                  exportScope === 'filter'
+                    ? 'border-emerald-500 bg-emerald-50/60 text-emerald-950 font-bold'
+                    : 'border-slate-200 bg-slate-50 hover:bg-slate-100/70 text-slate-700'
+                }`}>
+                  <input
+                    type="radio"
+                    name="exportScope"
+                    value="filter"
+                    checked={exportScope === 'filter'}
+                    onChange={() => setExportScope('filter')}
+                    className="w-4 h-4 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                  />
+                  <div>
+                    <span className="text-xs block">All Matching Filter</span>
+                    <span className="text-[10px] text-slate-500 block font-normal">Based on criteria below</span>
+                  </div>
+                </label>
+
+                <label className={`flex items-center gap-2.5 p-3 rounded-2xl border cursor-pointer transition-all ${
+                  exportScope === 'selected'
+                    ? 'border-emerald-500 bg-emerald-50/60 text-emerald-950 font-bold'
+                    : 'border-slate-200 bg-slate-50 hover:bg-slate-100/70 text-slate-700'
+                }`}>
+                  <input
+                    type="radio"
+                    name="exportScope"
+                    value="selected"
+                    checked={exportScope === 'selected'}
+                    onChange={() => setExportScope('selected')}
+                    className="w-4 h-4 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                  />
+                  <div>
+                    <span className="text-xs block">Selected Rows Only</span>
+                    <span className="text-[10px] text-slate-500 block font-normal">
+                      {selectedOrderIds.length} row{selectedOrderIds.length !== 1 ? 's' : ''} checked
+                    </span>
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            {exportScope === 'filter' && (
+              <div className="space-y-4 pt-1">
+                {/* Date Presets */}
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-slate-700 flex items-center justify-between">
+                    <span>Date Range Preset</span>
+                    <span className="text-[11px] text-slate-400 font-normal">Order creation date</span>
+                  </label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      { id: 'all', label: 'All Time' },
+                      { id: 'today', label: 'Today' },
+                      { id: 'yesterday', label: 'Yesterday' },
+                      { id: 'last_7_days', label: 'Last 7 Days' },
+                      { id: 'this_month', label: 'This Month' },
+                      { id: 'custom', label: 'Custom Range' },
+                    ].map((preset) => (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        id={`export-preset-${preset.id}`}
+                        onClick={() => handleApplyExportDatePreset(preset.id as any)}
+                        className={`px-2.5 py-1 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                          exportDatePreset === preset.id
+                            ? 'bg-slate-900 text-white shadow-xs'
+                            : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                        }`}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Custom Date Range Inputs */}
+                {exportDatePreset === 'custom' && (
+                  <div className="grid grid-cols-2 gap-3 p-3 rounded-2xl bg-slate-50 border border-slate-200">
+                    <div>
+                      <label className="text-[11px] font-bold text-slate-600 block mb-1">
+                        Start Date
+                      </label>
+                      <input
+                        type="date"
+                        id="export-start-date"
+                        value={exportStartDate}
+                        onChange={(e) => setExportStartDate(e.target.value)}
+                        className="w-full px-2.5 py-1.5 text-xs rounded-xl border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-bold text-slate-600 block mb-1">
+                        End Date
+                      </label>
+                      <input
+                        type="date"
+                        id="export-end-date"
+                        value={exportEndDate}
+                        onChange={(e) => setExportEndDate(e.target.value)}
+                        className="w-full px-2.5 py-1.5 text-xs rounded-xl border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Dropdowns: Order Status & Payment Status */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 block mb-1.5">
+                      Order Status
+                    </label>
+                    <select
+                      id="export-status-select"
+                      value={exportStatusFilter}
+                      onChange={(e) => setExportStatusFilter(e.target.value)}
+                      className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-slate-50 font-medium text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
+                    >
+                      <option value="all">All Statuses</option>
+                      <option value="Pending">Pending / Processing</option>
+                      <option value="Shipped">Shipped</option>
+                      <option value="Delivered">Delivered</option>
+                      <option value="Cancelled">Cancelled</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 block mb-1.5">
+                      Payment Status
+                    </label>
+                    <select
+                      id="export-payment-select"
+                      value={exportPaymentFilter}
+                      onChange={(e) => setExportPaymentFilter(e.target.value)}
+                      className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-slate-50 font-medium text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
+                    >
+                      <option value="all">All Payments</option>
+                      <option value="PAID">Paid / Verified</option>
+                      <option value="DUE">Due / Pending</option>
+                      <option value="PARTIAL">Partially Paid</option>
+                      <option value="dbbl">DBBL / NexusPay</option>
+                      <option value="cod">Cash On Delivery</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Actions */}
+            <div className="flex items-center gap-2 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                id="export-cancel-btn"
+                disabled={isExporting}
+                onClick={() => setIsExportModalOpen(false)}
+                className="flex-1 py-2.5 px-4 rounded-xl border border-slate-300 text-slate-700 font-bold text-xs hover:bg-slate-50 transition-colors disabled:opacity-50 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                id="export-confirm-download-btn"
+                disabled={isExporting || (exportScope === 'selected' && selectedOrderIds.length === 0)}
+                onClick={handleDownloadExport}
+                className="flex-1 py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs shadow-md hover:shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
+              >
+                {isExporting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Generating CSV...</span>
+                  </>
+                ) : (
+                  <>
+                    <Download className="w-4 h-4" />
+                    <span>Download CSV</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}

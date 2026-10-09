@@ -537,4 +537,59 @@ export const orderApi = {
       };
     }
   },
+
+  /**
+   * Downloads filtered order export CSV from Cloudflare D1
+   */
+  async exportOrders(params: {
+    startDate?: string;
+    endDate?: string;
+    status?: string;
+    paymentStatus?: string;
+    search?: string;
+    orderIds?: string[];
+  }): Promise<{ success: boolean; blob?: Blob; filename?: string; error?: string }> {
+    try {
+      const url = new URL(`${API_BASE}/admin/orders/export`, window.location.origin);
+      if (params.startDate) url.searchParams.set('startDate', params.startDate);
+      if (params.endDate) url.searchParams.set('endDate', params.endDate);
+      if (params.status && params.status !== 'all') url.searchParams.set('status', params.status);
+      if (params.paymentStatus && params.paymentStatus !== 'all') url.searchParams.set('paymentStatus', params.paymentStatus);
+      if (params.search && params.search.trim()) url.searchParams.set('search', params.search.trim());
+      if (params.orderIds && params.orderIds.length > 0) {
+        url.searchParams.set('orderIds', params.orderIds.join(','));
+      }
+
+      const res = await fetch(url.toString(), {
+        method: 'GET',
+        credentials: 'include',
+        headers: getHeaders(),
+      });
+
+      if (!res.ok) {
+        let errMessage = `Export failed with HTTP ${res.status}`;
+        try {
+          const errData = await res.json();
+          errMessage = errData.error || errData.message || errMessage;
+        } catch {}
+        if (res.status === 401) {
+          notifyAuthUnauthorized({ url: url.toString(), error: errMessage });
+        }
+        return { success: false, error: errMessage };
+      }
+
+      const blob = await res.blob();
+      let filename = `orders-export-${new Date().toISOString().slice(0, 10)}.csv`;
+      const disposition = res.headers.get('Content-Disposition');
+      if (disposition && disposition.includes('filename=')) {
+        const match = disposition.match(/filename=["']?([^"';]+)["']?/);
+        if (match && match[1]) filename = match[1];
+      }
+
+      return { success: true, blob, filename };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Network error while exporting orders' };
+    }
+  },
 };
+
