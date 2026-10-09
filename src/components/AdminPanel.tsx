@@ -4844,7 +4844,7 @@ const AdminPanelContent: React.FC = () => {
                         )}
                       </div>
 
-                      {/* Custom Option: Product Rating & Reviews with Quick Adjust */}
+                      {/* Product Rating & Reviews */}
                       <div className="px-4 py-2 bg-amber-50/70 border-t border-amber-100 flex items-center justify-between text-xs">
                         <div className="flex items-center gap-1.5">
                           <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-500" />
@@ -4855,32 +4855,18 @@ const AdminPanelContent: React.FC = () => {
                             {(product.reviewsCount ?? 0) > 0 ? `(${product.reviewsCount} revs)` : '(No reviews)'}
                           </span>
                         </div>
-                        <div className="flex items-center gap-1.5">
-                          {hasPermission('review.manage') && (
-                            <button
-                              id={`admin-add-review-${product.id}`}
-                              type="button"
-                              onClick={() => openAdminAddReviewModal(product)}
-                              className="px-2 py-1 rounded-lg bg-rose-100 hover:bg-rose-200 text-rose-900 font-bold text-[11px] flex items-center gap-1 transition-colors shadow-2xs cursor-pointer"
-                              title="Add customer review directly for this product"
-                            >
-                              <Plus className="w-3 h-3 text-rose-600" />
-                              Add Review
-                            </button>
-                          )}
-                          {hasPermission('product.update') && (
-                            <button
-                              id={`adjust-rating-${product.id}`}
-                              type="button"
-                              onClick={() => openRatingAdjustmentModal(product)}
-                              className="px-2 py-1 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-900 font-bold text-[11px] flex items-center gap-1 transition-colors shadow-2xs cursor-pointer"
-                              title="Custom backend option to adjust product rating"
-                            >
-                              <Star className="w-3 h-3 fill-amber-500 text-amber-600" />
-                              Adjust Rating
-                            </button>
-                          )}
-                        </div>
+                        {hasPermission('review.manage') && (
+                          <button
+                            id={`admin-add-review-${product.id}`}
+                            type="button"
+                            onClick={() => openAdminAddReviewModal(product)}
+                            className="px-2 py-1 rounded-lg bg-rose-100 hover:bg-rose-200 text-rose-900 font-bold text-[11px] flex items-center gap-1 transition-colors shadow-2xs cursor-pointer"
+                            title="Add customer review directly for this product"
+                          >
+                            <Plus className="w-3 h-3 text-rose-600" />
+                            Add Review
+                          </button>
+                        )}
                       </div>
 
                       {(hasPermission('product.update') || hasPermission('product.delete')) && (
