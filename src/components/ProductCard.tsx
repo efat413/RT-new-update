@@ -130,6 +130,9 @@ const ProductCardComponent: React.FC<ProductCardProps> = ({ product, priority = 
         >
           <img
             {...primaryImgProps}
+            loading={priority ? 'eager' : 'lazy'}
+            decoding={priority ? 'sync' : 'async'}
+            fetchPriority={priority ? 'high' : 'auto'}
             alt={`${product.title} - ${category ? category.name : 'Rongdhonu Trade'}`}
             className={`w-full h-full object-cover object-center transition-all duration-500 ease-out ${
               secondaryImage ? 'group-hover:opacity-0 group-hover:scale-105' : 'group-hover:scale-105'
@@ -140,6 +143,8 @@ const ProductCardComponent: React.FC<ProductCardProps> = ({ product, priority = 
           {secondaryImage && isHovered && secondaryImgProps && (
             <img
               {...secondaryImgProps}
+              loading="lazy"
+              decoding="async"
               alt={`${product.title} - ${category ? category.name : 'Rongdhonu Trade'} view 2`}
               className="absolute inset-0 w-full h-full object-cover object-center opacity-0 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500 ease-out"
             />
@@ -373,4 +378,16 @@ const ProductCardComponent: React.FC<ProductCardProps> = ({ product, priority = 
   );
 };
 
-export const ProductCard = React.memo(ProductCardComponent);
+export const ProductCard = React.memo(ProductCardComponent, (prev, next) => {
+  return (
+    prev.priority === next.priority &&
+    prev.product.id === next.product.id &&
+    prev.product.price === next.product.price &&
+    prev.product.originalPrice === next.product.originalPrice &&
+    prev.product.stock === next.product.stock &&
+    prev.product.imageUrl === next.product.imageUrl &&
+    prev.product.title === next.product.title &&
+    prev.product.rating === next.product.rating &&
+    prev.product.reviewsCount === next.product.reviewsCount
+  );
+});

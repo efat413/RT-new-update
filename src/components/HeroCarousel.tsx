@@ -53,6 +53,9 @@ export const HeroCarousel: React.FC = () => {
             <div className="absolute inset-0 z-0 flex items-center justify-center">
               <img
                 {...singleBannerProps}
+                fetchPriority="high"
+                loading="eager"
+                decoding="sync"
                 alt={settings.siteName || 'Rongdhonu Trade'}
                 className={`w-full h-full ${fitMode === 'cover' ? 'object-cover' : 'object-contain'} object-center`}
                 onError={(e) => {
@@ -181,6 +184,9 @@ export const HeroCarousel: React.FC = () => {
         <div className="absolute inset-0 z-0 flex items-center justify-center">
           <img
             {...bannerImageProps}
+            fetchPriority={currentSlide === 0 ? 'high' : 'auto'}
+            loading={currentSlide === 0 ? 'eager' : 'lazy'}
+            decoding={currentSlide === 0 ? 'sync' : 'async'}
             alt={slide.headline || slide.title || 'Promotional Banner'}
             className={`w-full h-full ${fitMode === 'cover' ? 'object-cover' : 'object-contain'} object-center transition-opacity duration-300`}
             onError={(e) => {
