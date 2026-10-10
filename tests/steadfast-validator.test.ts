@@ -32,4 +32,22 @@ describe('Steadfast URL Validator', () => {
     const result = validateCourierApiDestination('http://localhost:8080', { courierType: 'steadfast' });
     expect(result.valid).toBe(false);
   });
+
+  it('accepts direct subpath /create_order (Pass)', () => {
+    const result = validateCourierApiDestination('/create_order', { courierType: 'steadfast' });
+    expect(result.valid).toBe(true);
+    expect(result.normalizedUrl).toBe('https://portal.packzy.com/api/v1');
+  });
+
+  it('accepts direct subpath /status_by_cid (Pass)', () => {
+    const result = validateCourierApiDestination('/status_by_cid', { courierType: 'steadfast' });
+    expect(result.valid).toBe(true);
+    expect(result.normalizedUrl).toBe('https://portal.packzy.com/api/v1');
+  });
+
+  it('safely falls back to canonical gateway on empty input for Steadfast (Pass)', () => {
+    const result = validateCourierApiDestination('', { courierType: 'steadfast' });
+    expect(result.valid).toBe(true);
+    expect(result.normalizedUrl).toBe('https://portal.packzy.com/api/v1');
+  });
 });

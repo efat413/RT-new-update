@@ -550,18 +550,57 @@ export function validateCourierApiDestination(
   targetUrl: string,
   options?: { courierType?: string }
 ): CourierApiValidationResult {
-  if (!targetUrl || typeof targetUrl !== 'string') {
+  const courierType = (options?.courierType || '').toLowerCase();
+  const isSteadfast = courierType.includes('steadfast');
+
+  // If input is empty or missing, for Steadfast safely fall back to canonical gateway
+  if (!targetUrl || typeof targetUrl !== 'string' || !targetUrl.trim()) {
+    if (isSteadfast) {
+      return {
+        valid: true,
+        normalizedUrl: 'https://portal.packzy.com/api/v1',
+        hostname: 'portal.packzy.com',
+      };
+    }
     return { valid: false, error: 'Courier API destination URL is required.' };
   }
 
-  const trimmed = targetUrl.trim();
+  let trimmed = targetUrl.trim();
 
-  // Reject relative URLs
+  // Accept direct full Steadfast subpaths (e.g. /create_order, /status_by_cid, /get_balance)
   if (trimmed.startsWith('/')) {
+    const normPath = trimmed.toLowerCase();
+    const isSteadfastEndpoint =
+      normPath.startsWith('/create_order') ||
+      normPath.startsWith('/status_by_cid') ||
+      normPath.startsWith('/status_by_trackingcode') ||
+      normPath.startsWith('/get_balance') ||
+      normPath.startsWith('/api/v1') ||
+      normPath === '/';
+
+    if (isSteadfast && isSteadfastEndpoint) {
+      return {
+        valid: true,
+        normalizedUrl: 'https://portal.packzy.com/api/v1',
+        hostname: 'portal.packzy.com',
+      };
+    }
+
     return {
       valid: false,
       error: 'Relative URLs are prohibited for courier API destinations.',
     };
+  }
+
+  // Auto-normalize if provided without scheme
+  if (!trimmed.startsWith('https://') && !trimmed.startsWith('http://')) {
+    if (
+      trimmed.startsWith('portal.packzy.com') ||
+      trimmed.startsWith('portal.steadfast.com.bd') ||
+      trimmed.startsWith('steadfast.com.bd')
+    ) {
+      trimmed = `https://${trimmed}`;
+    }
   }
 
   // Enforce HTTPS exclusively to protect credentials in transit
@@ -670,9 +709,6 @@ export function validateCourierApiDestination(
   }
 
   // Enforce Courier Domain Allowlist
-  const courierType = (options?.courierType || '').toLowerCase();
-  const isSteadfast = courierType.includes('steadfast');
-
   if (isSteadfast) {
     // Exact hostname match for canonical gateway "portal.packzy.com" and legacy "portal.steadfast.com.bd"
     const isApprovedSteadfast =

@@ -97,22 +97,31 @@ export interface SteadfastCredentials {
  * User-controlled arbitrary base URLs from requests are NEVER allowed to override
  * the production Steadfast credential destination.
  */
-export function resolveSteadfastBaseUrls(customBaseUrl?: string): string[] {
-  const PACKZY_PRIMARY = 'https://portal.packzy.com/api/v1';
-  const STEADFAST_LEGACY = 'https://portal.steadfast.com.bd/api/v1';
+export const CANONICAL_STEADFAST_GATEWAY = 'https://portal.packzy.com/api/v1';
 
-  // If a customBaseUrl is passed from client, strictly validate it against approved Steadfast hostnames
-  if (customBaseUrl && customBaseUrl.trim()) {
-    const val = validateCourierApiDestination(customBaseUrl.trim(), { courierType: 'steadfast' });
-    if (!val.valid) {
-      return [PACKZY_PRIMARY, STEADFAST_LEGACY];
-    }
-    if (val.normalizedUrl) {
-      return [val.normalizedUrl];
-    }
+export function resolveSteadfastBaseUrls(customBaseUrl?: string): string[] {
+  // If stored value is empty or missing, safely fall back to canonical gateway
+  if (!customBaseUrl || !customBaseUrl.trim()) {
+    return [CANONICAL_STEADFAST_GATEWAY];
   }
 
-  return [PACKZY_PRIMARY, STEADFAST_LEGACY];
+  const trimmed = customBaseUrl.trim();
+
+  // If stored value is legacy (contains portal.steadfast.com.bd) or subpath, normalize to canonical gateway
+  if (
+    trimmed.includes('portal.steadfast.com.bd') ||
+    trimmed.includes('steadfast.com.bd') ||
+    trimmed.startsWith('/')
+  ) {
+    return [CANONICAL_STEADFAST_GATEWAY];
+  }
+
+  const val = validateCourierApiDestination(trimmed, { courierType: 'steadfast' });
+  if (!val.valid) {
+    return [CANONICAL_STEADFAST_GATEWAY];
+  }
+
+  return [val.normalizedUrl || CANONICAL_STEADFAST_GATEWAY];
 }
 
 /**
@@ -311,7 +320,7 @@ export async function testSteadfastConnection(
     };
   }
 
-  const rawBase = (credentials.baseUrl || 'https://portal.packzy.com/api/v1').trim();
+  const rawBase = (credentials.baseUrl || CANONICAL_STEADFAST_GATEWAY).trim();
   const val = validateCourierApiDestination(rawBase, { courierType: 'steadfast' });
   if (!val.valid) {
     return {
@@ -321,17 +330,21 @@ export async function testSteadfastConnection(
     };
   }
 
-  const normalizedUrl = val.normalizedUrl || 'https://portal.packzy.com/api/v1';
-  return callSteadfastApi('get_balance', {
+  const normalizedBaseUrl = val.normalizedUrl || CANONICAL_STEADFAST_GATEWAY;
+  const subpath = 'get_balance';
+  const targetUrl = `${normalizedBaseUrl.replace(/\/+$/, '')}/${subpath.replace(/^\/+/, '')}`;
+
+  return callSteadfastApi(subpath, {
     apiKey,
     secretKey,
-    baseUrl: normalizedUrl,
+    baseUrl: normalizedBaseUrl,
   });
 }
 
 /**
  * Dispatches an order booking consignment to Steadfast Courier API.
- * Uses the returned normalizedUrl as base before appending /create_order.
+ * Uses the returned normalizedUrl as base before appending /create_order:
+ * `${normalizedBaseUrl.replace(/\/+$/, '')}/${subpath.replace(/^\/+/, '')}`.
  * Prevents double /api/v1 path stacking or slash truncation.
  * Strictly avoids exposing API secrets in error messages or logs.
  */
@@ -350,7 +363,7 @@ export async function dispatchOrderToSteadfast(
     };
   }
 
-  const rawBase = (credentials.baseUrl || 'https://portal.packzy.com/api/v1').trim();
+  const rawBase = (credentials.baseUrl || CANONICAL_STEADFAST_GATEWAY).trim();
   const val = validateCourierApiDestination(rawBase, { courierType: 'steadfast' });
   if (!val.valid) {
     return {
@@ -360,11 +373,14 @@ export async function dispatchOrderToSteadfast(
     };
   }
 
-  const normalizedUrl = val.normalizedUrl || 'https://portal.packzy.com/api/v1';
-  return callSteadfastApi('create_order', {
+  const normalizedBaseUrl = val.normalizedUrl || CANONICAL_STEADFAST_GATEWAY;
+  const subpath = 'create_order';
+  const targetUrl = `${normalizedBaseUrl.replace(/\/+$/, '')}/${subpath.replace(/^\/+/, '')}`;
+
+  return callSteadfastApi(subpath, {
     apiKey,
     secretKey,
-    baseUrl: normalizedUrl,
+    baseUrl: normalizedBaseUrl,
   }, {
     method: 'POST',
     body: payload,
@@ -389,11 +405,19 @@ export async function querySteadfastStatus(
     return { success: false, error: 'Either consignment ID or tracking code is required.' };
   }
 
-  const endpointPath = cid
+  const rawBase = (baseUrl || CANONICAL_STEADFAST_GATEWAY).trim();
+  const val = validateCourierApiDestination(rawBase, { courierType: 'steadfast' });
+  if (!val.valid) {
+    return { success: false, error: val.error || 'Invalid Steadfast courier destination.' };
+  }
+
+  const normalizedBaseUrl = val.normalizedUrl || CANONICAL_STEADFAST_GATEWAY;
+  const subpath = cid
     ? `status_by_cid/${encodeURIComponent(cid)}`
     : `status_by_trackingcode/${encodeURIComponent(tracking!)}`;
+  const targetUrl = `${normalizedBaseUrl.replace(/\/+$/, '')}/${subpath.replace(/^\/+/, '')}`;
 
-  const callRes = await callSteadfastApi(endpointPath, { apiKey, secretKey, baseUrl });
+  const callRes = await callSteadfastApi(subpath, { apiKey, secretKey, baseUrl: normalizedBaseUrl });
   if (!callRes.ok) {
     return { success: false, error: callRes.error, rawData: callRes.data };
   }
