@@ -6183,11 +6183,23 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           validatedAdvance = Math.round(parsedAdvance * 100) / 100;
         }
 
+        const isSuperAdmin = auth?.role === 'super_admin';
+        const canManagePricing = isSuperAdmin || hasPermission(auth!, 'product.manage_buying_price') || hasPermission(auth!, 'settings.manage');
+        const canManageDiscount = isSuperAdmin || hasPermission(auth!, 'coupon.manage') || canManagePricing;
+        const canManageDeliveryFee = isSuperAdmin || hasPermission(auth!, 'courier.configure') || hasPermission(auth!, 'settings.manage') || canManagePricing;
+
         // Authoritative Server-Side Recalculation (Items, Prices, Subtotal, Delivery, Discount, Total, Profit, Due)
         let authoritativeSubtotal = Number(existing.subtotal) || 0;
         let authoritativeTotalCost = Number(existing.totalCost) || 0;
         let authoritativeTotalProfit = Number(existing.totalGrossProfit) || 0;
         let enrichedItems: any[] | null = null;
+        const priceOverridesAuditList: Array<{
+          productId: string;
+          productTitle: string;
+          previousPrice: number;
+          overridePrice: number;
+          reason?: string;
+        }> = [];
 
         const MAX_ORDER_ITEM_QTY = 100;
 
@@ -6304,6 +6316,17 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           }
 
           // 5. Enrich items with snapshots and authoritative calculations
+          // Build a lookup of existing order items for existing snapshot price comparison
+          const existingItemPriceMap = new Map<string, number>();
+          if (Array.isArray(existing.items)) {
+            for (const oldIt of existing.items) {
+              const oldPid = String(oldIt?.product?.id || (oldIt as any)?.productId || '').trim();
+              if (oldPid && oldIt.sellingPriceSnapshot != null) {
+                existingItemPriceMap.set(oldPid, Number(oldIt.sellingPriceSnapshot));
+              }
+            }
+          }
+
           let subtotalAcc = 0;
           let costAcc = 0;
           let profitAcc = 0;
@@ -6314,27 +6337,85 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
             const d1Prod = d1ProductMap.get(pid)!;
             const qty = typeof it.quantity === 'number' ? it.quantity : Number(it.quantity);
 
-            const rawSellingPrice =
-              it.sellingPriceSnapshot != null && !isNaN(Number(it.sellingPriceSnapshot))
-                ? Number(it.sellingPriceSnapshot)
-                : Number(d1Prod.price || 0);
+            // Trusted Data Derivation:
+            // ALWAYS resolve base buying price/cost from persisted D1 database records.
+            // NEVER accept raw client-supplied buying costs (buyingPriceSnapshot, buyingPrice, cost).
+            const authoritativeBuyingPrice =
+              d1Prod.buyingPrice != null && Number.isFinite(Number(d1Prod.buyingPrice)) && Number(d1Prod.buyingPrice) >= 0
+                ? Math.round(Number(d1Prod.buyingPrice) * 100) / 100
+                : 0;
 
-            if (typeof rawSellingPrice !== 'number' || isNaN(rawSellingPrice) || rawSellingPrice < 0) {
-              return jsonResponse({
-                success: false,
-                error: 'Invalid item price: Unit price must be a valid non-negative number.',
-              }, 400);
+            // Default selling price derives strictly from persisted product state in D1
+            // (or preserved prior order line snapshot if unchanged).
+            const catalogSellingPrice =
+              d1Prod.price != null && Number.isFinite(Number(d1Prod.price)) && Number(d1Prod.price) >= 0
+                ? Math.round(Number(d1Prod.price) * 100) / 100
+                : 0;
+
+            // Check if client explicitly requests a custom selling price
+            const clientSuppliedPrice =
+              (it as any).sellingPriceSnapshot !== undefined
+                ? (it as any).sellingPriceSnapshot
+                : ((it as any).price !== undefined
+                    ? (it as any).price
+                    : (it.product && (it.product as any).price !== undefined ? (it.product as any).price : undefined));
+
+            let unitSellingPrice = catalogSellingPrice;
+
+            if (clientSuppliedPrice !== undefined) {
+              const parsedClientPrice =
+                typeof clientSuppliedPrice === 'string'
+                  ? Number(String(clientSuppliedPrice).trim())
+                  : (typeof clientSuppliedPrice === 'number' ? clientSuppliedPrice : NaN);
+
+              // Strict monetary validation
+              if (!Number.isFinite(parsedClientPrice) || Number.isNaN(parsedClientPrice) || parsedClientPrice < 0) {
+                return jsonResponse({
+                  success: false,
+                  error: `Invalid item price for product "${d1Prod.title}": Unit price must be a valid finite non-negative number.`,
+                }, 400);
+              }
+
+              const normalizedClientPrice = Math.round(parsedClientPrice * 100) / 100;
+              const existingPreservedPrice = existingItemPriceMap.get(pid);
+
+              // If client supplied price differs from catalog price (and differs from preserved order item price)
+              const isDifferentFromCatalog = normalizedClientPrice !== catalogSellingPrice;
+              const isDifferentFromExistingSnapshot =
+                existingPreservedPrice !== undefined ? normalizedClientPrice !== existingPreservedPrice : isDifferentFromCatalog;
+
+              if (isDifferentFromCatalog && isDifferentFromExistingSnapshot) {
+                // Requires explicit pricing override authorization
+                if (!canManagePricing) {
+                  return jsonResponse({
+                    success: false,
+                    error: `Forbidden: Modifying unit selling price for "${d1Prod.title}" (from ৳${catalogSellingPrice} to ৳${normalizedClientPrice}) requires MANAGE_PRICING or Administrator privileges.`,
+                    code: 'PRICE_OVERRIDE_FORBIDDEN',
+                  }, 403);
+                }
+
+                unitSellingPrice = normalizedClientPrice;
+                priceOverridesAuditList.push({
+                  productId: pid,
+                  productTitle: d1Prod.title,
+                  previousPrice: existingPreservedPrice ?? catalogSellingPrice,
+                  overridePrice: normalizedClientPrice,
+                  reason: (it as any).overrideReason || (updates as any).pricingOverrideReason || 'Administrative price adjustment',
+                });
+              } else if (existingPreservedPrice !== undefined && !isDifferentFromExistingSnapshot) {
+                // Preserving earlier authorized snapshot price
+                unitSellingPrice = existingPreservedPrice;
+              } else {
+                unitSellingPrice = catalogSellingPrice;
+              }
+            } else if (existingItemPriceMap.has(pid)) {
+              // Maintain existing snapshot if not provided in updates
+              unitSellingPrice = existingItemPriceMap.get(pid)!;
             }
 
-            const unitSellingPrice = Math.round(rawSellingPrice * 100) / 100;
-            const buyingPrice =
-              it.buyingPriceSnapshot != null && !isNaN(Number(it.buyingPriceSnapshot))
-                ? Number(it.buyingPriceSnapshot)
-                : (d1Prod.buyingPrice != null && !isNaN(Number(d1Prod.buyingPrice)) ? Number(d1Prod.buyingPrice) : 0);
-
             const itemLineTotal = Math.round(unitSellingPrice * qty * 100) / 100;
-            const itemCost = Math.round(buyingPrice * qty * 100) / 100;
-            const itemProfit = Math.round((unitSellingPrice - buyingPrice) * qty * 100) / 100;
+            const itemCost = Math.round(authoritativeBuyingPrice * qty * 100) / 100;
+            const itemProfit = Math.round((unitSellingPrice - authoritativeBuyingPrice) * qty * 100) / 100;
 
             subtotalAcc += itemLineTotal;
             costAcc += itemCost;
@@ -6351,7 +6432,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
                 price: unitSellingPrice,
               },
               sellingPriceSnapshot: unitSellingPrice,
-              buyingPriceSnapshot: buyingPrice,
+              buyingPriceSnapshot: authoritativeBuyingPrice,
               productCost: itemCost,
               productGrossProfit: itemProfit,
             });
@@ -6366,12 +6447,63 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           updates.totalGrossProfit = authoritativeTotalProfit;
         }
 
-        const authoritativeDeliveryFee = updates.deliveryFee !== undefined
-          ? Math.max(0, Number(updates.deliveryFee) || 0)
-          : (existing.deliveryFee ?? 0);
-        const authoritativeDiscount = updates.discountAmount !== undefined
-          ? Math.max(0, Number(updates.discountAmount) || 0)
-          : (existing.discountAmount ?? 0);
+        // Validate and gate discountAmount behind granular permission checks
+        let authoritativeDiscount = existing.discountAmount != null ? Number(existing.discountAmount) : 0;
+        if (updates.discountAmount !== undefined) {
+          const rawDiscount: any = updates.discountAmount;
+          const parsedDiscount =
+            typeof rawDiscount === 'string'
+              ? Number(String(rawDiscount).trim())
+              : (typeof rawDiscount === 'number' ? rawDiscount : NaN);
+
+          if (!Number.isFinite(parsedDiscount) || Number.isNaN(parsedDiscount) || parsedDiscount < 0) {
+            return jsonResponse({
+              success: false,
+              error: 'Invalid discount amount: Must be a valid finite non-negative number.',
+            }, 400);
+          }
+
+          const normalizedDiscount = Math.round(parsedDiscount * 100) / 100;
+          if (normalizedDiscount !== authoritativeDiscount) {
+            if (!canManageDiscount) {
+              return jsonResponse({
+                success: false,
+                error: 'Forbidden: Adjusting order discount amount requires Coupon/Pricing Management or Administrator privileges.',
+                code: 'DISCOUNT_OVERRIDE_FORBIDDEN',
+              }, 403);
+            }
+            authoritativeDiscount = normalizedDiscount;
+          }
+        }
+
+        // Validate and gate deliveryFee behind granular permission checks
+        let authoritativeDeliveryFee = existing.deliveryFee != null ? Number(existing.deliveryFee) : 0;
+        if (updates.deliveryFee !== undefined) {
+          const rawDelivery: any = updates.deliveryFee;
+          const parsedDelivery =
+            typeof rawDelivery === 'string'
+              ? Number(String(rawDelivery).trim())
+              : (typeof rawDelivery === 'number' ? rawDelivery : NaN);
+
+          if (!Number.isFinite(parsedDelivery) || Number.isNaN(parsedDelivery) || parsedDelivery < 0) {
+            return jsonResponse({
+              success: false,
+              error: 'Invalid delivery fee: Must be a valid finite non-negative number.',
+            }, 400);
+          }
+
+          const normalizedDelivery = Math.round(parsedDelivery * 100) / 100;
+          if (normalizedDelivery !== authoritativeDeliveryFee) {
+            if (!canManageDeliveryFee) {
+              return jsonResponse({
+                success: false,
+                error: 'Forbidden: Adjusting delivery fee requires Courier/Settings Management or Administrator privileges.',
+                code: 'DELIVERY_FEE_OVERRIDE_FORBIDDEN',
+              }, 403);
+            }
+            authoritativeDeliveryFee = normalizedDelivery;
+          }
+        }
 
         // Final Order Total = Subtotal + Delivery Fee - Discount
         const authoritativeFinalTotal = Math.max(
@@ -6417,17 +6549,17 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         updates.dueAmount = customerDue;
         updates.advancePayment = validatedAdvance;
 
-        // Record audit log for order selling price / items modifications
+        // Record audit log for order selling price / items modifications & price overrides
         const previousSubtotal = Number(existing.subtotal) || 0;
         const previousTotal = Number(existing.totalAmount) || 0;
         const isPriceChanged = updates.items !== undefined && (authoritativeSubtotal !== previousSubtotal || authoritativeFinalTotal !== previousTotal);
-        if (isPriceChanged) {
+        if (isPriceChanged || priceOverridesAuditList.length > 0) {
           try {
             await insertAuditLogInD1(env.DB, {
               actorId: auth!.dbUser?.id || auth!.tokenUser?.userId || 'admin',
               actorEmail: auth!.dbUser?.email || auth!.tokenUser?.email || 'admin@local.test',
               actorRole: auth!.role,
-              action: 'ORDER_SELLING_PRICE_UPDATE',
+              action: priceOverridesAuditList.length > 0 ? 'ORDER_PRICING_OVERRIDE' : 'ORDER_SELLING_PRICE_UPDATE',
               targetId: existing.id,
               targetType: 'order',
               details: {
@@ -6437,6 +6569,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
                 previousTotal,
                 newTotal: authoritativeFinalTotal,
                 customerDue,
+                priceOverrides: priceOverridesAuditList.length > 0 ? priceOverridesAuditList : undefined,
+                actor: auth!.dbUser?.email || auth!.tokenUser?.email || 'admin',
+                timestamp: new Date().toISOString(),
               },
               ipAddress: getClientIp(request, isDevEnvironment(env)),
             });
@@ -6525,7 +6660,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           }
         }
 
-        const isSuperAdmin = auth?.role === 'super_admin';
         const canViewBuyingPrice = Boolean(auth && (hasPermission(auth, 'product.view_buying_price') || isSuperAdmin));
         const canViewProfit = Boolean(auth && (hasPermission(auth, 'report.profit') || hasPermission(auth, 'product.view_profit') || isSuperAdmin));
 
