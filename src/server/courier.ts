@@ -116,6 +116,25 @@ export function resolveSteadfastBaseUrls(customBaseUrl?: string): string[] {
 }
 
 /**
+ * Safely appends an endpoint path to a normalized courier base URL.
+ * Prevents double /api/v1 path stacking and slash truncation.
+ */
+export function buildSteadfastEndpointUrl(baseUrl: string, endpointPath: string): string {
+  const cleanBase = baseUrl.replace(/\/+$/, '');
+  let cleanPath = endpointPath.replace(/^\/+/, '');
+
+  if (cleanBase.endsWith('/api/v1')) {
+    if (cleanPath.startsWith('api/v1/')) {
+      cleanPath = cleanPath.slice(7);
+    } else if (cleanPath === 'api/v1') {
+      cleanPath = '';
+    }
+  }
+
+  return cleanPath ? `${cleanBase}/${cleanPath}` : cleanBase;
+}
+
+/**
  * Resilient multi-endpoint dispatcher for Steadfast Courier API.
  * Automatically recovers from Cloudflare 530 Origin DNS errors, 5xx server issues, and timeouts.
  * Enforces SSRF defense and strict credential protection.
@@ -163,7 +182,7 @@ export async function callSteadfastApi(
 
   for (let i = 0; i < candidateBaseUrls.length; i++) {
     const baseUrl = candidateBaseUrls[i];
-    const fullUrl = `${baseUrl.replace(/\/+$/, '')}/${cleanPath}`;
+    const fullUrl = buildSteadfastEndpointUrl(baseUrl, cleanPath);
 
     // Validate destination before making request
     const val = validateCourierApiDestination(fullUrl, { courierType: 'steadfast' });
@@ -173,8 +192,8 @@ export async function callSteadfastApi(
       continue;
     }
 
-    // Use normalizedUrl for the actual fetch call
-    const dispatchUrl = val.normalizedUrl || fullUrl;
+    // Use normalizedUrl as base before appending endpoint path to prevent double /api/v1 stacking
+    const dispatchUrl = buildSteadfastEndpointUrl(val.normalizedUrl || baseUrl, cleanPath);
 
     try {
       const headers: Record<string, string> = {
@@ -307,6 +326,48 @@ export async function testSteadfastConnection(
     apiKey,
     secretKey,
     baseUrl: normalizedUrl,
+  });
+}
+
+/**
+ * Dispatches an order booking consignment to Steadfast Courier API.
+ * Uses the returned normalizedUrl as base before appending /create_order.
+ * Prevents double /api/v1 path stacking or slash truncation.
+ * Strictly avoids exposing API secrets in error messages or logs.
+ */
+export async function dispatchOrderToSteadfast(
+  payload: Record<string, any>,
+  credentials: SteadfastCredentials
+): Promise<{ ok: boolean; status: number; data?: any; error?: string }> {
+  const apiKey = (credentials.apiKey || '').trim();
+  const secretKey = (credentials.secretKey || '').trim();
+
+  if (!apiKey || !secretKey) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Steadfast Courier API credentials (API Key and Secret Key) are missing.',
+    };
+  }
+
+  const rawBase = (credentials.baseUrl || 'https://portal.packzy.com/api/v1').trim();
+  const val = validateCourierApiDestination(rawBase, { courierType: 'steadfast' });
+  if (!val.valid) {
+    return {
+      ok: false,
+      status: 400,
+      error: val.error || 'Invalid Steadfast courier destination. Only approved Steadfast gateways (portal.packzy.com) are permitted.',
+    };
+  }
+
+  const normalizedUrl = val.normalizedUrl || 'https://portal.packzy.com/api/v1';
+  return callSteadfastApi('create_order', {
+    apiKey,
+    secretKey,
+    baseUrl: normalizedUrl,
+  }, {
+    method: 'POST',
+    body: payload,
   });
 }
 

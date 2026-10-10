@@ -674,37 +674,48 @@ export function validateCourierApiDestination(
   const isSteadfast = courierType.includes('steadfast');
 
   if (isSteadfast) {
-    // Steadfast credentials MUST ONLY go to approved Steadfast/Packzy hosts
-    if (!APPROVED_STEADFAST_HOSTNAMES.has(hostname)) {
+    // Exact hostname match for canonical gateway "portal.packzy.com" and legacy "portal.steadfast.com.bd"
+    const isApprovedSteadfast =
+      hostname === 'portal.packzy.com' ||
+      hostname === 'portal.steadfast.com.bd' ||
+      hostname === 'steadfast.com.bd';
+
+    if (!isApprovedSteadfast) {
       return {
         valid: false,
         error: `Steadfast Courier API calls are restricted to approved Steadfast gateways (portal.packzy.com). Destination host "${hostname}" is forbidden.`,
       };
     }
-  } else {
-    // Generic / other couriers MUST match or be subdomains of approved courier domains
-    const isApproved = APPROVED_COURIER_DOMAINS.some(
-      (d) => hostname === d || hostname.endsWith(`.${d}`)
-    );
-    if (!isApproved) {
-      return {
-        valid: false,
-        error: `Courier API destination host "${hostname}" is not in the approved courier domain allowlist.`,
-      };
-    }
+
+    return {
+      valid: true,
+      normalizedUrl: 'https://portal.packzy.com/api/v1',
+      hostname: 'portal.packzy.com',
+    };
   }
 
-  // Normalize legacy Steadfast gateway host to canonical portal.packzy.com
-  if (hostname === 'portal.steadfast.com.bd' || hostname === 'steadfast.com.bd') {
-    hostname = 'portal.packzy.com';
+  // Generic / other couriers MUST match or be subdomains of approved courier domains
+  const isApproved = APPROVED_COURIER_DOMAINS.some(
+    (d) => hostname === d || hostname.endsWith(`.${d}`)
+  );
+  if (!isApproved) {
+    return {
+      valid: false,
+      error: `Courier API destination host "${hostname}" is not in the approved courier domain allowlist.`,
+    };
   }
 
-  // Handle trailing slashes gracefully and normalize base path
-  let cleanPath = parsed.pathname.replace(/\/+$/, '');
-  if ((isSteadfast || hostname === 'portal.packzy.com') && (!cleanPath || cleanPath === '')) {
-    cleanPath = '/api/v1';
+  // Normalize legacy Steadfast gateway host if encountered in generic courier check
+  if (hostname === 'portal.steadfast.com.bd' || hostname === 'steadfast.com.bd' || hostname === 'portal.packzy.com') {
+    return {
+      valid: true,
+      normalizedUrl: 'https://portal.packzy.com/api/v1',
+      hostname: 'portal.packzy.com',
+    };
   }
 
+  // Gracefully handle trailing slash for generic courier endpoints
+  const cleanPath = parsed.pathname.replace(/\/+$/, '');
   const normalizedUrl = `https://${hostname}${cleanPath || ''}${parsed.search || ''}`;
 
   return {

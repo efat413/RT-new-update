@@ -128,6 +128,7 @@ import {
   syncSingleOrderCourierStatus,
   syncAllActiveCourierOrders,
   callSteadfastApi,
+  dispatchOrderToSteadfast,
   normalizeSteadfastStatus,
 } from './courier';
 import {
@@ -6634,6 +6635,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
               error: 'Invalid Steadfast courier destination. Only approved Steadfast gateways (portal.packzy.com) are permitted.',
             }, 400);
           }
+          courierParam.baseUrl = val.normalizedUrl || courierParam.baseUrl;
         }
 
         // Build Steadfast payload
@@ -6662,9 +6664,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         }
 
         // Dispatch to Steadfast via resilient multi-gateway handler
-        const sfResult = await callSteadfastApi('create_order', { apiKey, secretKey, baseUrl: courierParam.baseUrl }, {
-          method: 'POST',
-          body: steadfastPayload,
+        const sfResult = await dispatchOrderToSteadfast(steadfastPayload, {
+          apiKey,
+          secretKey,
+          baseUrl: courierParam.baseUrl,
         });
 
         const sfData = sfResult.data || {};
