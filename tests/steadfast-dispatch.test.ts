@@ -150,5 +150,58 @@ describe('Steadfast Booking & Dispatch Regression Tests', () => {
       expect(updatedOrder.shippingStatus).toBe('Shipped');
       expect(storedRow.consignment_id).toBe('123456');
     });
+
+    it('prevents duplicate booking if order already has an active consignment_id or non-terminal courier_status', async () => {
+      const mockFetch = vi.fn();
+      vi.stubGlobal('fetch', mockFetch);
+
+      // Order with existing consignment_id
+      const resWithCid = await dispatchOrderToSteadfast(
+        { invoice: 'ORD-1002' },
+        { apiKey: 'key', secretKey: 'secret' },
+        { order: { id: 'order-2', consignment_id: '999888', total_amount: 1000 } }
+      );
+
+      expect(resWithCid.ok).toBe(false);
+      expect(resWithCid.status).toBe(409);
+      expect(resWithCid.error).toContain('Duplicate booking prevented');
+      expect(mockFetch).not.toHaveBeenCalled();
+
+      // Order with active courier status
+      const resWithActiveStatus = await dispatchOrderToSteadfast(
+        { invoice: 'ORD-1003' },
+        { apiKey: 'key', secretKey: 'secret' },
+        { order: { id: 'order-3', courier_status: 'In Transit', total_amount: 1000 } }
+      );
+
+      expect(resWithActiveStatus.ok).toBe(false);
+      expect(resWithActiveStatus.status).toBe(409);
+      expect(resWithActiveStatus.error).toContain('Duplicate booking prevented');
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('computes COD amount as Math.max(0, total_amount - advance_payment)', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: 200,
+          consignment: { consignment_id: 111, tracking_code: 'TRK-111' },
+        }),
+      });
+      vi.stubGlobal('fetch', mockFetch);
+
+      const payload: any = { invoice: 'ORD-1004' };
+      await dispatchOrderToSteadfast(
+        payload,
+        { apiKey: 'key', secretKey: 'secret' },
+        { order: { id: 'order-4', total_amount: 3000, advance_payment: 1000 } }
+      );
+
+      expect(payload.cod_amount).toBe(2000);
+      const sentBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(sentBody.cod_amount).toBe(2000);
+    });
   });
 });
+

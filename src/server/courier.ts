@@ -362,8 +362,65 @@ export async function testSteadfastConnection(
  */
 export async function dispatchOrderToSteadfast(
   payload: Record<string, any>,
-  credentials: SteadfastCredentials
+  credentials: SteadfastCredentials & { db?: D1Database; order?: Order | any },
+  options?: { db?: D1Database; order?: Order | any }
 ): Promise<{ ok: boolean; status: number; data?: any; error?: string }> {
+  const db = options?.db || credentials?.db || payload?.db;
+  let order = options?.order || credentials?.order || payload?.order;
+
+  if (!order && db && (payload.invoice || payload.order_id || payload.orderId || payload.id)) {
+    const lookupKey = String(payload.order_id || payload.orderId || payload.id || payload.invoice);
+    try {
+      order = await getOrderById(db, lookupKey);
+    } catch {
+      // Continue if lookup fails
+    }
+  }
+
+  // 1. Duplicate Booking Protection: verify active consignment_id or non-terminal courier_status
+  const activeConsignmentId =
+    order?.consignment_id ||
+    order?.consignmentId ||
+    order?.courierBooking?.consignmentId ||
+    payload?.consignment_id ||
+    payload?.consignmentId;
+
+  const currentCourierStatus =
+    order?.courier_status ||
+    order?.courierStatus ||
+    payload?.courier_status ||
+    payload?.courierStatus;
+
+  if (activeConsignmentId && String(activeConsignmentId).trim()) {
+    return {
+      ok: false,
+      status: 409,
+      error: `Duplicate booking prevented: Order already has an active consignment ID (${activeConsignmentId}).`,
+    };
+  }
+
+  if (currentCourierStatus) {
+    const statusNormalized = normalizeSteadfastStatus(String(currentCourierStatus));
+    if (!statusNormalized.isFinal && !['unbooked', 'draft'].includes(String(currentCourierStatus).toLowerCase())) {
+      return {
+        ok: false,
+        status: 409,
+        error: `Duplicate booking prevented: Order is currently in active courier status (${currentCourierStatus}).`,
+      };
+    }
+  }
+
+  // 2. Accurate COD mapping: Compute cod_amount = Math.max(0, order.total_amount - (order.advance_payment || 0))
+  if (order) {
+    const totalAmount = Number(order.total_amount ?? order.totalAmount ?? 0);
+    const advancePayment = Number(order.advance_payment ?? order.advancePayment ?? 0);
+    payload.cod_amount = Math.max(0, totalAmount - (advancePayment || 0));
+  } else if (payload.total_amount != null || payload.totalAmount != null) {
+    const totalAmount = Number(payload.total_amount ?? payload.totalAmount ?? 0);
+    const advancePayment = Number(payload.advance_payment ?? payload.advancePayment ?? 0);
+    payload.cod_amount = Math.max(0, totalAmount - (advancePayment || 0));
+  }
+
   const apiKey = (credentials.apiKey || '').trim();
   const secretKey = (credentials.secretKey || '').trim();
 
@@ -394,7 +451,7 @@ export async function dispatchOrderToSteadfast(
   const subpath = 'create_order';
   const targetUrl = `${normalizedBaseUrl.replace(/\/+$/, '')}/${subpath.replace(/^\/+/, '')}`;
 
-  return callSteadfastApi(subpath, {
+  const result = await callSteadfastApi(subpath, {
     apiKey,
     secretKey,
     baseUrl: normalizedBaseUrl,
@@ -402,6 +459,32 @@ export async function dispatchOrderToSteadfast(
     method: 'POST',
     body: payload,
   });
+
+  // 3. D1 Atomicity: Persist consignment_id, courier_waybill, courier_status, and update shipping_status to 'Shipped' ONLY upon verified HTTP 200/success response
+  const resData = result.data || {};
+  const isSuccess = result.ok && (result.status === 200 || resData.status === 200);
+
+  if (isSuccess && db) {
+    const consignment = resData.consignment || resData;
+    const consignmentId = consignment?.consignment_id != null ? String(consignment.consignment_id).trim() : (consignment?.id != null ? String(consignment.id).trim() : '');
+    const trackingCode = consignment?.tracking_code != null ? String(consignment.tracking_code).trim() : '';
+
+    const orderIdToUpdate = order?.id || payload.order_id || payload.orderId || payload.invoice;
+    if (orderIdToUpdate && consignmentId) {
+      try {
+        await updateOrderInD1(db, orderIdToUpdate, {
+          consignmentId,
+          courierWaybill: trackingCode || undefined,
+          courierStatus: 'In Transit',
+          shippingStatus: 'Shipped',
+        });
+      } catch (d1Err) {
+        console.error('Failed to atomically persist Steadfast consignment to D1:', d1Err);
+      }
+    }
+  }
+
+  return result;
 }
 
 /**
