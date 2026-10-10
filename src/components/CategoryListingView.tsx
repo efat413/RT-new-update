@@ -16,17 +16,17 @@ interface CategoryListingViewProps {
   category: Category | null;
   categories: Category[];
   searchQuery?: string;
-  products: Product[];
-  isLoading: boolean;
-  totalProducts: number;
-  currentPage: number;
-  totalPages: number;
-  limit: number;
-  sortBy: 'featured' | 'price-asc' | 'price-desc' | 'rating';
-  onPageChange: (newPage: number) => void;
-  onSortChange: (newSort: 'featured' | 'price-asc' | 'price-desc' | 'rating') => void;
-  onCategoryChange: (categoryId: string | null) => void;
-  onBackToHome: () => void;
+  products?: Product[];
+  isLoading?: boolean;
+  totalProducts?: number;
+  currentPage?: number;
+  totalPages?: number;
+  limit?: number;
+  sortBy?: 'featured' | 'price-asc' | 'price-desc' | 'rating';
+  onPageChange?: (newPage: number) => void;
+  onSortChange?: (newSort: 'featured' | 'price-asc' | 'price-desc' | 'rating') => void;
+  onCategoryChange?: (categoryId: string | null) => void;
+  onBackToHome?: () => void;
   onShareCategory?: (categoryId: string) => void;
   siteName?: string;
   isFeaturedListing?: boolean;
@@ -36,13 +36,13 @@ export const CategoryListingView: React.FC<CategoryListingViewProps> = ({
   category,
   categories,
   searchQuery,
-  products,
-  isLoading,
-  totalProducts,
-  currentPage,
-  totalPages,
-  limit,
-  sortBy,
+  products: propProducts,
+  isLoading: propIsLoading,
+  totalProducts: propTotalProducts,
+  currentPage: propCurrentPage,
+  totalPages: propTotalPages,
+  limit = 12,
+  sortBy: propSortBy = 'featured',
   onPageChange,
   onSortChange,
   onCategoryChange,
@@ -53,12 +53,92 @@ export const CategoryListingView: React.FC<CategoryListingViewProps> = ({
 }) => {
   const containerRef = React.useRef<HTMLDivElement>(null);
 
+  // Internal state fallback for standalone / self-fetching category view
+  const [internalProducts, setInternalProducts] = React.useState<Product[]>([]);
+  const [internalLoading, setInternalLoading] = React.useState<boolean>(false);
+  const [internalPage, setInternalPage] = React.useState<number>(1);
+  const [internalTotal, setInternalTotal] = React.useState<number>(0);
+  const [internalTotalPages, setInternalTotalPages] = React.useState<number>(1);
+  const [internalSort, setInternalSort] = React.useState<'featured' | 'price-asc' | 'price-desc' | 'rating'>(propSortBy);
+
+  const isControlled = propProducts !== undefined;
+  const products = isControlled ? propProducts : internalProducts;
+  const isLoading = isControlled ? Boolean(propIsLoading) : internalLoading;
+  const currentPage = isControlled ? (propCurrentPage || 1) : internalPage;
+  const totalProducts = isControlled ? (propTotalProducts ?? products.length) : internalTotal;
+  const totalPages = isControlled ? (propTotalPages || 1) : internalTotalPages;
+  const sortBy = isControlled ? propSortBy : internalSort;
+
+  // Standalone fetch handler for category view with 12 items/batch
+  const fetchCategoryBatch = React.useCallback(
+    async (targetPage: number, targetSort: typeof sortBy) => {
+      if (isControlled || !category?.id) return;
+      if (internalLoading) return; // Prevent duplicate concurrent fetch
+
+      setInternalLoading(true);
+      try {
+        const url = `/api/categories/${encodeURIComponent(category.id)}/products?page=${targetPage}&limit=12&sortBy=${targetSort}`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (data.success) {
+          setInternalProducts(data.items || data.products || []);
+          setInternalTotal(Number(data.total) || 0);
+          setInternalTotalPages(Number(data.totalPages) || 1);
+          setInternalPage(targetPage);
+        }
+      } catch (err) {
+        console.warn('Failed to fetch category products batch:', err);
+      } finally {
+        setInternalLoading(false);
+      }
+    },
+    [category?.id, isControlled, internalLoading, sortBy]
+  );
+
+  // Reset product state when switching category or sort filters to prevent stale data
+  React.useEffect(() => {
+    if (!isControlled) {
+      setInternalProducts([]);
+      setInternalPage(1);
+      if (category?.id) {
+        fetchCategoryBatch(1, internalSort);
+      }
+    }
+  }, [category?.id, internalSort, isControlled]);
+
   const handlePageSelect = (page: number) => {
-    if (page < 1 || page > totalPages || page === currentPage) return;
-    onPageChange(page);
+    // Prevent duplicate fetches during rapid clicks/rerenders using an isLoading guard
+    if (isLoading || page < 1 || page > totalPages || page === currentPage) return;
+
+    if (onPageChange) {
+      onPageChange(page);
+    } else {
+      setInternalPage(page);
+      fetchCategoryBatch(page, internalSort);
+    }
+
     // Smooth scroll to top of product list
     if (containerRef.current) {
       containerRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+
+  const handleCategorySwitch = (catId: string | null) => {
+    if (isLoading) return; // Guard against rapid clicks while loading
+    if (onCategoryChange) {
+      onCategoryChange(catId);
+    }
+  };
+
+  const handleSortSwitch = (newSort: 'featured' | 'price-asc' | 'price-desc' | 'rating') => {
+    if (isLoading) return; // Guard against rapid clicks while loading
+    if (!isControlled) {
+      setInternalProducts([]);
+      setInternalSort(newSort);
+    }
+    if (onSortChange) {
+      onSortChange(newSort);
     }
   };
 
@@ -172,8 +252,9 @@ export const CategoryListingView: React.FC<CategoryListingViewProps> = ({
             <select
               id="category-page-select"
               value={category?.id || ''}
-              onChange={(e) => onCategoryChange(e.target.value ? e.target.value : null)}
-              className="px-3 py-1.5 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500 shadow-2xs cursor-pointer hover:border-slate-400 transition-colors"
+              disabled={isLoading}
+              onChange={(e) => handleCategorySwitch(e.target.value ? e.target.value : null)}
+              className="px-3 py-1.5 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500 shadow-2xs cursor-pointer hover:border-slate-400 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
             >
               <option value="">All Categories</option>
               {categories.map((c) => (
@@ -193,8 +274,9 @@ export const CategoryListingView: React.FC<CategoryListingViewProps> = ({
             <select
               id="category-sort-select"
               value={sortBy}
-              onChange={(e) => onSortChange(e.target.value as any)}
-              className="px-3 py-1.5 bg-white border border-slate-300 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500 shadow-2xs cursor-pointer hover:border-slate-400 transition-colors"
+              disabled={isLoading}
+              onChange={(e) => handleSortSwitch(e.target.value as any)}
+              className="px-3 py-1.5 bg-white border border-slate-300 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500 shadow-2xs cursor-pointer hover:border-slate-400 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
             >
               <option value="featured">Featured First</option>
               <option value="price-asc">Price: Low to High</option>
@@ -207,19 +289,25 @@ export const CategoryListingView: React.FC<CategoryListingViewProps> = ({
 
       {/* Main Content: Loading State, Empty State, or Product Grid */}
       {isLoading ? (
-        <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-5">
-          {Array.from({ length: 8 }).map((_, idx) => (
-            <div
-              key={idx}
-              className="bg-white rounded-2xl border border-slate-200/80 p-3 sm:p-4 space-y-3 shadow-xs overflow-hidden"
-            >
-              <div className="w-full aspect-square rounded-xl bg-slate-100 animate-pulse" />
-              <div className="h-3 w-16 rounded-full bg-slate-100 animate-pulse" />
-              <div className="h-4 w-4/5 rounded bg-slate-100 animate-pulse" />
-              <div className="h-4 w-24 rounded bg-slate-100 animate-pulse" />
-              <div className="h-8 w-full rounded-xl bg-slate-100 animate-pulse" />
-            </div>
-          ))}
+        <div className="space-y-4">
+          <div className="flex items-center justify-center gap-2 py-2 text-xs font-semibold text-slate-500">
+            <Loader2 className="w-4 h-4 animate-spin text-rose-500" />
+            <span>Loading category products...</span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-5">
+            {Array.from({ length: 8 }).map((_, idx) => (
+              <div
+                key={idx}
+                className="bg-white rounded-2xl border border-slate-200/80 p-3 sm:p-4 space-y-3 shadow-xs overflow-hidden"
+              >
+                <div className="w-full aspect-square rounded-xl bg-slate-100 animate-pulse" />
+                <div className="h-3 w-16 rounded-full bg-slate-100 animate-pulse" />
+                <div className="h-4 w-4/5 rounded bg-slate-100 animate-pulse" />
+                <div className="h-4 w-24 rounded bg-slate-100 animate-pulse" />
+                <div className="h-8 w-full rounded-xl bg-slate-100 animate-pulse" />
+              </div>
+            ))}
+          </div>
         </div>
       ) : products.length === 0 ? (
         <div className="py-20 text-center space-y-4 bg-white rounded-3xl border border-slate-200 shadow-xs">
@@ -250,11 +338,14 @@ export const CategoryListingView: React.FC<CategoryListingViewProps> = ({
           </div>
 
           {/* Server-Side Pagination Bar */}
-          {totalPages > 1 && (
+          {totalPages > 1 ? (
             <div className="mt-10 pt-6 border-t border-slate-200/80 flex flex-col sm:flex-row items-center justify-between gap-4">
-              <div className="text-xs font-medium text-slate-500">
-                Page <span className="font-bold text-slate-900">{currentPage}</span> of{' '}
-                <span className="font-bold text-slate-900">{totalPages}</span> ({totalProducts} total products)
+              <div className="text-xs font-medium text-slate-500 flex items-center gap-2">
+                {isLoading && <Loader2 className="w-3.5 h-3.5 animate-spin text-rose-500" />}
+                <span>
+                  Page <span className="font-bold text-slate-900">{currentPage}</span> of{' '}
+                  <span className="font-bold text-slate-900">{totalPages}</span> ({totalProducts} total products)
+                </span>
               </div>
 
               <div className="flex items-center gap-1.5 flex-wrap justify-center">
@@ -289,7 +380,7 @@ export const CategoryListingView: React.FC<CategoryListingViewProps> = ({
                       className={`min-w-9 h-9 px-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                         isCurrent
                           ? 'bg-rose-600 text-white shadow-md'
-                          : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-slate-300'
+                          : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-slate-300 disabled:opacity-50'
                       }`}
                       aria-current={isCurrent ? 'page' : undefined}
                     >
@@ -310,6 +401,21 @@ export const CategoryListingView: React.FC<CategoryListingViewProps> = ({
                   <ChevronRight className="w-4 h-4" />
                 </button>
               </div>
+            </div>
+          ) : totalProducts > 0 ? (
+            <div className="mt-8 pt-4 border-t border-slate-200/80 text-center">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium text-slate-500 bg-slate-100">
+                <span>All {totalProducts} products loaded</span>
+              </span>
+            </div>
+          ) : null}
+
+          {/* End-of-catalog status when on last page of multi-page view */}
+          {totalPages > 1 && currentPage >= totalPages && !isLoading && (
+            <div className="mt-4 text-center">
+              <span className="text-xs font-medium text-slate-400">
+                End of catalog — all {totalProducts} products loaded.
+              </span>
             </div>
           )}
         </>

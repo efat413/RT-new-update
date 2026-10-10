@@ -2574,7 +2574,7 @@ function localApiDevPlugin(): Plugin {
           devCategories.forEach((cat: any) => {
             const catProds = devProducts
               .filter((p: any) => p.status !== 'inactive' && !p.isDeleted && p.categoryId === cat.id)
-              .slice(0, 6)
+              .slice(0, 5)
               .map((p: any) => sanitizeDevProduct(p, false));
             categoryProducts[cat.id] = catProds;
             catProds.forEach((p: any) => collectedMap.set(p.id, p));

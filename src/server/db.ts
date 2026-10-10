@@ -692,10 +692,28 @@ export interface ProductFilter {
 
 export interface PaginatedProductsResult {
   products: Product[];
+  items?: Product[];
   total: number;
   page: number;
   limit: number;
   totalPages: number;
+  hasMore?: boolean;
+}
+
+export interface CategoryProductsPaginationOptions {
+  categoryId: string;
+  page?: number | string | null;
+  limit?: number | string | null;
+  includeBuyingPrice?: boolean;
+}
+
+export interface PaginatedCategoryProductsResult {
+  items: Product[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+  hasMore: boolean;
 }
 
 function buildProductWhereClause(filter?: ProductFilter): { whereClause: string; bindings: any[] } {
@@ -746,16 +764,16 @@ function buildProductWhereClause(filter?: ProductFilter): { whereClause: string;
 function resolveProductOrderClause(sortBy?: string): string {
   switch (sortBy) {
     case 'price-asc':
-      return ' ORDER BY price ASC, created_at DESC';
+      return ' ORDER BY price ASC, created_at DESC, id DESC';
     case 'price-desc':
-      return ' ORDER BY price DESC, created_at DESC';
+      return ' ORDER BY price DESC, created_at DESC, id DESC';
     case 'rating':
-      return ' ORDER BY rating DESC, created_at DESC';
+      return ' ORDER BY rating DESC, created_at DESC, id DESC';
     case 'featured':
-      return ' ORDER BY featured DESC, created_at DESC';
+      return ' ORDER BY featured DESC, created_at DESC, id DESC';
     case 'newest':
     default:
-      return ' ORDER BY created_at DESC';
+      return ' ORDER BY created_at DESC, id DESC';
   }
 }
 
@@ -808,7 +826,7 @@ export async function getHomepageProducts(
   categoryIds: string[],
   options?: HomepageProductsOptions
 ): Promise<HomepageProductsData> {
-  const perCategoryLimit = Math.min(24, Math.max(1, options?.perCategoryLimit || 6));
+  const perCategoryLimit = Math.min(24, Math.max(1, options?.perCategoryLimit || 5));
   const featuredLimit = Math.min(24, Math.max(1, options?.featuredLimit || 8));
 
   // 1. Prepare batch queries for D1 (1 round trip for all product queries)
@@ -824,17 +842,31 @@ export async function getHomepageProducts(
   `;
   statements.push(db.prepare(featuredSql).bind(featuredLimit));
 
-  // Statements 1..N: Products per category (SQL WHERE + ORDER BY + LIMIT)
-  for (const catId of categoryIds) {
-    const catSql = `
-      SELECT ${PUBLIC_PRODUCT_COLUMNS} FROM products 
-      WHERE category_id = ? 
-        AND (status = 'active' OR status = 'published' OR status IS NULL OR status = '')
-      ORDER BY created_at DESC 
-      LIMIT ?
-    `;
-    statements.push(db.prepare(catSql).bind(catId, perCategoryLimit));
-  }
+  // Statement 1: Category products using SQLite window function ROW_NUMBER() <= 5
+  const categoryFilterClause = categoryIds.length > 0
+    ? `AND category_id IN (${categoryIds.map(() => '?').join(', ')})`
+    : '';
+
+  const buildCategoryWindowSql = (orderClause: string) => `
+    WITH RankedProducts AS (
+      SELECT 
+        ${PUBLIC_PRODUCT_COLUMNS},
+        ROW_NUMBER() OVER (
+          PARTITION BY category_id 
+          ORDER BY ${orderClause}
+        ) AS row_num
+      FROM products
+      WHERE (status = 'active' OR status = 'published' OR status IS NULL OR status = '')
+        ${categoryFilterClause}
+    )
+    SELECT ${PUBLIC_PRODUCT_COLUMNS} 
+    FROM RankedProducts 
+    WHERE row_num <= ${perCategoryLimit}
+  `;
+
+  const primaryCategorySql = buildCategoryWindowSql('display_order ASC, created_at DESC');
+  const catStmt = db.prepare(primaryCategorySql);
+  statements.push(categoryIds.length > 0 ? catStmt.bind(...categoryIds) : catStmt);
 
   // Execute in 1 single D1 batch round trip (or concurrent fallback)
   let batchResults: any[];
@@ -843,7 +875,11 @@ export async function getHomepageProducts(
       ? await db.batch<ProductRow>(statements)
       : await Promise.all(statements.map((s) => s.all<ProductRow>()));
   } catch (err: any) {
-    if (err?.message?.includes('featured_sort_order') || err?.message?.includes('no such column')) {
+    if (
+      err?.message?.includes('display_order') ||
+      err?.message?.includes('featured_sort_order') ||
+      err?.message?.includes('no such column')
+    ) {
       const fallbackFeaturedSql = `
         SELECT ${PUBLIC_PRODUCT_COLUMNS} FROM products 
         WHERE (status = 'active' OR status = 'published' OR status IS NULL OR status = '')
@@ -852,6 +888,11 @@ export async function getHomepageProducts(
         LIMIT ?
       `;
       statements[0] = db.prepare(fallbackFeaturedSql).bind(featuredLimit);
+
+      const fallbackCategorySql = buildCategoryWindowSql('created_at DESC');
+      const fallbackCatStmt = db.prepare(fallbackCategorySql);
+      statements[1] = categoryIds.length > 0 ? fallbackCatStmt.bind(...categoryIds) : fallbackCatStmt;
+
       batchResults = typeof db.batch === 'function'
         ? await db.batch<ProductRow>(statements)
         : await Promise.all(statements.map((s) => s.all<ProductRow>()));
@@ -864,18 +905,23 @@ export async function getHomepageProducts(
   const featuredRows = batchResults[0]?.results || [];
   const featuredProducts = featuredRows.map(rowToProduct);
 
-  // Process category products
+  // Process category products from the window function result
+  const categoryRows = batchResults[1]?.results || [];
   const categoryProducts: Record<string, Product[]> = {};
+  categoryIds.forEach((catId) => {
+    categoryProducts[catId] = [];
+  });
+
   const collectedMap = new Map<string, Product>();
 
-  categoryIds.forEach((catId, index) => {
-    const rows = batchResults[index + 1]?.results || [];
-    const prods = rows.map(rowToProduct);
-    categoryProducts[catId] = prods;
-    for (const p of prods) {
-      collectedMap.set(p.id, p);
+  for (const row of categoryRows) {
+    const prod = rowToProduct(row);
+    if (!categoryProducts[prod.categoryId]) {
+      categoryProducts[prod.categoryId] = [];
     }
-  });
+    categoryProducts[prod.categoryId].push(prod);
+    collectedMap.set(prod.id, prod);
+  }
 
   // Also include featured products in uniqueProducts collection so quick view and details work seamlessly
   for (const p of featuredProducts) {
@@ -933,14 +979,128 @@ export async function getPaginatedProducts(
 
   const total = Number(countRes?.results?.[0]?.total ?? countRes?.total ?? 0);
   const products = (dataRes?.results || []).map(rowToProduct);
-  const totalPages = Math.ceil(total / safeLimit) || 1;
+  const totalPages = Math.ceil(total / safeLimit) || (total === 0 ? 0 : 1);
+  const hasMore = page < totalPages;
 
   return {
     products,
+    items: products,
     total,
     page,
     limit: safeLimit,
     totalPages,
+    hasMore,
+  };
+}
+
+/**
+ * Deterministic category product pagination.
+ * Applies SQL LIMIT ? OFFSET ? with tie-breaker:
+ * ORDER BY display_order ASC, created_at DESC, id DESC
+ * Returns standardized metadata: { items, total, page, totalPages, hasMore }
+ */
+export async function getCategoryProductsPaginated(
+  db: D1Database,
+  options: CategoryProductsPaginationOptions
+): Promise<PaginatedCategoryProductsResult> {
+  const rawCatId = (options?.categoryId || '').trim();
+  if (!rawCatId) {
+    return { items: [], total: 0, page: 1, limit: 12, totalPages: 0, hasMore: false };
+  }
+
+  // Sanitize page and limit numbers to prevent SQL injection or NaN offsets
+  const parsedPage = typeof options.page === 'string' ? parseInt(options.page, 10) : Number(options.page);
+  const parsedLimit = typeof options.limit === 'string' ? parseInt(options.limit, 10) : Number(options.limit);
+
+  const page = !isNaN(parsedPage) && parsedPage >= 1 ? Math.floor(parsedPage) : 1;
+  const limit = !isNaN(parsedLimit) && parsedLimit >= 1 ? Math.min(100, Math.floor(parsedLimit)) : 12;
+  const offset = (page - 1) * limit;
+
+  // Protect against NaN or negative offset
+  if (isNaN(offset) || offset < 0) {
+    return { items: [], total: 0, page: 1, limit, totalPages: 0, hasMore: false };
+  }
+
+  const availableColumns = await ensureProductTableSchema(db);
+  const columns = buildSelectProductColumns(availableColumns, Boolean(options.includeBuyingPrice));
+
+  const whereClause = `
+    WHERE (status = 'active' OR status = 'published' OR status IS NULL OR status = '')
+      AND (category_id = ? OR category_id IN (SELECT id FROM categories WHERE slug = ?))
+  `;
+
+  // 1. Prepare COUNT statement
+  const countQuery = `SELECT COUNT(*) as total FROM products ${whereClause}`;
+  const countStmt = db.prepare(countQuery).bind(rawCatId, rawCatId);
+
+  // 2. Prepare DATA statement with tie-breaker ordering: ORDER BY display_order ASC, created_at DESC, id DESC
+  const buildDataQuery = (orderClause: string) => `
+    SELECT ${columns} FROM products
+    ${whereClause}
+    ORDER BY ${orderClause}
+    LIMIT ? OFFSET ?
+  `;
+
+  let dataStmt = db
+    .prepare(buildDataQuery('display_order ASC, created_at DESC, id DESC'))
+    .bind(rawCatId, rawCatId, limit, offset);
+
+  let countRes: any;
+  let dataRes: any;
+
+  try {
+    if (typeof db.batch === 'function') {
+      const batchRes = await db.batch<any>([countStmt, dataStmt]);
+      countRes = batchRes[0];
+      dataRes = batchRes[1];
+    } else {
+      const [c, d] = await Promise.all([
+        countStmt.first<{ total: number }>(),
+        dataStmt.all<ProductRow>(),
+      ]);
+      countRes = { results: [c] };
+      dataRes = d;
+    }
+  } catch (err: any) {
+    if (err?.message?.includes('display_order') || err?.message?.includes('no such column')) {
+      dataStmt = db
+        .prepare(buildDataQuery('created_at DESC, id DESC'))
+        .bind(rawCatId, rawCatId, limit, offset);
+      if (typeof db.batch === 'function') {
+        const batchRes = await db.batch<any>([countStmt, dataStmt]);
+        countRes = batchRes[0];
+        dataRes = batchRes[1];
+      } else {
+        const [c, d] = await Promise.all([
+          countStmt.first<{ total: number }>(),
+          dataStmt.all<ProductRow>(),
+        ]);
+        countRes = { results: [c] };
+        dataRes = d;
+      }
+    } else {
+      throw err;
+    }
+  }
+
+  const total = Number(countRes?.results?.[0]?.total ?? countRes?.total ?? 0);
+  const totalPages = Math.ceil(total / limit) || 0;
+
+  // Empty or out-of-range page check
+  if (total === 0 || offset >= total) {
+    return { items: [], total, page, limit, totalPages, hasMore: false };
+  }
+
+  const items = (dataRes?.results || []).map(rowToProduct);
+  const hasMore = page < totalPages;
+
+  return {
+    items,
+    total,
+    page,
+    limit,
+    totalPages,
+    hasMore,
   };
 }
 

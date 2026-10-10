@@ -13,6 +13,7 @@ import {
   // Categories
   getAllCategories,
   getCategoryById,
+  getCategoryProductsPaginated,
   insertCategory,
   updateCategoryInD1,
   deleteCategoryFromD1,
@@ -2842,7 +2843,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
       const categoryIds = (categories || []).map((c) => c.id);
       const homepageData = await getHomepageProducts(env.DB, categoryIds, {
-        perCategoryLimit: 6,
+        perCategoryLimit: 5,
         featuredLimit: 8,
       });
 
@@ -3006,11 +3007,12 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           }
         } else {
           // Public Storefront Request:
-          // Default: page=1, limit=24. Hard cap: MAX_PUBLIC_LIMIT=48.
+          // Default: limit=12 when filtering by category, otherwise 24. Hard cap: MAX_PUBLIC_LIMIT=48.
           // Prevents full catalog dumps and excessive database/worker/bandwidth load.
+          const defaultLimit = category ? 12 : DEFAULT_PUBLIC_LIMIT;
           const page = pageParam ? Math.max(1, parseInt(pageParam, 10) || 1) : DEFAULT_PUBLIC_PAGE;
-          const parsedLimit = limitParam ? parseInt(limitParam, 10) : DEFAULT_PUBLIC_LIMIT;
-          const requestedLimit = isNaN(parsedLimit) ? DEFAULT_PUBLIC_LIMIT : parsedLimit;
+          const parsedLimit = limitParam ? parseInt(limitParam, 10) : defaultLimit;
+          const requestedLimit = isNaN(parsedLimit) ? defaultLimit : parsedLimit;
           const limit = Math.min(MAX_PUBLIC_LIMIT, Math.max(1, requestedLimit));
 
           const paginated = await getPaginatedProducts(env.DB, {
@@ -3027,12 +3029,14 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           );
           responsePayload = {
             success: true,
+            items: safeProducts,
+            products: safeProducts,
             count: safeProducts.length,
             total: paginated.total,
             page: paginated.page,
             limit: paginated.limit,
             totalPages: paginated.totalPages,
-            products: safeProducts,
+            hasMore: paginated.hasMore ?? (paginated.page < paginated.totalPages),
           };
         }
 
@@ -3310,6 +3314,46 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         console.error('Error creating category:', err);
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
       }
+    }
+  }
+
+  const categoryProductsMatch = path.match(/^\/api\/categories\/([^/]+)\/products\/?$/);
+  if (categoryProductsMatch && method === 'GET') {
+    const catId = decodeURIComponent(categoryProductsMatch[1]);
+    const pageParam = url.searchParams.get('page');
+    const limitParam = url.searchParams.get('limit');
+
+    try {
+      const paginated = await getCategoryProductsPaginated(env.DB, {
+        categoryId: catId,
+        page: pageParam,
+        limit: limitParam,
+      });
+
+      const safeItems = paginated.items.map((p) =>
+        sanitizeProductForRole(p, { isSuperAdmin: false, canViewBuyingPrice: false, canViewProfit: false })
+      );
+
+      return jsonResponse(
+        {
+          success: true,
+          items: safeItems,
+          products: safeItems,
+          total: paginated.total,
+          page: paginated.page,
+          limit: paginated.limit,
+          totalPages: paginated.totalPages,
+          hasMore: paginated.hasMore,
+        },
+        200,
+        {
+          'Cache-Control': 'public, max-age=30, s-maxage=60, stale-while-revalidate=30',
+          'Vary': 'Origin, Accept-Encoding',
+        }
+      );
+    } catch (err: any) {
+      console.error('Error fetching paginated category products:', err);
+      return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
     }
   }
 

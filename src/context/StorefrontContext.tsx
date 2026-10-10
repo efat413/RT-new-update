@@ -282,6 +282,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [isCategoryLoading, setIsCategoryLoading] = useState<boolean>(false);
 
   const setCategorySortBy = useCallback((newSort: 'featured' | 'price-asc' | 'price-desc' | 'rating') => {
+    setCategoryListingProducts([]);
     setCategorySortByState((prev) => (prev === newSort ? prev : newSort));
     setCategoryPage((prev) => (prev === 1 ? prev : 1));
   }, []);
@@ -387,11 +388,13 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [categoryNavSeq, setCategoryNavSeq] = useState<number>(0);
 
   const setSelectedCategory = useCallback((catId: string | null) => {
+    setCategoryListingProducts([]);
     setSelectedCategoryState((prev) => (prev === catId ? prev : catId));
     setCategoryPage((prev) => (prev === 1 ? prev : 1));
   }, []);
 
   const navigateToCategory = useCallback((categoryIdOrSlug: string | null) => {
+    setCategoryListingProducts([]);
     setSelectedProductId(null);
     setSearchQueryState('');
     setCurrentView('store');
@@ -1067,7 +1070,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         search: searchQuery.trim() || undefined,
         featured: isFeaturedCategory ? true : undefined,
         page: categoryPage,
-        limit: 24,
+        limit: 12,
         sortBy: categorySortBy,
       })
       .then((res) => {

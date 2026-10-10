@@ -689,7 +689,7 @@ const StoreContent: React.FC = () => {
                     totalProducts={categoryTotalProducts}
                     currentPage={categoryPage}
                     totalPages={categoryTotalPages}
-                    limit={24}
+                    limit={12}
                     sortBy={categorySortBy}
                     isFeaturedListing={selectedCategory === 'featured'}
                     onPageChange={(page) => setCategoryPage(page)}
