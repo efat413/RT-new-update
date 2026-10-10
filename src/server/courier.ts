@@ -168,9 +168,11 @@ export async function callSteadfastApi(
     };
   }
 
-  // Pre-validate credentials.baseUrl if passed from request
-  let effectiveBaseUrl = credentials.baseUrl;
-  if (effectiveBaseUrl) {
+  // Pre-validate credentials.baseUrl if passed from request or D1
+  let effectiveBaseUrl = (credentials.baseUrl || '').trim();
+  if (!effectiveBaseUrl || effectiveBaseUrl.includes('portal.steadfast.com.bd') || effectiveBaseUrl.includes('steadfast.com.bd')) {
+    effectiveBaseUrl = CANONICAL_STEADFAST_GATEWAY;
+  } else {
     const val = validateCourierApiDestination(effectiveBaseUrl, { courierType: 'steadfast' });
     if (!val.valid) {
       return {
@@ -179,7 +181,7 @@ export async function callSteadfastApi(
         error: `Invalid Steadfast gateway destination: ${val.error || 'Destination forbidden.'}`,
       };
     }
-    effectiveBaseUrl = val.normalizedUrl || effectiveBaseUrl;
+    effectiveBaseUrl = val.normalizedUrl || CANONICAL_STEADFAST_GATEWAY;
   }
 
   const cleanPath = endpointPath.replace(/^\/+/, '');
@@ -202,7 +204,12 @@ export async function callSteadfastApi(
     }
 
     // Use normalizedUrl as base before appending endpoint path to prevent double /api/v1 stacking
-    const dispatchUrl = buildSteadfastEndpointUrl(val.normalizedUrl || baseUrl, cleanPath);
+    const normalizedBase = val.normalizedUrl || baseUrl;
+    let subpath = cleanPath;
+    if (normalizedBase.endsWith('/api/v1') && subpath.startsWith('api/v1/')) {
+      subpath = subpath.slice(7);
+    }
+    const dispatchUrl = `${normalizedBase.replace(/\/+$/, '')}/${subpath.replace(/^\/+/, '')}`;
 
     try {
       const headers: Record<string, string> = {
@@ -320,7 +327,12 @@ export async function testSteadfastConnection(
     };
   }
 
-  const rawBase = (credentials.baseUrl || CANONICAL_STEADFAST_GATEWAY).trim();
+  // Ensure D1-saved config safely falls back to canonical gateway if stored value is empty or legacy
+  let rawBase = (credentials.baseUrl || '').trim();
+  if (!rawBase || rawBase.includes('portal.steadfast.com.bd') || rawBase.includes('steadfast.com.bd')) {
+    rawBase = CANONICAL_STEADFAST_GATEWAY;
+  }
+
   const val = validateCourierApiDestination(rawBase, { courierType: 'steadfast' });
   if (!val.valid) {
     return {
@@ -363,7 +375,12 @@ export async function dispatchOrderToSteadfast(
     };
   }
 
-  const rawBase = (credentials.baseUrl || CANONICAL_STEADFAST_GATEWAY).trim();
+  // Ensure D1-saved config safely falls back to canonical gateway if stored value is empty or legacy
+  let rawBase = (credentials.baseUrl || '').trim();
+  if (!rawBase || rawBase.includes('portal.steadfast.com.bd') || rawBase.includes('steadfast.com.bd')) {
+    rawBase = CANONICAL_STEADFAST_GATEWAY;
+  }
+
   const val = validateCourierApiDestination(rawBase, { courierType: 'steadfast' });
   if (!val.valid) {
     return {

@@ -551,11 +551,16 @@ export function validateCourierApiDestination(
   options?: { courierType?: string }
 ): CourierApiValidationResult {
   const courierType = (options?.courierType || '').toLowerCase();
-  const isSteadfast = courierType.includes('steadfast');
+  const isSteadfast =
+    courierType.includes('steadfast') ||
+    (typeof targetUrl === 'string' && (
+      targetUrl.includes('packzy.com') ||
+      targetUrl.includes('steadfast.com.bd')
+    ));
 
   // If input is empty or missing, for Steadfast safely fall back to canonical gateway
   if (!targetUrl || typeof targetUrl !== 'string' || !targetUrl.trim()) {
-    if (isSteadfast) {
+    if (isSteadfast || courierType.includes('steadfast')) {
       return {
         valid: true,
         normalizedUrl: 'https://portal.packzy.com/api/v1',
@@ -567,25 +572,20 @@ export function validateCourierApiDestination(
 
   let trimmed = targetUrl.trim();
 
-  // Accept direct full Steadfast subpaths (e.g. /create_order, /status_by_cid, /get_balance)
-  if (trimmed.startsWith('/')) {
-    const normPath = trimmed.toLowerCase();
-    const isSteadfastEndpoint =
-      normPath.startsWith('/create_order') ||
-      normPath.startsWith('/status_by_cid') ||
-      normPath.startsWith('/status_by_trackingcode') ||
-      normPath.startsWith('/get_balance') ||
-      normPath.startsWith('/api/v1') ||
-      normPath === '/';
-
-    if (isSteadfast && isSteadfastEndpoint) {
+  // Accept direct full Steadfast subpaths (e.g. /create_order, /status_by_cid, /get_balance, /api/v1)
+  if (
+    trimmed.startsWith('/') ||
+    trimmed.startsWith('create_order') ||
+    trimmed.startsWith('status_by_') ||
+    trimmed.startsWith('get_balance')
+  ) {
+    if (isSteadfast || !options?.courierType || options.courierType.toLowerCase().includes('steadfast')) {
       return {
         valid: true,
         normalizedUrl: 'https://portal.packzy.com/api/v1',
         hostname: 'portal.packzy.com',
       };
     }
-
     return {
       valid: false,
       error: 'Relative URLs are prohibited for courier API destinations.',
@@ -601,6 +601,15 @@ export function validateCourierApiDestination(
     ) {
       trimmed = `https://${trimmed}`;
     }
+  }
+
+  // Upgrade legacy or approved Steadfast http:// to https://
+  if (
+    trimmed.startsWith('http://portal.packzy.com') ||
+    trimmed.startsWith('http://portal.steadfast.com.bd') ||
+    trimmed.startsWith('http://steadfast.com.bd')
+  ) {
+    trimmed = trimmed.replace(/^http:\/\//i, 'https://');
   }
 
   // Enforce HTTPS exclusively to protect credentials in transit
@@ -709,7 +718,7 @@ export function validateCourierApiDestination(
   }
 
   // Enforce Courier Domain Allowlist
-  if (isSteadfast) {
+  if (isSteadfast || hostname === 'portal.packzy.com' || hostname === 'portal.steadfast.com.bd' || hostname === 'steadfast.com.bd') {
     // Exact hostname match for canonical gateway "portal.packzy.com" and legacy "portal.steadfast.com.bd"
     const isApprovedSteadfast =
       hostname === 'portal.packzy.com' ||
