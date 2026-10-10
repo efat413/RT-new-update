@@ -28,8 +28,8 @@ npm run d1:migrate
 ### Step 2: Build & Deploy
 #### Option A: Automated Git CI (Cloudflare Workers Builds)
 1. Commit and push this repository to your connected GitHub/GitLab repository.
-2. Cloudflare Workers Builds automatically builds (`npm run build`) and deploys the Worker named `rt`.
-3. In Cloudflare Dashboard: **Workers & Pages > Overview > rt > Settings > Bindings**:
+2. Cloudflare Workers Builds automatically builds (`npm run build`) and deploys the Worker named `rongdhonutrade`.
+3. In Cloudflare Dashboard: **Workers & Pages > Overview > rongdhonutrade > Settings > Bindings**:
    - Ensure D1 Database binding is bound:
      - Variable name: `DB`
      - D1 Database: `rongdhonu-db` (`3276795d-5593-42c0-8e14-947f3ab1172b`)
@@ -50,7 +50,7 @@ npm run deploy
 
 ## 🔍 Troubleshooting: Error 10181 ("database not found")
 If Cloudflare reports `D1 binding 'DB' references database '3276795d-5593-42c0-8e14-947f3ab1172b' which was not found [code: 10181]`:
-1. **Account Isolation**: Cloudflare D1 databases are account-scoped. If you have more than one Cloudflare account (e.g. personal vs company, or multiple email logins), the D1 database `3276795d-5593-42c0-8e14-947f3ab1172b` was created in Account A, but the Worker `rt` / CI Token is deploying to Account B.
+1. **Account Isolation**: Cloudflare D1 databases are account-scoped. If you have more than one Cloudflare account (e.g. personal vs company, or multiple email logins), the D1 database `3276795d-5593-42c0-8e14-947f3ab1172b` was created in Account A, but the Worker `rongdhonutrade` / CI Token is deploying to Account B.
 2. **Resolution**:
    - Run `npx wrangler d1 list` to verify which account ID owns `rongdhonu-db`.
    - Ensure the CI deployment API token (`CLOUDFLARE_API_TOKEN`) or Workers Builds project is created under that exact same Cloudflare account.
@@ -72,7 +72,7 @@ This project is disconnected from your Git account, this may cause deployments t
    - Under **Repository access**, ensure your repository is selected and access is granted. Click **Save**.
 2. **Cloudflare Dashboard Reconnection**:
    - Go to [Cloudflare Dashboard](https://dash.cloudflare.com/) > **Workers & Pages**.
-   - Select your project (`rt`).
+   - Select your project (`rongdhonutrade`).
    - Go to **Settings** > **Builds & deployments** > **Source**.
    - Click **Reconnect** or **Manage Git Connection** and re-link your GitHub repository and default branch (`main`).
    - Go to the **Deployments** tab and click **Retry deployment**.
@@ -115,7 +115,7 @@ npx wrangler secret put COURIER_WEBHOOK_SECRET
 ```
 
 Or via the Cloudflare Dashboard:
-1. Open **Workers & Pages** &rarr; select **rt** &rarr; **Settings** &rarr; **Variables and Secrets**.
+1. Open **Workers & Pages** &rarr; select **rongdhonutrade** &rarr; **Settings** &rarr; **Variables and Secrets**.
 2. Click **Add** under **Environment Variables / Secrets** (select **Secret** type):
    - `ADMIN_SECRET`
    - `STEADFAST_API_KEY`
