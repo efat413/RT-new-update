@@ -161,6 +161,26 @@ let cachedSettings: {
 
 let activeSettingsPromise: Promise<StoreSettings> | null = null;
 
+// Generation/Epoch Version Guard for in-flight cache race condition protection
+let cacheGeneration = 0;
+
+export function getCacheGeneration(): number {
+  return cacheGeneration;
+}
+
+// In-memory cache for category products: /api/categories/* or /api/products?category=*
+const cachedCategoryProducts = new Map<string, { data: Product[]; timestamp: number }>();
+const activeCategoryProductsPromises = new Map<string, Promise<Product[]>>();
+
+export function invalidateStoreCaches(): void {
+  cacheGeneration++;
+  cachedHomepageData = null;
+  cachedCategories = null;
+  cachedSliders = null;
+  cachedSettings = null;
+  cachedCategoryProducts.clear();
+}
+
 const CACHE_TTL_MS = 60 * 1000; // 60s matching Cloudflare edge cache max-age
 
 export const storeHomepageApi = {
@@ -179,6 +199,8 @@ export const storeHomepageApi = {
     if (activeHomepagePromise) {
       return activeHomepagePromise;
     }
+
+    const requestGen = cacheGeneration;
 
     activeHomepagePromise = (async () => {
       try {
@@ -202,20 +224,32 @@ export const storeHomepageApi = {
             products: res.data.products,
           };
           const now = Date.now();
-          cachedHomepageData = {
-            data: hpData,
-            timestamp: now,
-          };
-          // Cross-populate individual caches to prevent redundant standalone requests
-          if (Array.isArray(hpData.categories)) {
-            cachedCategories = { data: hpData.categories, timestamp: now };
+
+          // Only populate cache if no mutation occurred while request was in-flight
+          if (requestGen === cacheGeneration) {
+            cachedHomepageData = {
+              data: hpData,
+              timestamp: now,
+            };
+            // Cross-populate individual caches to prevent redundant standalone requests
+            if (Array.isArray(hpData.categories)) {
+              cachedCategories = { data: hpData.categories, timestamp: now };
+            }
+            if (Array.isArray(hpData.slides)) {
+              cachedSliders = { data: hpData.slides, timestamp: now };
+            }
+            if (hpData.settings) {
+              cachedSettings = { data: hpData.settings, timestamp: now };
+            }
+            if (hpData.categoryProducts && typeof hpData.categoryProducts === 'object') {
+              for (const [catKey, prods] of Object.entries(hpData.categoryProducts)) {
+                if (Array.isArray(prods)) {
+                  cachedCategoryProducts.set(catKey, { data: prods, timestamp: now });
+                }
+              }
+            }
           }
-          if (Array.isArray(hpData.slides)) {
-            cachedSliders = { data: hpData.slides, timestamp: now };
-          }
-          if (hpData.settings) {
-            cachedSettings = { data: hpData.settings, timestamp: now };
-          }
+
           return {
             success: true,
             data: hpData,
@@ -234,7 +268,7 @@ export const storeHomepageApi = {
   },
 
   clearCache(): void {
-    cachedHomepageData = null;
+    invalidateStoreCaches();
   },
 
   getCached(): HomepageData | null {
@@ -273,15 +307,38 @@ export const productsApi = {
   },
 
   async getHomepageCategoryProducts(categoryIdOrSlug: string, limit = 6): Promise<Product[]> {
-    const url = new URL(`${API_BASE}/products`, window.location.origin);
-    url.searchParams.set('category', categoryIdOrSlug);
-    url.searchParams.set('page', '1');
-    url.searchParams.set('limit', String(limit));
-    const res = await apiRequest<{ success: boolean; products: Product[] }>(url.toString());
-    if (res.success && res.data && Array.isArray(res.data.products)) {
-      return res.data.products;
+    const cacheKey = `${categoryIdOrSlug}:${limit}`;
+    const cached = cachedCategoryProducts.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp < CACHE_TTL_MS)) {
+      return cached.data;
     }
-    return [];
+
+    if (activeCategoryProductsPromises.has(cacheKey)) {
+      return activeCategoryProductsPromises.get(cacheKey)!;
+    }
+
+    const requestGen = cacheGeneration;
+    const fetchPromise = (async () => {
+      try {
+        const url = new URL(`${API_BASE}/products`, window.location.origin);
+        url.searchParams.set('category', categoryIdOrSlug);
+        url.searchParams.set('page', '1');
+        url.searchParams.set('limit', String(limit));
+        const res = await apiRequest<{ success: boolean; products: Product[] }>(url.toString());
+        if (res.success && res.data && Array.isArray(res.data.products)) {
+          if (requestGen === cacheGeneration) {
+            cachedCategoryProducts.set(cacheKey, { data: res.data.products, timestamp: Date.now() });
+          }
+          return res.data.products;
+        }
+        return [];
+      } finally {
+        activeCategoryProductsPromises.delete(cacheKey);
+      }
+    })();
+
+    activeCategoryProductsPromises.set(cacheKey, fetchPromise);
+    return fetchPromise;
   },
 
   async getPaginated(params?: {
@@ -324,7 +381,6 @@ export const productsApi = {
   },
 
   async create(product: Partial<Product>): Promise<Product> {
-    storeHomepageApi.clearCache();
     const res = await apiRequest<{ success: boolean; product: Product }>(`${API_BASE}/products`, {
       method: 'POST',
       body: JSON.stringify(product),
@@ -332,11 +388,11 @@ export const productsApi = {
     if (!res.success || !res.data?.product) {
       throw new Error(res.error || 'Failed to create product. Please try again.');
     }
+    invalidateStoreCaches();
     return res.data.product;
   },
 
   async update(id: string, updates: Partial<Product>): Promise<Product> {
-    storeHomepageApi.clearCache();
     const res = await apiRequest<{ success: boolean; product: Product }>(
       `${API_BASE}/products/${encodeURIComponent(id)}`,
       {
@@ -347,11 +403,11 @@ export const productsApi = {
     if (!res.success || !res.data?.product) {
       throw new Error(res.error || 'Failed to update product. Please try again.');
     }
+    invalidateStoreCaches();
     return res.data.product;
   },
 
   async setFeatured(id: string, isFeatured: boolean, featuredSortOrder?: number): Promise<Product> {
-    storeHomepageApi.clearCache();
     const res = await apiRequest<{ success: boolean; product: Product }>(
       `${API_BASE}/products/${encodeURIComponent(id)}/featured`,
       {
@@ -362,17 +418,18 @@ export const productsApi = {
     if (!res.success || !res.data?.product) {
       throw new Error(res.error || 'Failed to update featured status. Please try again.');
     }
+    invalidateStoreCaches();
     return res.data.product;
   },
 
   async delete(id: string): Promise<boolean> {
-    storeHomepageApi.clearCache();
     const res = await apiRequest<{ success: boolean }>(`${API_BASE}/products/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     });
     if (!res.success) {
       throw new Error(res.error || 'Failed to delete product. Please try again.');
     }
+    invalidateStoreCaches();
     return true;
   },
 };
@@ -388,11 +445,14 @@ export const categoriesApi = {
     if (activeCategoriesPromise) {
       return activeCategoriesPromise;
     }
+    const requestGen = cacheGeneration;
     activeCategoriesPromise = (async () => {
       try {
         const res = await apiRequest<{ success: boolean; categories: Category[] }>(`${API_BASE}/categories`);
         if (res.success && res.data && Array.isArray(res.data.categories)) {
-          cachedCategories = { data: res.data.categories, timestamp: Date.now() };
+          if (requestGen === cacheGeneration) {
+            cachedCategories = { data: res.data.categories, timestamp: Date.now() };
+          }
           return res.data.categories;
         }
         throw new Error(res.error || 'Failed to fetch categories. Please try again.');
@@ -404,12 +464,10 @@ export const categoriesApi = {
   },
 
   clearCache(): void {
-    cachedCategories = null;
+    invalidateStoreCaches();
   },
 
   async create(category: Partial<Category>): Promise<Category> {
-    cachedCategories = null;
-    storeHomepageApi.clearCache();
     const res = await apiRequest<{ success: boolean; category: Category }>(`${API_BASE}/categories`, {
       method: 'POST',
       body: JSON.stringify(category),
@@ -417,12 +475,11 @@ export const categoriesApi = {
     if (!res.success || !res.data?.category) {
       throw new Error(res.error || 'Failed to create category. Please try again.');
     }
+    invalidateStoreCaches();
     return res.data.category;
   },
 
   async update(id: string, updates: Partial<Category>): Promise<Category> {
-    cachedCategories = null;
-    storeHomepageApi.clearCache();
     const res = await apiRequest<{ success: boolean; category: Category }>(
       `${API_BASE}/categories/${encodeURIComponent(id)}`,
       {
@@ -433,18 +490,18 @@ export const categoriesApi = {
     if (!res.success || !res.data?.category) {
       throw new Error(res.error || 'Failed to update category. Please try again.');
     }
+    invalidateStoreCaches();
     return res.data.category;
   },
 
   async delete(id: string): Promise<boolean> {
-    cachedCategories = null;
-    storeHomepageApi.clearCache();
     const res = await apiRequest<{ success: boolean }>(`${API_BASE}/categories/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     });
     if (!res.success) {
       throw new Error(res.error || 'Failed to delete category. Please try again.');
     }
+    invalidateStoreCaches();
     return true;
   },
 };
@@ -460,11 +517,14 @@ export const slidersApi = {
     if (activeSlidersPromise) {
       return activeSlidersPromise;
     }
+    const requestGen = cacheGeneration;
     activeSlidersPromise = (async () => {
       try {
         const res = await apiRequest<{ success: boolean; sliders: CarouselSlide[] }>(`${API_BASE}/sliders`);
         if (res.success && res.data && Array.isArray(res.data.sliders)) {
-          cachedSliders = { data: res.data.sliders, timestamp: Date.now() };
+          if (requestGen === cacheGeneration) {
+            cachedSliders = { data: res.data.sliders, timestamp: Date.now() };
+          }
           return res.data.sliders;
         }
         throw new Error(res.error || 'Failed to fetch sliders. Please try again.');
@@ -476,12 +536,10 @@ export const slidersApi = {
   },
 
   clearCache(): void {
-    cachedSliders = null;
+    invalidateStoreCaches();
   },
 
   async create(slider: Partial<CarouselSlide>): Promise<CarouselSlide> {
-    cachedSliders = null;
-    storeHomepageApi.clearCache();
     const res = await apiRequest<{ success: boolean; slider: CarouselSlide }>(`${API_BASE}/sliders`, {
       method: 'POST',
       body: JSON.stringify(slider),
@@ -489,12 +547,11 @@ export const slidersApi = {
     if (!res.success || !res.data?.slider) {
       throw new Error(res.error || 'Failed to create slider. Please try again.');
     }
+    invalidateStoreCaches();
     return res.data.slider;
   },
 
   async update(id: string, updates: Partial<CarouselSlide>): Promise<CarouselSlide> {
-    cachedSliders = null;
-    storeHomepageApi.clearCache();
     const res = await apiRequest<{ success: boolean; slider: CarouselSlide }>(
       `${API_BASE}/sliders/${encodeURIComponent(id)}`,
       {
@@ -505,24 +562,22 @@ export const slidersApi = {
     if (!res.success || !res.data?.slider) {
       throw new Error(res.error || 'Failed to update slider. Please try again.');
     }
+    invalidateStoreCaches();
     return res.data.slider;
   },
 
   async delete(id: string): Promise<boolean> {
-    cachedSliders = null;
-    storeHomepageApi.clearCache();
     const res = await apiRequest<{ success: boolean }>(`${API_BASE}/sliders/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     });
     if (!res.success) {
       throw new Error(res.error || 'Failed to delete slider. Please try again.');
     }
+    invalidateStoreCaches();
     return true;
   },
 
   async reorder(orderedItems: Array<{ id: string; sort_order?: number; sortOrder?: number } | string>): Promise<CarouselSlide[]> {
-    cachedSliders = null;
-    storeHomepageApi.clearCache();
     const payload = orderedItems.map((item, idx) =>
       typeof item === 'string'
         ? { id: item, sort_order: idx + 1 }
@@ -535,6 +590,7 @@ export const slidersApi = {
     if (!res.success || !res.data?.sliders) {
       throw new Error(res.error || 'Failed to update slider order. Please try again.');
     }
+    invalidateStoreCaches();
     cachedSliders = { data: res.data.sliders, timestamp: Date.now() };
     return res.data.sliders;
   },
@@ -551,6 +607,7 @@ export const settingsApi = {
     if (activeSettingsPromise) {
       return activeSettingsPromise;
     }
+    const requestGen = cacheGeneration;
     activeSettingsPromise = (async () => {
       try {
         let res = await apiRequest<any>(`${API_BASE}/settings`);
@@ -563,7 +620,9 @@ export const settingsApi = {
         if (res.success && res.data) {
           const candidate = res.data.settings || (res.data.siteName ? res.data : null);
           if (candidate && typeof candidate === 'object') {
-            cachedSettings = { data: candidate as StoreSettings, timestamp: Date.now() };
+            if (requestGen === cacheGeneration) {
+              cachedSettings = { data: candidate as StoreSettings, timestamp: Date.now() };
+            }
             return candidate as StoreSettings;
           }
         }
@@ -576,12 +635,10 @@ export const settingsApi = {
   },
 
   clearCache(): void {
-    cachedSettings = null;
+    invalidateStoreCaches();
   },
 
   async update(settings: Partial<StoreSettings>): Promise<StoreSettings> {
-    cachedSettings = null;
-    storeHomepageApi.clearCache();
     const res = await apiRequest<any>(`${API_BASE}/settings`, {
       method: 'PUT',
       body: JSON.stringify(settings),
@@ -589,6 +646,7 @@ export const settingsApi = {
     if (res.success && res.data) {
       const candidate = res.data.settings || (res.data.siteName ? res.data : null);
       if (candidate && typeof candidate === 'object') {
+        invalidateStoreCaches();
         cachedSettings = { data: candidate as StoreSettings, timestamp: Date.now() };
         return candidate as StoreSettings;
       }
