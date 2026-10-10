@@ -7,6 +7,7 @@ import {
   getHomepageProducts,
   getHomepageCategoryProducts,
   getProductById,
+  getProductsByIds,
   insertProduct,
   updateProductInD1,
   setProductFeaturedInD1,
@@ -6188,6 +6189,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         let authoritativeTotalProfit = Number(existing.totalGrossProfit) || 0;
         let enrichedItems: any[] | null = null;
 
+        const MAX_ORDER_ITEM_QTY = 100;
+
         if (updates.items !== undefined) {
           if (!Array.isArray(updates.items) || updates.items.length === 0) {
             return jsonResponse({
@@ -6196,17 +6199,125 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
             }, 400);
           }
 
+          // 1. Strict validation of each item quantity and product ID
+          for (const it of updates.items) {
+            if (!it || typeof it !== 'object') {
+              return jsonResponse({
+                success: false,
+                error: 'Invalid order item: Each item must be a valid object.',
+              }, 400);
+            }
+            const prodId = String(it.product?.id || (it as any).productId || '').trim();
+            if (!prodId) {
+              return jsonResponse({
+                success: false,
+                error: 'Invalid order item: Each order item must specify a valid product ID.',
+              }, 400);
+            }
+            const rawQty = (it as any).quantity;
+            let parsedQty: number;
+            if (typeof rawQty === 'number') {
+              parsedQty = rawQty;
+            } else if (typeof rawQty === 'string' && /^\d+$/.test((rawQty as string).trim())) {
+              parsedQty = Number((rawQty as string).trim());
+            } else {
+              return jsonResponse({
+                success: false,
+                error: `Invalid item quantity for product "${prodId}": Must be a strict finite positive integer between 1 and ${MAX_ORDER_ITEM_QTY}.`,
+              }, 400);
+            }
+
+            if (!Number.isFinite(parsedQty) || !Number.isInteger(parsedQty) || parsedQty < 1 || parsedQty > MAX_ORDER_ITEM_QTY) {
+              return jsonResponse({
+                success: false,
+                error: `Invalid item quantity for product "${prodId}": Must be a strict finite positive integer between 1 and ${MAX_ORDER_ITEM_QTY}.`,
+              }, 400);
+            }
+          }
+
+          // 2. Validate products existence and active status in D1
+          const uniqueProductIds = Array.from(
+            new Set(updates.items.map((it: any) => String(it.product?.id || it.productId || '').trim()))
+          );
+          const d1Products = await getProductsByIds(env.DB, uniqueProductIds, { includeBuyingPrice: true });
+          const d1ProductMap = new Map(d1Products.map((p) => [p.id, p]));
+
+          for (const pid of uniqueProductIds) {
+            const d1Prod = d1ProductMap.get(pid);
+            if (!d1Prod) {
+              return jsonResponse({
+                success: false,
+                error: `Product with ID "${pid}" does not exist in D1 database.`,
+              }, 400);
+            }
+            if (d1Prod.status && d1Prod.status !== 'active') {
+              return jsonResponse({
+                success: false,
+                error: `Product "${d1Prod.title}" is inactive or unavailable for ordering.`,
+              }, 400);
+            }
+          }
+
+          // 3. Deduplication & Aggregation: Sum quantities across duplicate product lines
+          const requestedQtyByProduct = new Map<string, number>();
+          for (const it of updates.items) {
+            const pid = String(it.product?.id || (it as any).productId || '').trim();
+            const qty = typeof it.quantity === 'number' ? it.quantity : Number(it.quantity);
+            requestedQtyByProduct.set(pid, (requestedQtyByProduct.get(pid) || 0) + qty);
+          }
+
+          for (const [pid, totalQty] of requestedQtyByProduct.entries()) {
+            if (totalQty > MAX_ORDER_ITEM_QTY) {
+              const d1Prod = d1ProductMap.get(pid)!;
+              return jsonResponse({
+                success: false,
+                error: `Aggregated quantity for "${d1Prod.title}" (${totalQty}) exceeds maximum allowable quantity of ${MAX_ORDER_ITEM_QTY}.`,
+              }, 400);
+            }
+          }
+
+          // 4. Pre-check stock delta against persisted order items (if order will remain active)
+          const isTargetCancelled = (updates.shippingStatus !== undefined ? updates.shippingStatus : existing.shippingStatus) === 'Cancelled';
+          if (!isTargetCancelled) {
+            const persistedQtyMap = new Map<string, number>();
+            if (existing.shippingStatus !== 'Cancelled' && Array.isArray(existing.items)) {
+              for (const it of existing.items) {
+                const pid = String(it?.product?.id || (it as any)?.productId || '').trim();
+                if (pid) {
+                  persistedQtyMap.set(pid, (persistedQtyMap.get(pid) || 0) + (Number(it.quantity) || 0));
+                }
+              }
+            }
+            for (const [pid, newQty] of requestedQtyByProduct.entries()) {
+              const oldQty = persistedQtyMap.get(pid) || 0;
+              const delta = newQty - oldQty;
+              if (delta > 0) {
+                const d1Prod = d1ProductMap.get(pid)!;
+                if (d1Prod.stock < delta) {
+                  return jsonResponse({
+                    success: false,
+                    error: `Insufficient stock for "${d1Prod.title}". Requested additional: ${delta}, Available in stock: ${d1Prod.stock}.`,
+                  }, 400);
+                }
+              }
+            }
+          }
+
+          // 5. Enrich items with snapshots and authoritative calculations
           let subtotalAcc = 0;
           let costAcc = 0;
           let profitAcc = 0;
           enrichedItems = [];
 
           for (const it of updates.items) {
-            const qty = Math.max(1, Math.round(Number(it.quantity) || 1));
+            const pid = String(it.product?.id || (it as any).productId || '').trim();
+            const d1Prod = d1ProductMap.get(pid)!;
+            const qty = typeof it.quantity === 'number' ? it.quantity : Number(it.quantity);
+
             const rawSellingPrice =
               it.sellingPriceSnapshot != null && !isNaN(Number(it.sellingPriceSnapshot))
                 ? Number(it.sellingPriceSnapshot)
-                : Number(it.product?.price || 0);
+                : Number(d1Prod.price || 0);
 
             if (typeof rawSellingPrice !== 'number' || isNaN(rawSellingPrice) || rawSellingPrice < 0) {
               return jsonResponse({
@@ -6219,9 +6330,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
             const buyingPrice =
               it.buyingPriceSnapshot != null && !isNaN(Number(it.buyingPriceSnapshot))
                 ? Number(it.buyingPriceSnapshot)
-                : it.product?.buyingPrice != null && !isNaN(Number(it.product.buyingPrice))
-                ? Number(it.product.buyingPrice)
-                : 0;
+                : (d1Prod.buyingPrice != null && !isNaN(Number(d1Prod.buyingPrice)) ? Number(d1Prod.buyingPrice) : 0);
 
             const itemLineTotal = Math.round(unitSellingPrice * qty * 100) / 100;
             const itemCost = Math.round(buyingPrice * qty * 100) / 100;
@@ -6235,7 +6344,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
               ...it,
               quantity: qty,
               product: {
+                ...d1Prod,
                 ...(it.product || {}),
+                id: d1Prod.id,
+                title: d1Prod.title,
                 price: unitSellingPrice,
               },
               sellingPriceSnapshot: unitSellingPrice,
@@ -6424,8 +6536,20 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         });
       } catch (err: any) {
         logServerError({ route: path, method, error: err, action: 'order.update', orderId });
-        if (err?.message?.includes('not found')) {
+        const errMsg = err?.message || '';
+        if (errMsg.includes('not found') || errMsg.includes('does not exist')) {
           return jsonResponse({ success: false, error: 'Order not found' }, 404);
+        }
+        if (
+          errMsg.includes('Insufficient stock') ||
+          errMsg.includes('INSUFFICIENT_STOCK') ||
+          errMsg.includes('Invalid') ||
+          errMsg.includes('inactive')
+        ) {
+          return jsonResponse({
+            success: false,
+            error: errMsg.replace(/^INSUFFICIENT_STOCK:\s*/i, ''),
+          }, 400);
         }
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
       }

@@ -4176,16 +4176,23 @@ export async function insertOrder(
   let authoritativeSubtotal = 0;
   let totalOrderCost = 0;
   const verifiedItems: CartItem[] = [];
+  const aggregatedQtyByProdId = new Map<string, number>();
 
   for (const it of order.items) {
-    const prodId = it?.product?.id;
-    const requestedQty = Number(it?.quantity);
+    const prodId = it?.product?.id || (it as any)?.productId;
+    const rawQty = it?.quantity;
 
     if (!prodId) {
       throw new Error('Order item is missing a valid product ID.');
     }
 
-    if (!Number.isInteger(requestedQty) || requestedQty < 1 || requestedQty > 100) {
+    if (
+      typeof rawQty !== 'number' ||
+      !Number.isFinite(rawQty) ||
+      !Number.isInteger(rawQty) ||
+      rawQty < 1 ||
+      rawQty > 100
+    ) {
       throw new Error(`Invalid item quantity for "${it?.product?.title || prodId}". Must be an integer between 1 and 100.`);
     }
 
@@ -4194,16 +4201,16 @@ export async function insertOrder(
       throw new Error(`Product "${it?.product?.title || prodId}" does not exist.`);
     }
 
-    if (d1Product.stock < requestedQty) {
-      throw new Error(
-        `Insufficient stock for "${d1Product.title}". Requested: ${requestedQty}, Available: ${d1Product.stock}`
-      );
+    if (d1Product.status && d1Product.status !== 'active') {
+      throw new Error(`Product "${d1Product.title}" is inactive or unavailable for ordering.`);
     }
+
+    aggregatedQtyByProdId.set(prodId, (aggregatedQtyByProdId.get(prodId) || 0) + rawQty);
 
     const sellingPrice = Number(d1Product.price) || 0;
     const buyingPrice = Number(d1Product.buyingPrice) || 0;
-    const itemRevenue = sellingPrice * requestedQty;
-    const itemCost = buyingPrice * requestedQty;
+    const itemRevenue = sellingPrice * rawQty;
+    const itemCost = buyingPrice * rawQty;
     const itemGrossProfit = itemRevenue - itemCost;
 
     authoritativeSubtotal += itemRevenue;
@@ -4211,7 +4218,7 @@ export async function insertOrder(
 
     verifiedItems.push({
       ...it,
-      quantity: requestedQty,
+      quantity: rawQty,
       buyingPriceSnapshot: buyingPrice,
       sellingPriceSnapshot: sellingPrice,
       productCost: itemCost,
@@ -4220,6 +4227,16 @@ export async function insertOrder(
         ...d1Product,
       },
     });
+  }
+
+  // Stock availability check against aggregated quantities (prevents overselling across duplicate lines)
+  for (const [prodId, totalQty] of aggregatedQtyByProdId.entries()) {
+    const d1Product = productMap.get(prodId)!;
+    if (d1Product.stock < totalQty) {
+      throw new Error(
+        `Insufficient stock for "${d1Product.title}". Requested: ${totalQty}, Available: ${d1Product.stock}`
+      );
+    }
   }
 
   const totalGrossProfit = authoritativeSubtotal - totalOrderCost;
@@ -4304,13 +4321,12 @@ export async function insertOrder(
     );
   `;
 
-  const stockStatements = verifiedItems.map((it) => {
-    const qty = Number(it.quantity) || 1;
+  const stockStatements = Array.from(aggregatedQtyByProdId.entries()).map(([prodId, totalQty]) => {
     return db
       .prepare(
         'UPDATE products SET stock = CASE WHEN stock >= ? THEN stock - ? ELSE -1 END, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
       )
-      .bind(qty, qty, it.product.id);
+      .bind(totalQty, totalQty, prodId);
   });
 
   let currentOrderNumber = orderNumber;
@@ -4379,8 +4395,9 @@ export async function insertOrder(
       // Verify that every stock update statement actually affected exactly 1 row
       const stockResults = batchResults.slice(1);
       let stockFailureIndex = -1;
+      const aggregatedEntries = Array.from(aggregatedQtyByProdId.entries());
 
-      for (let i = 0; i < verifiedItems.length; i++) {
+      for (let i = 0; i < aggregatedEntries.length; i++) {
         const sRes = stockResults[i];
         const changes = sRes?.meta?.changes ?? (sRes as any)?.changes ?? sRes?.meta?.rows_written ?? 0;
         if (changes < 1) {
@@ -4394,24 +4411,25 @@ export async function insertOrder(
         const rollbackStatements: D1PreparedStatement[] = [
           db.prepare('DELETE FROM orders WHERE id = ?').bind(orderId),
         ];
-        for (let i = 0; i < verifiedItems.length; i++) {
+        for (let i = 0; i < aggregatedEntries.length; i++) {
           if (i === stockFailureIndex) continue;
           const sRes = stockResults[i];
           const changes = sRes?.meta?.changes ?? (sRes as any)?.changes ?? sRes?.meta?.rows_written ?? 0;
           if (changes >= 1) {
-            const qty = Number(verifiedItems[i].quantity) || 1;
+            const [prodId, qty] = aggregatedEntries[i];
             rollbackStatements.push(
               db
                 .prepare('UPDATE products SET stock = stock + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-                .bind(qty, verifiedItems[i].product.id)
+                .bind(qty, prodId)
             );
           }
         }
         await db.batch(rollbackStatements).catch((rbErr) => {
           console.error('Rollback batch error:', rbErr);
         });
-        const failedItem = verifiedItems[stockFailureIndex];
-        throw new Error(`Insufficient stock for "${failedItem.product.title}". Stock was claimed by a concurrent order.`);
+        const failedProdId = aggregatedEntries[stockFailureIndex][0];
+        const failedProduct = productMap.get(failedProdId);
+        throw new Error(`Insufficient stock for "${failedProduct?.title || failedProdId}". Stock was claimed by a concurrent order.`);
       }
 
       batchSuccess = true;
@@ -4471,6 +4489,116 @@ export async function updateOrderInD1(
     calculatedProfit = Number(merged.subtotal) - costSum;
   }
 
+  const advancePaymentToSave = merged.advancePayment != null && !isNaN(Number(merged.advancePayment))
+    ? Math.max(0, Number(merged.advancePayment))
+    : (existing.advancePayment ?? 0);
+  const advanceMethodToSave = merged.advancePaymentMethod !== undefined
+    ? (merged.advancePaymentMethod || null)
+    : (existing.advancePaymentMethod || null);
+  const advanceNoteToSave = merged.advancePaymentNote !== undefined
+    ? (merged.advancePaymentNote || null)
+    : (existing.advancePaymentNote || null);
+  const advanceUpdatedAtToSave = merged.advancePaymentUpdatedAt !== undefined
+    ? (merged.advancePaymentUpdatedAt || null)
+    : (existing.advancePaymentUpdatedAt || null);
+  const advanceUpdatedByToSave = merged.advancePaymentUpdatedBy !== undefined
+    ? (merged.advancePaymentUpdatedBy || null)
+    : (existing.advancePaymentUpdatedBy || null);
+
+  // Determine state transitions for inventory
+  const wasCancelled = existing.shippingStatus === 'Cancelled';
+  const isNowCancelled = (updates.shippingStatus !== undefined ? updates.shippingStatus : existing.shippingStatus) === 'Cancelled';
+
+  // 1. Concurrency guard for transition to Cancelled
+  if (updates.shippingStatus === 'Cancelled' && !wasCancelled) {
+    const cancelGuard = await db
+      .prepare("UPDATE orders SET shipping_status = 'Cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND shipping_status != 'Cancelled'")
+      .bind(id)
+      .run();
+    const changes = cancelGuard.meta?.changes ?? (cancelGuard as any)?.changes ?? (cancelGuard as any)?.rows_written ?? 0;
+    if (changes === 0) {
+      // Order was already cancelled concurrently by another request
+      return (await getOrderById(db, id)) || existing;
+    }
+  }
+
+  // 2. Concurrency guard for transition from Cancelled (Reactivation)
+  if (wasCancelled && updates.shippingStatus && updates.shippingStatus !== 'Cancelled') {
+    const reactivateGuard = await db
+      .prepare("UPDATE orders SET shipping_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND shipping_status = 'Cancelled'")
+      .bind(updates.shippingStatus, id)
+      .run();
+    const changes = reactivateGuard.meta?.changes ?? (reactivateGuard as any)?.changes ?? (reactivateGuard as any)?.rows_written ?? 0;
+    if (changes === 0) {
+      // Order was already reactivated concurrently by another request
+      return (await getOrderById(db, id)) || existing;
+    }
+  }
+
+  // 3. Aggregate currently persisted inventory (only if existing order was holding inventory)
+  const persistedQtyMap = new Map<string, number>();
+  if (!wasCancelled && Array.isArray(existing.items)) {
+    for (const it of existing.items) {
+      const pid = String(it?.product?.id || (it as any)?.productId || '').trim();
+      const qty = Number(it.quantity) || 0;
+      if (pid && qty > 0) {
+        persistedQtyMap.set(pid, (persistedQtyMap.get(pid) || 0) + qty);
+      }
+    }
+  }
+
+  // 4. Aggregate newly requested inventory (only if new state holds inventory, i.e. not cancelled)
+  const newQtyMap = new Map<string, number>();
+  if (!isNowCancelled) {
+    const targetItems = updates.items !== undefined ? updates.items : existing.items;
+    if (Array.isArray(targetItems)) {
+      for (const it of targetItems) {
+        const pid = String(it?.product?.id || (it as any)?.productId || '').trim();
+        const rawQty = it.quantity;
+        if (
+          typeof rawQty !== 'number' ||
+          !Number.isFinite(rawQty) ||
+          !Number.isInteger(rawQty) ||
+          rawQty < 1 ||
+          rawQty > 100
+        ) {
+          throw new Error(`Invalid item quantity for "${pid}". Must be an integer between 1 and 100.`);
+        }
+        if (pid) {
+          newQtyMap.set(pid, (newQtyMap.get(pid) || 0) + rawQty);
+        }
+      }
+    }
+  }
+
+  // 5. Compute inventory deltas across all involved product IDs
+  const allProductIds = Array.from(new Set([...persistedQtyMap.keys(), ...newQtyMap.keys()]));
+  const stockStatements: D1PreparedStatement[] = [];
+
+  for (const pid of allProductIds) {
+    const oldQty = persistedQtyMap.get(pid) || 0;
+    const newQty = newQtyMap.get(pid) || 0;
+    const delta = newQty - oldQty;
+
+    if (delta > 0) {
+      // Additional stock claimed: engine-level guard against overselling
+      stockStatements.push(
+        db
+          .prepare(
+            'UPDATE products SET stock = CASE WHEN stock >= ? THEN stock - ? ELSE -1 END, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+          )
+          .bind(delta, delta, pid)
+      );
+    } else if (delta < 0) {
+      // Surplus stock released back to inventory
+      stockStatements.push(
+        db
+          .prepare('UPDATE products SET stock = stock + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+          .bind(Math.abs(delta), pid)
+      );
+    }
+  }
+
   const updateSql = `
     UPDATE orders SET
       customer_name = ?,
@@ -4508,154 +4636,76 @@ export async function updateOrderInD1(
     WHERE id = ?;
   `;
 
-  const advancePaymentToSave = merged.advancePayment != null && !isNaN(Number(merged.advancePayment))
-    ? Math.max(0, Number(merged.advancePayment))
-    : (existing.advancePayment ?? 0);
-  const advanceMethodToSave = merged.advancePaymentMethod !== undefined
-    ? (merged.advancePaymentMethod || null)
-    : (existing.advancePaymentMethod || null);
-  const advanceNoteToSave = merged.advancePaymentNote !== undefined
-    ? (merged.advancePaymentNote || null)
-    : (existing.advancePaymentNote || null);
-  const advanceUpdatedAtToSave = merged.advancePaymentUpdatedAt !== undefined
-    ? (merged.advancePaymentUpdatedAt || null)
-    : (existing.advancePaymentUpdatedAt || null);
-  const advanceUpdatedByToSave = merged.advancePaymentUpdatedBy !== undefined
-    ? (merged.advancePaymentUpdatedBy || null)
-    : (existing.advancePaymentUpdatedBy || null);
+  const orderUpdateStmt = db.prepare(updateSql).bind(
+    merged.customer.fullName,
+    merged.customer.phone,
+    merged.customer.fullAddress,
+    merged.customer.district || null,
+    merged.customer.deliveryZone || 'inside_dhaka',
+    merged.customer.notes || null,
+    JSON.stringify(merged.items || []),
+    merged.subtotal,
+    merged.deliveryFee,
+    merged.totalAmount,
+    merged.couponCode || null,
+    merged.discountAmount || 0,
+    merged.paymentMethod,
+    merged.paymentStatus,
+    merged.transactionId || null,
+    merged.shippingStatus,
+    merged.courierName || null,
+    merged.courierWaybill || null,
+    merged.consignmentId || null,
+    merged.courierStatus || null,
+    merged.courierBooking ? JSON.stringify(merged.courierBooking) : null,
+    merged.dbblDetails ? JSON.stringify(merged.dbblDetails) : null,
+    merged.cardDetails ? JSON.stringify(merged.cardDetails) : null,
+    merged.lastCourierSync || null,
+    calculatedCost != null ? calculatedCost : null,
+    calculatedProfit != null ? calculatedProfit : null,
+    advancePaymentToSave,
+    advanceMethodToSave,
+    advanceNoteToSave,
+    advanceUpdatedAtToSave,
+    advanceUpdatedByToSave,
+    id
+  );
 
-  // 1. Handle atomic stock restoration on order cancellation BEFORE general updates
-  if (updates.shippingStatus === 'Cancelled') {
-    if (existing.shippingStatus !== 'Cancelled') {
-      // Conditional atomic status transition: Only the first concurrent request transitions from non-cancelled
-      const cancelTransition = await db
-        .prepare(
-          "UPDATE orders SET shipping_status = 'Cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND shipping_status != 'Cancelled'"
-        )
-        .bind(id)
-        .run();
+  // 6. Execute atomic batch update (stock delta updates + order updates)
+  if (stockStatements.length > 0) {
+    const batchStatements = [...stockStatements, orderUpdateStmt];
+    try {
+      const batchResults = typeof db.batch === 'function'
+        ? await db.batch(batchStatements)
+        : await Promise.all(batchStatements.map((s) => s.run()));
 
-      const transitionChanges =
-        cancelTransition.meta?.changes ??
-        (cancelTransition as any)?.changes ??
-        (cancelTransition as any)?.rows_written ??
-        0;
-
-      if (transitionChanges > 0) {
-        // Exactly ONE request wins this atomic transition. Restore stock in an atomic batch.
-        if (Array.isArray(existing.items)) {
-          const restoreStmts = existing.items
-            .filter((it) => it?.product?.id && it.quantity > 0)
-            .map((it) =>
-              db
-                .prepare('UPDATE products SET stock = stock + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-                .bind(it.quantity, it.product.id)
-            );
-          if (restoreStmts.length > 0) {
-            const batchResults = await db.batch(restoreStmts);
-            const failed = batchResults.find((r) => !r.success);
-            if (failed) {
-              console.error('Failed to restore product stock on order cancellation:', failed.error);
-              // Revert order status back if stock restoration failed
-              await db
-                .prepare('UPDATE orders SET shipping_status = ? WHERE id = ?')
-                .bind(existing.shippingStatus, id)
-                .run()
-                .catch(() => {});
-              throw new Error('Failed to restore product stock on order cancellation.');
-            }
+      const failed = batchResults.find((r: any) => !r || r.success === false);
+      if (failed) {
+        const errorText = failed.error || '';
+        if (errorText.includes('INSUFFICIENT_STOCK')) {
+          if (wasCancelled && !isNowCancelled) {
+            await db.prepare("UPDATE orders SET shipping_status = 'Cancelled' WHERE id = ?").bind(id).run().catch(() => {});
           }
+          throw new Error('INSUFFICIENT_STOCK: Insufficient stock available to fulfill the requested order changes.');
         }
+        throw new Error(`Database batch transaction failed: ${errorText}`);
       }
-      // If transitionChanges === 0, a concurrent request already cancelled the order.
-      // We do NOT restore stock again!
+    } catch (batchErr: any) {
+      const errorMsg = batchErr?.message || '';
+      if (errorMsg.includes('INSUFFICIENT_STOCK')) {
+        if (wasCancelled && !isNowCancelled) {
+          await db.prepare("UPDATE orders SET shipping_status = 'Cancelled' WHERE id = ?").bind(id).run().catch(() => {});
+        }
+        throw new Error('INSUFFICIENT_STOCK: Insufficient stock available to fulfill the requested order changes.');
+      }
+      throw batchErr;
+    }
+  } else {
+    const res = await orderUpdateStmt.run();
+    if (res && res.success === false) {
+      throw new Error(`Failed to update order: ${res.error || 'Unknown database error'}`);
     }
   }
-
-  // 2. If order was uncancelled (moved back from Cancelled to active), re-deduct stock BEFORE general updates
-  if (existing.shippingStatus === 'Cancelled' && updates.shippingStatus && updates.shippingStatus !== 'Cancelled') {
-    const uncancelTransition = await db
-      .prepare(
-        "UPDATE orders SET shipping_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND shipping_status = 'Cancelled'"
-      )
-      .bind(updates.shippingStatus, id)
-      .run();
-
-    const transitionChanges =
-      uncancelTransition.meta?.changes ??
-      (uncancelTransition as any)?.changes ??
-      (uncancelTransition as any)?.rows_written ??
-      0;
-
-    if (transitionChanges > 0) {
-      if (Array.isArray(existing.items)) {
-        const deductStmts = existing.items
-          .filter((it) => it?.product?.id && it.quantity > 0)
-          .map((it) =>
-            db
-              .prepare(
-                'UPDATE products SET stock = CASE WHEN stock >= ? THEN stock - ? ELSE -1 END, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
-              )
-              .bind(it.quantity, it.quantity, it.product.id)
-          );
-        if (deductStmts.length > 0) {
-          try {
-            const batchResults = await db.batch(deductStmts);
-            const failed = batchResults.find((r) => !r.success);
-            if (failed) {
-              throw new Error(failed.error || 'Failed to re-deduct stock');
-            }
-          } catch (deductErr: any) {
-            // Revert back to Cancelled if insufficient stock to un-cancel
-            await db
-              .prepare("UPDATE orders SET shipping_status = 'Cancelled' WHERE id = ?")
-              .bind(id)
-              .run()
-              .catch(() => {});
-            throw new Error('Cannot re-activate order: insufficient stock available to fulfill items.');
-          }
-        }
-      }
-    }
-  }
-
-  await db
-    .prepare(updateSql)
-    .bind(
-      merged.customer.fullName,
-      merged.customer.phone,
-      merged.customer.fullAddress,
-      merged.customer.district || null,
-      merged.customer.deliveryZone || 'inside_dhaka',
-      merged.customer.notes || null,
-      JSON.stringify(merged.items || []),
-      merged.subtotal,
-      merged.deliveryFee,
-      merged.totalAmount,
-      merged.couponCode || null,
-      merged.discountAmount || 0,
-      merged.paymentMethod,
-      merged.paymentStatus,
-      merged.transactionId || null,
-      merged.shippingStatus,
-      merged.courierName || null,
-      merged.courierWaybill || null,
-      merged.consignmentId || null,
-      merged.courierStatus || null,
-      merged.courierBooking ? JSON.stringify(merged.courierBooking) : null,
-      merged.dbblDetails ? JSON.stringify(merged.dbblDetails) : null,
-      merged.cardDetails ? JSON.stringify(merged.cardDetails) : null,
-      merged.lastCourierSync || null,
-      calculatedCost != null ? calculatedCost : null,
-      calculatedProfit != null ? calculatedProfit : null,
-      advancePaymentToSave,
-      advanceMethodToSave,
-      advanceNoteToSave,
-      advanceUpdatedAtToSave,
-      advanceUpdatedByToSave,
-      id
-    )
-    .run();
 
   const updated = await getOrderById(db, id);
   if (!updated) throw new Error('Failed to retrieve updated order from D1');
@@ -4673,16 +4723,26 @@ export async function deleteOrderFromD1(db: D1Database, id: string): Promise<boo
   // If order was not cancelled or delivered, restore stock atomically in the SAME batch with deletion
   if (existing.shippingStatus !== 'Cancelled' && existing.shippingStatus !== 'Delivered') {
     if (Array.isArray(existing.items)) {
-      const restoreStmts = existing.items
-        .filter((it) => it?.product?.id && it.quantity > 0)
-        .map((it) =>
-          db
-            .prepare('UPDATE products SET stock = stock + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-            .bind(it.quantity, it.product.id)
-        );
+      const restoreQtyMap = new Map<string, number>();
+      for (const it of existing.items) {
+        const pid = String(it?.product?.id || (it as any)?.productId || '').trim();
+        const qty = Number(it?.quantity) || 0;
+        if (pid && qty > 0) {
+          restoreQtyMap.set(pid, (restoreQtyMap.get(pid) || 0) + qty);
+        }
+      }
+
+      const restoreStmts = Array.from(restoreQtyMap.entries()).map(([pid, qty]) =>
+        db
+          .prepare('UPDATE products SET stock = stock + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+          .bind(qty, pid)
+      );
+
       if (restoreStmts.length > 0) {
-        const batchResults = await db.batch([...restoreStmts, deleteStmt]);
-        const failed = batchResults.find((r) => !r.success);
+        const batchResults = typeof db.batch === 'function'
+          ? await db.batch([...restoreStmts, deleteStmt])
+          : await Promise.all([...restoreStmts, deleteStmt].map((s) => s.run()));
+        const failed = batchResults.find((r: any) => !r || r.success === false);
         if (failed) {
           console.error('Failed to atomically restore stock and delete order:', failed.error);
           throw new Error('Failed to delete order.');
@@ -4693,7 +4753,7 @@ export async function deleteOrderFromD1(db: D1Database, id: string): Promise<boo
   }
 
   const res = await deleteStmt.run();
-  if (!res.success) {
+  if (res && res.success === false) {
     console.error('Failed to delete order from database:', res.error);
     throw new Error('Failed to delete order.');
   }

@@ -4883,10 +4883,98 @@ function localApiDevPlugin(): Plugin {
               let authoritativeTotalProfit = Number(old.totalGrossProfit) || 0;
               let enrichedItems: any[] | null = null;
 
+              const MAX_ORDER_ITEM_QTY = 100;
+
               if (updates.items !== undefined) {
                 if (!Array.isArray(updates.items) || updates.items.length === 0) {
                   res.statusCode = 400;
                   return res.end(JSON.stringify({ success: false, error: 'Invalid order items: An order must contain at least one product item.' }));
+                }
+
+                // 1. Strict validation of each item quantity and product ID
+                for (const it of updates.items) {
+                  if (!it || typeof it !== 'object') {
+                    res.statusCode = 400;
+                    return res.end(JSON.stringify({ success: false, error: 'Invalid order item: Each item must be a valid object.' }));
+                  }
+                  const prodId = String(it.product?.id || (it as any).productId || '').trim();
+                  if (!prodId) {
+                    res.statusCode = 400;
+                    return res.end(JSON.stringify({ success: false, error: 'Invalid order item: Each order item must specify a valid product ID.' }));
+                  }
+                  const rawQty = it.quantity;
+                  let parsedQty: number;
+                  if (typeof rawQty === 'number') {
+                    parsedQty = rawQty;
+                  } else if (typeof rawQty === 'string' && /^\d+$/.test(rawQty.trim())) {
+                    parsedQty = Number(rawQty.trim());
+                  } else {
+                    res.statusCode = 400;
+                    return res.end(JSON.stringify({ success: false, error: `Invalid item quantity for product "${prodId}": Must be a strict finite positive integer between 1 and ${MAX_ORDER_ITEM_QTY}.` }));
+                  }
+
+                  if (!Number.isFinite(parsedQty) || !Number.isInteger(parsedQty) || parsedQty < 1 || parsedQty > MAX_ORDER_ITEM_QTY) {
+                    res.statusCode = 400;
+                    return res.end(JSON.stringify({ success: false, error: `Invalid item quantity for product "${prodId}": Must be a strict finite positive integer between 1 and ${MAX_ORDER_ITEM_QTY}.` }));
+                  }
+                }
+
+                // 2. Validate products existence and active status in devProducts
+                const uniqueProductIds = Array.from(
+                  new Set(updates.items.map((it: any) => String(it.product?.id || (it as any).productId || '').trim()))
+                );
+
+                for (const pid of uniqueProductIds) {
+                  const devProd = devProducts.find((p) => p.id === pid);
+                  if (!devProd) {
+                    res.statusCode = 400;
+                    return res.end(JSON.stringify({ success: false, error: `Product with ID "${pid}" does not exist.` }));
+                  }
+                  if (devProd.status && devProd.status !== 'active') {
+                    res.statusCode = 400;
+                    return res.end(JSON.stringify({ success: false, error: `Product "${devProd.title}" is inactive or unavailable for ordering.` }));
+                  }
+                }
+
+                // 3. Deduplication & Aggregation
+                const requestedQtyByProduct = new Map<string, number>();
+                for (const it of updates.items) {
+                  const pid = String(it.product?.id || (it as any).productId || '').trim();
+                  const qty = typeof it.quantity === 'number' ? it.quantity : Number(it.quantity);
+                  requestedQtyByProduct.set(pid, (requestedQtyByProduct.get(pid) || 0) + qty);
+                }
+
+                for (const [pid, totalQty] of requestedQtyByProduct.entries()) {
+                  if (totalQty > MAX_ORDER_ITEM_QTY) {
+                    const devProd = devProducts.find((p) => p.id === pid);
+                    res.statusCode = 400;
+                    return res.end(JSON.stringify({ success: false, error: `Aggregated quantity for "${devProd?.title || pid}" (${totalQty}) exceeds maximum allowable quantity of ${MAX_ORDER_ITEM_QTY}.` }));
+                  }
+                }
+
+                // 4. Pre-check stock delta against persisted order items
+                const isTargetCancelled = (updates.shippingStatus !== undefined ? updates.shippingStatus : old.shippingStatus) === 'Cancelled';
+                if (!isTargetCancelled) {
+                  const persistedQtyMap = new Map<string, number>();
+                  if (old.shippingStatus !== 'Cancelled' && Array.isArray(old.items)) {
+                    for (const it of old.items) {
+                      const pid = String(it?.product?.id || (it as any)?.productId || '').trim();
+                      if (pid) {
+                        persistedQtyMap.set(pid, (persistedQtyMap.get(pid) || 0) + (Number(it.quantity) || 0));
+                      }
+                    }
+                  }
+                  for (const [pid, newQty] of requestedQtyByProduct.entries()) {
+                    const oldQty = persistedQtyMap.get(pid) || 0;
+                    const delta = newQty - oldQty;
+                    if (delta > 0) {
+                      const devProd = devProducts.find((p) => p.id === pid)!;
+                      if (devProd.stock < delta) {
+                        res.statusCode = 400;
+                        return res.end(JSON.stringify({ success: false, error: `Insufficient stock for "${devProd.title}". Requested additional: ${delta}, Available in stock: ${devProd.stock}.` }));
+                      }
+                    }
+                  }
                 }
 
                 let subtotalAcc = 0;
@@ -4895,11 +4983,14 @@ function localApiDevPlugin(): Plugin {
                 enrichedItems = [];
 
                 for (const it of updates.items) {
-                  const qty = Math.max(1, Math.round(Number(it.quantity) || 1));
+                  const pid = String(it.product?.id || (it as any).productId || '').trim();
+                  const devProd = devProducts.find((p) => p.id === pid)!;
+                  const qty = typeof it.quantity === 'number' ? it.quantity : Number(it.quantity);
+
                   const rawSellingPrice =
                     it.sellingPriceSnapshot != null && !isNaN(Number(it.sellingPriceSnapshot))
                       ? Number(it.sellingPriceSnapshot)
-                      : Number(it.product?.price || 0);
+                      : Number(devProd.price || 0);
 
                   if (typeof rawSellingPrice !== 'number' || isNaN(rawSellingPrice) || rawSellingPrice < 0) {
                     res.statusCode = 400;
@@ -4910,9 +5001,7 @@ function localApiDevPlugin(): Plugin {
                   const buyingPrice =
                     it.buyingPriceSnapshot != null && !isNaN(Number(it.buyingPriceSnapshot))
                       ? Number(it.buyingPriceSnapshot)
-                      : it.product?.buyingPrice != null && !isNaN(Number(it.product.buyingPrice))
-                      ? Number(it.product.buyingPrice)
-                      : 0;
+                      : (devProd.buyingPrice != null && !isNaN(Number(devProd.buyingPrice)) ? Number(devProd.buyingPrice) : 0);
 
                   const itemLineTotal = Math.round(unitSellingPrice * qty * 100) / 100;
                   const itemCost = Math.round(buyingPrice * qty * 100) / 100;
@@ -4926,7 +5015,10 @@ function localApiDevPlugin(): Plugin {
                     ...it,
                     quantity: qty,
                     product: {
+                      ...devProd,
                       ...(it.product || {}),
+                      id: devProd.id,
+                      title: devProd.title,
                       price: unitSellingPrice,
                     },
                     sellingPriceSnapshot: unitSellingPrice,
@@ -5074,26 +5166,44 @@ function localApiDevPlugin(): Plugin {
                 });
               }
 
-                // Handle stock restoration on cancellation
-                if (updates.shippingStatus === 'Cancelled' && old.shippingStatus !== 'Cancelled') {
-                  if (Array.isArray(old.items)) {
-                    for (const it of old.items) {
-                      if (it?.product?.id) {
-                        const prod = devProducts.find((p) => p.id === it.product.id);
-                        if (prod) prod.stock = prod.stock + it.quantity;
+                // Authoritative Inventory Delta Synchronization for dev server
+                const wasCancelled = old.shippingStatus === 'Cancelled';
+                const isNowCancelled = (updates.shippingStatus !== undefined ? updates.shippingStatus : old.shippingStatus) === 'Cancelled';
+
+                const persistedDevQty = new Map<string, number>();
+                if (!wasCancelled && Array.isArray(old.items)) {
+                  for (const it of old.items) {
+                    const pid = String(it?.product?.id || (it as any)?.productId || '').trim();
+                    const qty = Number(it?.quantity) || 0;
+                    if (pid && qty > 0) {
+                      persistedDevQty.set(pid, (persistedDevQty.get(pid) || 0) + qty);
+                    }
+                  }
+                }
+
+                const newDevQty = new Map<string, number>();
+                if (!isNowCancelled) {
+                  const targetItems = updates.items !== undefined ? updates.items : old.items;
+                  if (Array.isArray(targetItems)) {
+                    for (const it of targetItems) {
+                      const pid = String(it?.product?.id || (it as any)?.productId || '').trim();
+                      const qty = Number(it?.quantity) || 0;
+                      if (pid && qty > 0) {
+                        newDevQty.set(pid, (newDevQty.get(pid) || 0) + qty);
                       }
                     }
                   }
                 }
 
-                // Handle uncancelled (reactivating cancelled order)
-                if (old.shippingStatus === 'Cancelled' && updates.shippingStatus && updates.shippingStatus !== 'Cancelled') {
-                  if (Array.isArray(old.items)) {
-                    for (const it of old.items) {
-                      if (it?.product?.id) {
-                        const prod = devProducts.find((p) => p.id === it.product.id);
-                        if (prod) prod.stock = Math.max(0, prod.stock - it.quantity);
-                      }
+                const allDevProdIds = Array.from(new Set([...persistedDevQty.keys(), ...newDevQty.keys()]));
+                for (const pid of allDevProdIds) {
+                  const oQty = persistedDevQty.get(pid) || 0;
+                  const nQty = newDevQty.get(pid) || 0;
+                  const delta = nQty - oQty;
+                  if (delta !== 0) {
+                    const prod = devProducts.find((p) => p.id === pid);
+                    if (prod) {
+                      prod.stock = Math.max(0, prod.stock - delta);
                     }
                   }
                 }
