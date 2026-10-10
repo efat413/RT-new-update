@@ -817,6 +817,90 @@ export interface HomepageProductsData {
 }
 
 /**
+ * Loads strictly up to 6 products per category for the homepage.
+ * Primary path uses SQLite window function ROW_NUMBER() <= ? with bound parameter [limit].
+ * Fallback path executes a correlated/safe subquery with LIMIT ? [limit] ensuring active, published, non-deleted visibility.
+ */
+export async function getHomepageCategoryProducts(
+  db: D1Database,
+  categoryIds: string[],
+  limit = 6
+): Promise<Record<string, Product[]>> {
+  const boundedLimit = Math.min(24, Math.max(1, limit || 6));
+  const categoryProducts: Record<string, Product[]> = {};
+  categoryIds.forEach((catId) => {
+    categoryProducts[catId] = [];
+  });
+
+  if (categoryIds.length === 0) {
+    return categoryProducts;
+  }
+
+  const categoryFilterClause = `AND category_id IN (${categoryIds.map(() => '?').join(', ')})`;
+
+  // Primary path: SQLite window function ROW_NUMBER() OVER (PARTITION BY category_id ORDER BY display_order ASC, created_at DESC)
+  const windowSql = `
+    WITH RankedProducts AS (
+      SELECT 
+        ${PUBLIC_PRODUCT_COLUMNS},
+        ROW_NUMBER() OVER (
+          PARTITION BY category_id 
+          ORDER BY display_order ASC, created_at DESC
+        ) AS row_num
+      FROM products
+      WHERE (status = 'active' OR status = 'published' OR status IS NULL OR status = '')
+        ${categoryFilterClause}
+    )
+    SELECT ${PUBLIC_PRODUCT_COLUMNS} 
+    FROM RankedProducts 
+    WHERE row_num <= ?
+  `;
+
+  try {
+    const stmt = db.prepare(windowSql).bind(...categoryIds, boundedLimit);
+    const res = await stmt.all<ProductRow>();
+    const rows = res?.results || [];
+    for (const row of rows) {
+      const prod = rowToProduct(row);
+      if (!categoryProducts[prod.categoryId]) {
+        categoryProducts[prod.categoryId] = [];
+      }
+      categoryProducts[prod.categoryId].push(prod);
+    }
+    return categoryProducts;
+  } catch (err: any) {
+    // Fallback subquery path: enforce identical LIMIT ? binding [boundedLimit] and active/published/non-deleted visibility filters
+    const fallbackSql = `
+      SELECT ${PUBLIC_PRODUCT_COLUMNS}
+      FROM products p
+      WHERE (p.status = 'active' OR p.status = 'published' OR p.status IS NULL OR p.status = '')
+        AND p.category_id IN (${categoryIds.map(() => '?').join(', ')})
+        AND p.id IN (
+          SELECT sub.id
+          FROM products sub
+          WHERE sub.category_id = p.category_id
+            AND (sub.status = 'active' OR sub.status = 'published' OR sub.status IS NULL OR sub.status = '')
+          ORDER BY sub.created_at DESC
+          LIMIT ?
+        )
+      ORDER BY p.created_at DESC
+    `;
+
+    const fallbackStmt = db.prepare(fallbackSql).bind(...categoryIds, boundedLimit);
+    const res = await fallbackStmt.all<ProductRow>();
+    const rows = res?.results || [];
+    for (const row of rows) {
+      const prod = rowToProduct(row);
+      if (!categoryProducts[prod.categoryId]) {
+        categoryProducts[prod.categoryId] = [];
+      }
+      categoryProducts[prod.categoryId].push(prod);
+    }
+    return categoryProducts;
+  }
+}
+
+/**
  * Loads strictly the products required for the homepage directly via SQL LIMITs and batching.
  * Eliminates loading the entire products table into memory and avoids N+1 database queries.
  * Selects only public storefront fields without exposing internal buying prices.
@@ -826,7 +910,7 @@ export async function getHomepageProducts(
   categoryIds: string[],
   options?: HomepageProductsOptions
 ): Promise<HomepageProductsData> {
-  const perCategoryLimit = Math.min(24, Math.max(1, options?.perCategoryLimit || 5));
+  const perCategoryLimit = Math.min(24, Math.max(1, options?.perCategoryLimit || 6));
   const featuredLimit = Math.min(24, Math.max(1, options?.featuredLimit || 8));
 
   // 1. Prepare batch queries for D1 (1 round trip for all product queries)
@@ -842,7 +926,7 @@ export async function getHomepageProducts(
   `;
   statements.push(db.prepare(featuredSql).bind(featuredLimit));
 
-  // Statement 1: Category products using SQLite window function ROW_NUMBER() <= 5
+  // Statement 1: Category products using SQLite window function ROW_NUMBER() <= ? (default limit 6)
   const categoryFilterClause = categoryIds.length > 0
     ? `AND category_id IN (${categoryIds.map(() => '?').join(', ')})`
     : '';
@@ -861,12 +945,12 @@ export async function getHomepageProducts(
     )
     SELECT ${PUBLIC_PRODUCT_COLUMNS} 
     FROM RankedProducts 
-    WHERE row_num <= ${perCategoryLimit}
+    WHERE row_num <= ?
   `;
 
   const primaryCategorySql = buildCategoryWindowSql('display_order ASC, created_at DESC');
   const catStmt = db.prepare(primaryCategorySql);
-  statements.push(categoryIds.length > 0 ? catStmt.bind(...categoryIds) : catStmt);
+  statements.push(categoryIds.length > 0 ? catStmt.bind(...categoryIds, perCategoryLimit) : catStmt.bind(perCategoryLimit));
 
   // Execute in 1 single D1 batch round trip (or concurrent fallback)
   let batchResults: any[];
@@ -891,7 +975,7 @@ export async function getHomepageProducts(
 
       const fallbackCategorySql = buildCategoryWindowSql('created_at DESC');
       const fallbackCatStmt = db.prepare(fallbackCategorySql);
-      statements[1] = categoryIds.length > 0 ? fallbackCatStmt.bind(...categoryIds) : fallbackCatStmt;
+      statements[1] = categoryIds.length > 0 ? fallbackCatStmt.bind(...categoryIds, perCategoryLimit) : fallbackCatStmt.bind(perCategoryLimit);
 
       batchResults = typeof db.batch === 'function'
         ? await db.batch<ProductRow>(statements)

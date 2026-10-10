@@ -5,6 +5,7 @@ import {
   getAllProducts,
   getPaginatedProducts,
   getHomepageProducts,
+  getHomepageCategoryProducts,
   getProductById,
   insertProduct,
   updateProductInD1,
@@ -2843,7 +2844,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
       const categoryIds = (categories || []).map((c) => c.id);
       const homepageData = await getHomepageProducts(env.DB, categoryIds, {
-        perCategoryLimit: 5,
+        perCategoryLimit: 6,
         featuredLimit: 8,
       });
 
