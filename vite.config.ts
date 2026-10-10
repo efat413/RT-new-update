@@ -6291,23 +6291,73 @@ function localApiDevPlugin(): Plugin {
                 }));
               }
 
-              let matchedOrder = null;
+              let matchResult: { status: 'found'; order: any } | { status: 'ambiguous'; error: string; matchedBy: string; identifier: string } | { status: 'not_found' } = { status: 'not_found' };
+
               if (invoice) {
-                const cleanInv = String(invoice).replace(/^#/, '');
-                matchedOrder = devOrders.find(
-                  (o) => o.id === invoice || o.orderNumber === cleanInv || String(o.orderNumber) === String(invoice)
+                const cleanInv = String(invoice).replace(/^#/, '').trim();
+                const rawInv = String(invoice).trim();
+                const matches = devOrders.filter(
+                  (o) => o.id === rawInv || o.orderNumber === rawInv || o.orderNumber === cleanInv
                 );
+                if (matches.length > 1) {
+                  matchResult = {
+                    status: 'ambiguous',
+                    error: `Ambiguous order match: multiple records (${matches.length}) found for invoice "${rawInv}".`,
+                    matchedBy: 'invoice',
+                    identifier: rawInv,
+                  };
+                } else if (matches.length === 1) {
+                  matchResult = { status: 'found', order: matches[0] };
+                }
               }
-              if (!matchedOrder && consignmentId) {
-                matchedOrder = devOrders.find(
-                  (o) => String(o.consignmentId) === String(consignmentId) || String(o.courierBooking?.consignmentId) === String(consignmentId)
+
+              if (matchResult.status === 'not_found' && consignmentId) {
+                const cid = String(consignmentId).trim();
+                const matches = devOrders.filter(
+                  (o) => String(o.consignmentId) === cid || String(o.courierBooking?.consignmentId) === cid
                 );
+                if (matches.length > 1) {
+                  matchResult = {
+                    status: 'ambiguous',
+                    error: `Ambiguous order match: multiple records (${matches.length}) found for consignment ID "${cid}".`,
+                    matchedBy: 'consignment_id',
+                    identifier: cid,
+                  };
+                } else if (matches.length === 1) {
+                  matchResult = { status: 'found', order: matches[0] };
+                }
               }
-              if (!matchedOrder && trackingCode) {
-                matchedOrder = devOrders.find(
-                  (o) => String(o.courierWaybill) === String(trackingCode) || String(o.courierBooking?.waybillId) === String(trackingCode)
+
+              if (matchResult.status === 'not_found' && trackingCode) {
+                const track = String(trackingCode).trim();
+                const matches = devOrders.filter(
+                  (o) => String(o.courierWaybill) === track || String(o.courierBooking?.waybillId) === track
                 );
+                if (matches.length > 1) {
+                  matchResult = {
+                    status: 'ambiguous',
+                    error: `Ambiguous order match: multiple records (${matches.length}) found for tracking code "${track}".`,
+                    matchedBy: 'courier_waybill',
+                    identifier: track,
+                  };
+                } else if (matches.length === 1) {
+                  matchResult = { status: 'found', order: matches[0] };
+                }
               }
+
+              if (matchResult.status === 'ambiguous') {
+                res.statusCode = 409;
+                return res.end(JSON.stringify({
+                  success: false,
+                  status: 'ambiguous',
+                  error: matchResult.error,
+                  matchedBy: matchResult.matchedBy,
+                  identifier: matchResult.identifier,
+                  receivedAt: nowIso,
+                }));
+              }
+
+              const matchedOrder = matchResult.status === 'found' ? matchResult.order : null;
 
               if (matchedOrder && rawStatus) {
                 const normalized = normalizeSteadfastStatus(rawStatus);

@@ -4001,45 +4001,131 @@ export async function getOrderById(db: D1Database, idOrNumber: string): Promise<
   return row ? rowToOrder(row) : null;
 }
 
+export type CourierIdentifierMatchResult =
+  | {
+      status: 'found';
+      order: Order;
+    }
+  | {
+      status: 'ambiguous';
+      error: string;
+      matchedBy: 'invoice' | 'consignment_id' | 'courier_waybill';
+      count: number;
+      identifier: string;
+      order?: null;
+    }
+  | {
+      status: 'not_found';
+      order?: null;
+    };
+
+/**
+ * Finds an order in D1 matching courier identifiers with deterministic precedence:
+ * Invoice / Order Number > Consignment ID > Tracking / Waybill Code.
+ *
+ * Strict constraints:
+ * - Strict exact equality (`=`) - absolutely no substring or wildcard matching (`LIKE '%...%'`).
+ * - Fully parameterized queries against D1.
+ * - If multiple rows match (legacy duplicate collision), returns `{ status: 'ambiguous' }` to abort mutation.
+ */
 export async function findOrderByCourierIdentifier(
   db: D1Database,
   identifier: { invoice?: string | number; consignmentId?: string | number; trackingCode?: string }
-): Promise<Order | null> {
-  const inv = identifier.invoice !== undefined ? String(identifier.invoice).trim() : '';
-  const cid = identifier.consignmentId !== undefined ? String(identifier.consignmentId).trim() : '';
-  const track = identifier.trackingCode ? String(identifier.trackingCode).trim() : '';
-
-  if (!inv && !cid && !track) return null;
-
-  // 1. Try orderNumber, id, or invoice
-  if (inv) {
-    const cleanInv = inv.replace(/^#/, '');
-    const direct = await db
-      .prepare('SELECT * FROM orders WHERE id = ? OR order_number = ? OR order_number = ? LIMIT 1')
-      .bind(inv, inv, cleanInv)
-      .first<OrderRow>();
-    if (direct) return rowToOrder(direct);
+): Promise<CourierIdentifierMatchResult> {
+  if (!db) {
+    return { status: 'not_found', order: null };
   }
 
-  // 2. Try consignment_id
+  const inv = identifier?.invoice !== undefined && identifier?.invoice !== null ? String(identifier.invoice).trim() : '';
+  const cid = identifier?.consignmentId !== undefined && identifier?.consignmentId !== null ? String(identifier.consignmentId).trim() : '';
+  const track = identifier?.trackingCode !== undefined && identifier?.trackingCode !== null ? String(identifier.trackingCode).trim() : '';
+
+  if (!inv && !cid && !track) {
+    return { status: 'not_found', order: null };
+  }
+
+  await ensureOrderTableSchema(db);
+
+  // 1. Deterministic Precedence Tier 1: Invoice / Order Number / Order ID
+  if (inv) {
+    const cleanInv = inv.startsWith('#') ? inv.slice(1).trim() : inv;
+    const directMatches = await db
+      .prepare('SELECT * FROM orders WHERE id = ? OR order_number = ? OR order_number = ? LIMIT 2')
+      .bind(inv, inv, cleanInv || inv)
+      .all<OrderRow>();
+
+    const rows = directMatches?.results || [];
+    if (rows.length > 1) {
+      return {
+        status: 'ambiguous',
+        error: `Ambiguous order match: multiple records (${rows.length}) found for invoice/order number "${inv}".`,
+        matchedBy: 'invoice',
+        count: rows.length,
+        identifier: inv,
+        order: null,
+      };
+    }
+    if (rows.length === 1) {
+      return {
+        status: 'found',
+        order: rowToOrder(rows[0]),
+      };
+    }
+  }
+
+  // 2. Deterministic Precedence Tier 2: Consignment ID
   if (cid) {
     const byCid = await db
-      .prepare('SELECT * FROM orders WHERE consignment_id = ? OR consignment_id LIKE ? LIMIT 1')
-      .bind(cid, `%${cid}%`)
-      .first<OrderRow>();
-    if (byCid) return rowToOrder(byCid);
+      .prepare('SELECT * FROM orders WHERE consignment_id = ? LIMIT 2')
+      .bind(cid)
+      .all<OrderRow>();
+
+    const rows = byCid?.results || [];
+    if (rows.length > 1) {
+      return {
+        status: 'ambiguous',
+        error: `Ambiguous order match: multiple records (${rows.length}) found for consignment ID "${cid}".`,
+        matchedBy: 'consignment_id',
+        count: rows.length,
+        identifier: cid,
+        order: null,
+      };
+    }
+    if (rows.length === 1) {
+      return {
+        status: 'found',
+        order: rowToOrder(rows[0]),
+      };
+    }
   }
 
-  // 3. Try courier_waybill
+  // 3. Deterministic Precedence Tier 3: Courier Waybill / Tracking Code
   if (track) {
     const byTrack = await db
-      .prepare('SELECT * FROM orders WHERE courier_waybill = ? OR courier_waybill LIKE ? LIMIT 1')
-      .bind(track, `%${track}%`)
-      .first<OrderRow>();
-    if (byTrack) return rowToOrder(byTrack);
+      .prepare('SELECT * FROM orders WHERE courier_waybill = ? LIMIT 2')
+      .bind(track)
+      .all<OrderRow>();
+
+    const rows = byTrack?.results || [];
+    if (rows.length > 1) {
+      return {
+        status: 'ambiguous',
+        error: `Ambiguous order match: multiple records (${rows.length}) found for tracking/waybill code "${track}".`,
+        matchedBy: 'courier_waybill',
+        count: rows.length,
+        identifier: track,
+        order: null,
+      };
+    }
+    if (rows.length === 1) {
+      return {
+        status: 'found',
+        order: rowToOrder(rows[0]),
+      };
+    }
   }
 
-  return null;
+  return { status: 'not_found', order: null };
 }
 
 /**

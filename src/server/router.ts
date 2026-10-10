@@ -7429,13 +7429,27 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         }
 
         // Find the corresponding order in D1
-        const matchedOrder = await findOrderByCourierIdentifier(env.DB, {
+        const matchResult = await findOrderByCourierIdentifier(env.DB, {
           invoice,
           consignmentId,
           trackingCode,
         });
 
-        if (!matchedOrder) {
+        if (matchResult.status === 'ambiguous') {
+          return jsonResponse(
+            {
+              success: false,
+              status: 'ambiguous',
+              error: matchResult.error,
+              matchedBy: matchResult.matchedBy,
+              identifier: matchResult.identifier,
+              receivedAt: nowIso,
+            },
+            409
+          );
+        }
+
+        if (matchResult.status === 'not_found') {
           return jsonResponse({
             success: true,
             status: 200,
@@ -7443,6 +7457,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
             receivedAt: nowIso,
           });
         }
+
+        const matchedOrder = matchResult.order;
 
         // Normalize status
         const normalized = normalizeSteadfastStatus(rawStatus);
