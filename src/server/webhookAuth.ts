@@ -204,36 +204,53 @@ export async function verifyCourierWebhookAuth(
     }
   } catch {}
 
-  const isTestPing = Boolean(
+  const sfData = parsedBody?.data && typeof parsedBody.data === 'object' ? parsedBody.data : (parsedBody || {});
+  const rawCid = sfData?.consignment_id ?? sfData?.consignmentId ?? sfData?.cid;
+  const rawInv = sfData?.invoice ?? sfData?.order_id ?? sfData?.orderId ?? sfData?.orderNumber;
+  const rawTrack = sfData?.tracking_code ?? sfData?.trackingCode ?? sfData?.tracking;
+  const rawStatus = sfData?.status ?? sfData?.delivery_status ?? sfData?.status_name;
+  const eventType = String(parsedBody?.event || parsedBody?.notification_type || parsedBody?.type || parsedBody?.action || '').toLowerCase();
+
+  const isExplicitTestPing = Boolean(
     parsedBody && (
       parsedBody.ping === true ||
       parsedBody.ping === 'true' ||
       parsedBody.test === true ||
       parsedBody.test === 'true' ||
       parsedBody.is_test === true ||
+      sfData?.test === true ||
+      sfData?.test === 'true' ||
       parsedBody.action === 'test_ping' ||
       parsedBody.action === 'test' ||
       parsedBody.action === 'ping' ||
-      parsedBody.event === 'test.ping' ||
-      parsedBody.event === 'test' ||
-      parsedBody.event === 'ping' ||
-      parsedBody.event === 'test_ping' ||
-      parsedBody.event === 'courier.added' ||
-      parsedBody.event === 'courier.updated' ||
-      parsedBody.event === 'courier.dispatched' ||
-      parsedBody.notification_type === 'courier.added' ||
-      parsedBody.notification_type === 'courier.updated' ||
-      parsedBody.notification_type === 'courier.dispatched' ||
-      parsedBody.notification_type === 'test' ||
-      parsedBody.notification_type === 'ping' ||
-      parsedBody.notification_type === 'test_webhook' ||
-      parsedBody.type === 'ping' ||
-      parsedBody.type === 'test' ||
-      parsedBody.status === 'test' ||
-      Boolean(parsedBody.courier) ||
-      (!parsedBody.consignment_id && !parsedBody.invoice && !parsedBody.order_id && !parsedBody.tracking_code && !parsedBody.status)
+      eventType === 'test.ping' ||
+      eventType === 'test' ||
+      eventType === 'ping' ||
+      eventType === 'test_ping' ||
+      eventType === 'test_webhook' ||
+      rawStatus === 'test' ||
+      rawStatus === 'test_ping'
     )
   );
+
+  const isLifecycleTriggerTest = Boolean(
+    (eventType === 'courier.added' ||
+      eventType === 'courier.updated' ||
+      eventType === 'courier.dispatched' ||
+      eventType === 'courier.deleted') &&
+      (!rawCid || rawCid === '0' || rawCid === 'test' || String(rawInv || '').toLowerCase() === 'test')
+  );
+
+  const isEmptyProbe = Boolean(
+    parsedBody &&
+      !rawCid &&
+      !rawInv &&
+      !rawTrack &&
+      !rawStatus &&
+      !eventType
+  );
+
+  const isTestPing = isExplicitTestPing || isLifecycleTriggerTest || isEmptyProbe;
 
   // 3. Replay Protection: Extract and Validate Timestamp
   const timestampHeader =

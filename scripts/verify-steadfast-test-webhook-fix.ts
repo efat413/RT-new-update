@@ -290,6 +290,144 @@ async function runSteadfastWebhookFixVerification() {
     `5.4 Malformed webhook payload returns HTTP 400 Bad Request (status=${malformedRes.status})`
   );
 
+  // ----------------------------------------------------------------
+  // 6. REGRESSION TESTS: COURIER OBJECT FALSE-POSITIVE AUDIT & FIX
+  // ----------------------------------------------------------------
+  console.log('\n--- 6. REGRESSION TESTS: COURIER OBJECT FALSE-POSITIVE AUDIT & FIX ---');
+
+  // 6.1 An explicitly marked test ping containing a courier object
+  // Must be acknowledged with HTTP 200 without modifying any order
+  const explicitTestWithCourier = JSON.stringify({
+    ping: true,
+    action: 'test_ping',
+    event: 'test.ping',
+    courier: {
+      id: 'courier-test-01',
+      name: 'Steadfast Courier',
+      code: 'steadfast',
+    },
+  });
+
+  const explicitTestRes = await fetch(webhookUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${webhookSecret}`,
+    },
+    body: explicitTestWithCourier,
+  });
+  const explicitTestJson = await explicitTestRes.json().catch(() => ({}));
+
+  assert(
+    explicitTestRes.status === 200 &&
+      explicitTestJson.success === true &&
+      (explicitTestJson.event === 'test_ping' || explicitTestJson.event === 'test.ping' || explicitTestJson.message === 'Webhook received'),
+    `6.1 Explicitly marked test ping with courier object is acknowledged without modifying orders (status=${explicitTestRes.status}, event="${explicitTestJson.event}")`
+  );
+
+  // 6.2 A legitimate delivery event containing a courier object
+  // Must NOT be classified as a test ping! Must match order and update status
+  const regrTs = (Date.now() + 100).toString();
+  const legitimatePayloadWithCourier = JSON.stringify({
+    consignment_id: 'CSG-STF-99014',
+    invoice: 'RT-2026-80124',
+    tracking_code: 'STF-8492041',
+    status: 'delivered',
+    courier: {
+      name: 'Steadfast Courier',
+      code: 'steadfast',
+      trackingUrl: 'https://steadfast.com.bd/tracking/STF-8492041',
+    },
+    nonce: `legit-${Date.now()}`,
+  });
+  const legitimateSig = await computeHmacSha256Hex(webhookSecret, `${regrTs}.${legitimatePayloadWithCourier}`);
+
+  const legitimateRes = await fetch(webhookUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Webhook-Timestamp': regrTs,
+      'X-Webhook-Signature': `sha256=${legitimateSig}`,
+    },
+    body: legitimatePayloadWithCourier,
+  });
+  const legitimateJson = await legitimateRes.json().catch(() => ({}));
+
+  assert(
+    legitimateRes.status === 200 &&
+      legitimateJson.success === true &&
+      legitimateJson.message.includes('RT-2026-80124') &&
+      legitimateJson.message.includes('Delivered') &&
+      legitimateJson.event !== 'test_acknowledged',
+    `6.2 Legitimate delivery event with courier object updates order status successfully (status=${legitimateRes.status}, msg="${legitimateJson.message}")`
+  );
+
+  // 6.3 An unauthenticated real event containing a courier object
+  // Must be rejected with HTTP 401 Unauthorized
+  const unauthRealRes = await fetch(webhookUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: legitimatePayloadWithCourier,
+  });
+  const unauthRealJson = await unauthRealRes.json().catch(() => ({}));
+
+  assert(
+    unauthRealRes.status === 401 && unauthRealJson.success === false,
+    `6.3 Unauthenticated real event containing courier object is rejected (status=${unauthRealRes.status})`
+  );
+
+  // 6.4 A tampered real event containing a courier object
+  // Must be rejected with HTTP 401 Unauthorized
+  const tamperedSigRes = await fetch(webhookUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Webhook-Timestamp': regrTs,
+      'X-Webhook-Signature': 'sha256=tampered00000000000000000000000000000000000000000000000000000000000000',
+    },
+    body: legitimatePayloadWithCourier,
+  });
+  const tamperedSigJson = await tamperedSigRes.json().catch(() => ({}));
+
+  assert(
+    tamperedSigRes.status === 401 && tamperedSigJson.success === false,
+    `6.4 Tampered real event containing courier object is rejected with HTTP 401 (status=${tamperedSigRes.status})`
+  );
+
+  // 6.5 An event with insufficient identifying fields containing a courier object
+  // Must NOT modify any order
+  const insufficientTs = (Date.now() + 200).toString();
+  const insufficientPayload = JSON.stringify({
+    status: 'in_review',
+    courier: {
+      name: 'Steadfast Courier',
+      code: 'steadfast',
+    },
+    nonce: `insufficient-${Date.now()}`,
+  });
+  const insufficientSig = await computeHmacSha256Hex(webhookSecret, `${insufficientTs}.${insufficientPayload}`);
+
+  const insufficientRes = await fetch(webhookUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Webhook-Timestamp': insufficientTs,
+      'X-Webhook-Signature': `sha256=${insufficientSig}`,
+    },
+    body: insufficientPayload,
+  });
+  const insufficientJson = await insufficientRes.json().catch(() => ({}));
+
+  assert(
+    insufficientRes.status === 200 &&
+      insufficientJson.success === true &&
+      !insufficientJson.orderId &&
+      (insufficientJson.message.includes('acknowledged') || insufficientJson.message.includes('No matching order found')),
+    `6.5 Event with insufficient identifying fields does not modify any order (status=${insufficientRes.status}, msg="${insufficientJson.message}")`
+  );
+
   console.log('\n================================================================');
   console.log(`FINAL RESULT: ${passed} PASSED, ${failed} FAILED`);
   console.log('================================================================\n');

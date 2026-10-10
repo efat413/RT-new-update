@@ -7229,14 +7229,15 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           body?.test === true ||
           body?.test === 'true' ||
           body?.is_test === true ||
+          sfData?.test === true ||
+          sfData?.test === 'true' ||
           eventType === 'test_ping' ||
           eventType === 'test.ping' ||
           eventType === 'ping' ||
           eventType === 'test' ||
           eventType === 'test_webhook' ||
           rawStatus === 'test' ||
-          rawStatus === 'test_ping' ||
-          Boolean(body?.courier);
+          rawStatus === 'test_ping';
 
         // Steadfast trigger test pings (courier.added, courier.updated, courier.dispatched without a real order update)
         const isSteadfastTriggerTest =
@@ -7246,7 +7247,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
            eventType === 'courier.deleted') &&
           (!consignmentId || isDummyConsignment);
 
-        const isEmptyProbe = !consignmentId && !invoice && !trackingCode && !rawStatus;
+        const isEmptyProbe = !consignmentId && !invoice && !trackingCode && !rawStatus && !eventType;
 
         const isTestWebhook = isExplicitTestPing || isSteadfastTriggerTest || isEmptyProbe;
 
