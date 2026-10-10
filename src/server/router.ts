@@ -2852,13 +2852,46 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const sanitizePublic = (p: any) =>
         sanitizeProductForRole(p, { isSuperAdmin: false, canViewBuyingPrice: false, canViewProfit: false });
 
+      // Performance & payload deduplication: strip heavyweight non-card fields
+      // (long descriptions, raw specs, admin metadata) while preserving essential card fields:
+      // id, title, slug, price, originalPrice, sale_price, stock, stock_status, imageUrl, main_image, categoryId, category_id, display_order, etc.
+      const toHomepageCardProduct = (raw: any) => {
+        const p = sanitizePublic(raw);
+        return {
+          id: p.id,
+          title: p.title,
+          name: p.title,
+          slug: p.slug,
+          price: p.price,
+          originalPrice: p.originalPrice,
+          sale_price: p.price,
+          stock: p.stock,
+          stock_status: p.stock > 0 ? 'instock' : 'outofstock',
+          imageUrl: p.imageUrl,
+          main_image: p.imageUrl,
+          images: p.images,
+          categoryId: p.categoryId,
+          category_id: p.categoryId,
+          display_order: (p as any).display_order ?? (p as any).displayOrder ?? 0,
+          featured: Boolean(p.featured),
+          featuredSortOrder: p.featuredSortOrder,
+          rating: p.rating,
+          reviewsCount: p.reviewsCount,
+          colors: p.colors,
+          sizes: p.sizes,
+          status: p.status,
+          createdAt: p.createdAt,
+          updatedAt: p.updatedAt,
+        };
+      };
+
       const safeCategoryProducts: Record<string, any[]> = {};
       for (const [catId, prods] of Object.entries(homepageData.categoryProducts)) {
-        safeCategoryProducts[catId] = prods.map(sanitizePublic);
+        safeCategoryProducts[catId] = prods.map(toHomepageCardProduct);
       }
 
-      const safeFeaturedProducts = homepageData.featuredProducts.map(sanitizePublic);
-      const safeUniqueProducts = homepageData.uniqueProducts.map(sanitizePublic);
+      const safeFeaturedProducts = homepageData.featuredProducts.map(toHomepageCardProduct);
+      const safeUniqueProducts = homepageData.uniqueProducts.map(toHomepageCardProduct);
 
       return jsonResponse(
         {

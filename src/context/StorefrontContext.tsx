@@ -930,7 +930,29 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         if (Array.isArray(hpData.featuredProducts)) {
           setFeaturedProducts(hpData.featuredProducts);
         }
-        const loadedProducts = hpData.products || [];
+
+        // Deduplicate and assemble unique products pool across categoryProducts, featuredProducts, and products
+        const productMap = new Map<string, Product>();
+        if (Array.isArray(hpData.products)) {
+          for (const p of hpData.products) {
+            if (p && p.id) productMap.set(p.id, p);
+          }
+        }
+        if (Array.isArray(hpData.featuredProducts)) {
+          for (const p of hpData.featuredProducts) {
+            if (p && p.id && !productMap.has(p.id)) productMap.set(p.id, p);
+          }
+        }
+        if (hpData.categoryProducts && typeof hpData.categoryProducts === 'object') {
+          for (const prods of Object.values(hpData.categoryProducts)) {
+            if (Array.isArray(prods)) {
+              for (const p of prods) {
+                if (p && p.id && !productMap.has(p.id)) productMap.set(p.id, p);
+              }
+            }
+          }
+        }
+        const loadedProducts = Array.from(productMap.values());
         setProducts(loadedProducts);
         setQuickViewProduct((prev) => (prev ? loadedProducts.find((p) => p.id === prev.id) || prev : null));
         hasInitializedStoreRef.current = true;
