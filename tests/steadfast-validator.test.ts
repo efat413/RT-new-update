@@ -15,7 +15,7 @@ describe('Steadfast URL Validator', () => {
   it('allows and normalizes https://portal.steadfast.com.bd/api/v1 (Pass - normalized)', () => {
     const result = validateCourierApiDestination('https://portal.steadfast.com.bd/api/v1', { courierType: 'steadfast' });
     expect(result.valid).toBe(true);
-    expect(result.normalizedUrl).toBe('https://portal.steadfast.com.bd/api/v1');
+    expect(result.normalizedUrl).toBe('https://portal.packzy.com/api/v1');
   });
 
   it('blocks https://attacker.com/api/v1 (Blocked)', () => {

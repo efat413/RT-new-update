@@ -105,8 +105,10 @@ export function resolveSteadfastBaseUrls(customBaseUrl?: string): string[] {
   if (customBaseUrl && customBaseUrl.trim()) {
     const val = validateCourierApiDestination(customBaseUrl.trim(), { courierType: 'steadfast' });
     if (!val.valid) {
-      console.warn('Rejected unapproved Steadfast customBaseUrl:', customBaseUrl, val.error);
       return [PACKZY_PRIMARY, STEADFAST_LEGACY];
+    }
+    if (val.normalizedUrl) {
+      return [val.normalizedUrl];
     }
   }
 
@@ -139,19 +141,21 @@ export async function callSteadfastApi(
   }
 
   // Pre-validate credentials.baseUrl if passed from request
-  if (credentials.baseUrl) {
-    const val = validateCourierApiDestination(credentials.baseUrl, { courierType: 'steadfast' });
+  let effectiveBaseUrl = credentials.baseUrl;
+  if (effectiveBaseUrl) {
+    const val = validateCourierApiDestination(effectiveBaseUrl, { courierType: 'steadfast' });
     if (!val.valid) {
       return {
         ok: false,
         status: 400,
-        error: `Invalid Steadfast gateway destination: ${val.error}`,
+        error: `Invalid Steadfast gateway destination: ${val.error || 'Destination forbidden.'}`,
       };
     }
+    effectiveBaseUrl = val.normalizedUrl || effectiveBaseUrl;
   }
 
   const cleanPath = endpointPath.replace(/^\/+/, '');
-  const candidateBaseUrls = resolveSteadfastBaseUrls(credentials.baseUrl);
+  const candidateBaseUrls = resolveSteadfastBaseUrls(effectiveBaseUrl);
 
   let lastStatus = 0;
   let lastError = '';
@@ -159,16 +163,18 @@ export async function callSteadfastApi(
 
   for (let i = 0; i < candidateBaseUrls.length; i++) {
     const baseUrl = candidateBaseUrls[i];
-    const fullUrl = `${baseUrl}/${cleanPath}`;
+    const fullUrl = `${baseUrl.replace(/\/+$/, '')}/${cleanPath}`;
 
     // Validate destination before making request
     const val = validateCourierApiDestination(fullUrl, { courierType: 'steadfast' });
     if (!val.valid) {
-      console.error('SSRF filter blocked request to:', fullUrl, val.error);
       lastStatus = 400;
       lastError = val.error || 'Destination blocked by SSRF filter';
       continue;
     }
+
+    // Use normalizedUrl for the actual fetch call
+    const dispatchUrl = val.normalizedUrl || fullUrl;
 
     try {
       const headers: Record<string, string> = {
@@ -180,7 +186,7 @@ export async function callSteadfastApi(
       };
 
       const fetchResult = await safeFetchCourierApi({
-        url: fullUrl,
+        url: dispatchUrl,
         method: options.method || 'GET',
         headers,
         body: options.body ? JSON.stringify(options.body) : undefined,
@@ -265,6 +271,43 @@ export async function callSteadfastApi(
     data: lastData,
     error: finalError,
   };
+}
+
+/**
+ * Tests connection to the Steadfast Courier API and retrieves account balance.
+ * Strictly validates the gateway URL prior to dispatching requests and uses normalizedUrl.
+ * Ensures credentials and secrets are never leaked in error responses or logs.
+ */
+export async function testSteadfastConnection(
+  credentials: SteadfastCredentials
+): Promise<{ ok: boolean; status: number; data?: any; error?: string }> {
+  const apiKey = (credentials.apiKey || '').trim();
+  const secretKey = (credentials.secretKey || '').trim();
+
+  if (!apiKey || !secretKey) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Steadfast Courier API credentials (API Key and Secret Key) are missing.',
+    };
+  }
+
+  const rawBase = (credentials.baseUrl || 'https://portal.packzy.com/api/v1').trim();
+  const val = validateCourierApiDestination(rawBase, { courierType: 'steadfast' });
+  if (!val.valid) {
+    return {
+      ok: false,
+      status: 400,
+      error: val.error || 'Invalid Steadfast API destination. Only approved Steadfast gateways (portal.packzy.com) are permitted.',
+    };
+  }
+
+  const normalizedUrl = val.normalizedUrl || 'https://portal.packzy.com/api/v1';
+  return callSteadfastApi('get_balance', {
+    apiKey,
+    secretKey,
+    baseUrl: normalizedUrl,
+  });
 }
 
 /**

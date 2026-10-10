@@ -694,9 +694,22 @@ export function validateCourierApiDestination(
     }
   }
 
+  // Normalize legacy Steadfast gateway host to canonical portal.packzy.com
+  if (hostname === 'portal.steadfast.com.bd' || hostname === 'steadfast.com.bd') {
+    hostname = 'portal.packzy.com';
+  }
+
+  // Handle trailing slashes gracefully and normalize base path
+  let cleanPath = parsed.pathname.replace(/\/+$/, '');
+  if ((isSteadfast || hostname === 'portal.packzy.com') && (!cleanPath || cleanPath === '')) {
+    cleanPath = '/api/v1';
+  }
+
+  const normalizedUrl = `https://${hostname}${cleanPath || ''}${parsed.search || ''}`;
+
   return {
     valid: true,
-    normalizedUrl: parsed.toString(),
+    normalizedUrl,
     hostname,
   };
 }
