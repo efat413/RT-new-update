@@ -716,6 +716,94 @@ export interface PaginatedCategoryProductsResult {
   hasMore: boolean;
 }
 
+export interface SafePaginationOptions {
+  defaultPage?: number;
+  defaultLimit?: number;
+  minLimit?: number;
+  maxLimit?: number;
+}
+
+export interface SafePaginationResult {
+  page: number;
+  limit: number;
+  offset: number;
+}
+
+/**
+ * Hardened pagination input sanitizer & boundary guard.
+ * Sanitizes raw page and limit against NaN, Infinity, negative values,
+ * float precision overflows, and integer offset attacks.
+ */
+export function parseSafePagination(
+  rawPage: unknown,
+  rawLimit: unknown,
+  options?: SafePaginationOptions
+): SafePaginationResult {
+  const defaultPage = options?.defaultPage ?? 1;
+  const defaultLimit = options?.defaultLimit ?? 12;
+  const minLimit = options?.minLimit ?? 1;
+  const maxLimit = options?.maxLimit ?? 50;
+
+  const parseSafeInt = (val: unknown): number | null => {
+    if (val === undefined || val === null || val === '') {
+      return null;
+    }
+    let num: number;
+    if (typeof val === 'number') {
+      num = val;
+    } else if (typeof val === 'string') {
+      const trimmed = val.trim();
+      if (!trimmed) return null;
+      num = Number(trimmed);
+    } else {
+      return null;
+    }
+
+    if (!Number.isFinite(num) || Number.isNaN(num)) {
+      return null;
+    }
+
+    const intVal = Math.trunc(num);
+    if (!Number.isSafeInteger(intVal)) {
+      return null;
+    }
+
+    return intVal;
+  };
+
+  const parsedPage = parseSafeInt(rawPage);
+  const parsedLimit = parseSafeInt(rawLimit);
+
+  // Normalize page: must be safe integer >= 1, else defaultPage
+  const page = parsedPage !== null && parsedPage >= 1 ? parsedPage : defaultPage;
+
+  // Normalize and clamp limit:
+  // Reject/normalize non-numeric, negative, 0, NaN, Infinity, or values exceeding MAX_SAFE_INTEGER
+  let limit: number;
+  if (parsedLimit === null || parsedLimit < minLimit) {
+    limit = defaultLimit;
+  } else {
+    limit = Math.min(maxLimit, Math.max(minLimit, parsedLimit));
+  }
+
+  // Safe SQL Offset calculation: offset = (page - 1) * limit
+  // Ensure offset never overflows integer limits before D1 binding
+  const maxSafePage = Math.floor(Number.MAX_SAFE_INTEGER / limit) + 1;
+  const effectivePage = page > maxSafePage ? maxSafePage : page;
+  const rawOffset = (effectivePage - 1) * limit;
+
+  const offset =
+    Number.isSafeInteger(rawOffset) && rawOffset >= 0
+      ? rawOffset
+      : Number.MAX_SAFE_INTEGER;
+
+  return {
+    page,
+    limit,
+    offset,
+  };
+}
+
 function buildProductWhereClause(filter?: ProductFilter): { whereClause: string; bindings: any[] } {
   let where = ' WHERE 1=1';
   const bindings: any[] = [];
@@ -1030,10 +1118,11 @@ export async function getPaginatedProducts(
   const availableColumns = await ensureProductTableSchema(db);
   const columns = buildSelectProductColumns(availableColumns, Boolean(filter?.includeBuyingPrice));
 
-  // Safe limits: default 24, max 250
-  const safeLimit = Math.min(250, Math.max(1, Number(filter?.limit) || 24));
-  const page = Math.max(1, Number(filter?.page) || 1);
-  const offset = (page - 1) * safeLimit;
+  const isPrivileged = Boolean(filter?.includeBuyingPrice || filter?.includeInactive);
+  const { page, limit: safeLimit, offset } = parseSafePagination(filter?.page, filter?.limit, {
+    defaultLimit: filter?.category ? 12 : 24,
+    maxLimit: isPrivileged ? 500 : 50,
+  });
 
   // 1. Prepare COUNT statement
   const countQuery = `SELECT COUNT(*) as total FROM products${whereClause}`;
@@ -1092,18 +1181,10 @@ export async function getCategoryProductsPaginated(
     return { items: [], total: 0, page: 1, limit: 12, totalPages: 0, hasMore: false };
   }
 
-  // Sanitize page and limit numbers to prevent SQL injection or NaN offsets
-  const parsedPage = typeof options.page === 'string' ? parseInt(options.page, 10) : Number(options.page);
-  const parsedLimit = typeof options.limit === 'string' ? parseInt(options.limit, 10) : Number(options.limit);
-
-  const page = !isNaN(parsedPage) && parsedPage >= 1 ? Math.floor(parsedPage) : 1;
-  const limit = !isNaN(parsedLimit) && parsedLimit >= 1 ? Math.min(100, Math.floor(parsedLimit)) : 12;
-  const offset = (page - 1) * limit;
-
-  // Protect against NaN or negative offset
-  if (isNaN(offset) || offset < 0) {
-    return { items: [], total: 0, page: 1, limit, totalPages: 0, hasMore: false };
-  }
+  const { page, limit, offset } = parseSafePagination(options?.page, options?.limit, {
+    defaultLimit: 12,
+    maxLimit: 50,
+  });
 
   const availableColumns = await ensureProductTableSchema(db);
   const columns = buildSelectProductColumns(availableColumns, Boolean(options.includeBuyingPrice));

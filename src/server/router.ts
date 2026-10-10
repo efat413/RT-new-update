@@ -15,6 +15,7 @@ import {
   getAllCategories,
   getCategoryById,
   getCategoryProductsPaginated,
+  parseSafePagination,
   insertCategory,
   updateCategoryInD1,
   deleteCategoryFromD1,
@@ -2982,9 +2983,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
               products: safeProducts,
             };
           } else {
-            const page = pageParam ? Math.max(1, parseInt(pageParam, 10) || 1) : 1;
-            const parsedLimit = limitParam ? parseInt(limitParam, 10) : 100;
-            const limit = Math.min(MAX_ADMIN_LIMIT, Math.max(1, isNaN(parsedLimit) ? 100 : parsedLimit));
+            const { page, limit } = parseSafePagination(pageParam, limitParam, {
+              defaultLimit: 100,
+              maxLimit: MAX_ADMIN_LIMIT,
+            });
             const paginated = await getPaginatedProducts(env.DB, {
               category,
               search,
@@ -3008,13 +3010,13 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           }
         } else {
           // Public Storefront Request:
-          // Default: limit=12 when filtering by category, otherwise 24. Hard cap: MAX_PUBLIC_LIMIT=48.
+          // Default: limit=12 when filtering by category, otherwise 24. Hard cap: maxLimit=50.
           // Prevents full catalog dumps and excessive database/worker/bandwidth load.
           const defaultLimit = category ? 12 : DEFAULT_PUBLIC_LIMIT;
-          const page = pageParam ? Math.max(1, parseInt(pageParam, 10) || 1) : DEFAULT_PUBLIC_PAGE;
-          const parsedLimit = limitParam ? parseInt(limitParam, 10) : defaultLimit;
-          const requestedLimit = isNaN(parsedLimit) ? defaultLimit : parsedLimit;
-          const limit = Math.min(MAX_PUBLIC_LIMIT, Math.max(1, requestedLimit));
+          const { page, limit } = parseSafePagination(pageParam, limitParam, {
+            defaultLimit,
+            maxLimit: 50,
+          });
 
           const paginated = await getPaginatedProducts(env.DB, {
             category,
@@ -3325,10 +3327,15 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     const limitParam = url.searchParams.get('limit');
 
     try {
+      const { page, limit } = parseSafePagination(pageParam, limitParam, {
+        defaultLimit: 12,
+        maxLimit: 50,
+      });
+
       const paginated = await getCategoryProductsPaginated(env.DB, {
         categoryId: catId,
-        page: pageParam,
-        limit: limitParam,
+        page,
+        limit,
       });
 
       const safeItems = paginated.items.map((p) =>
