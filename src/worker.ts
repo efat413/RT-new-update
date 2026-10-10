@@ -1,5 +1,6 @@
-import { handleApiRequest } from './server/router';
+import { handleApiRequest, getCorsHeaders } from './server/router';
 import { Env } from './server/types';
+import { getBodySizeLimit } from './server/bodyLimits';
 import {
   ROBOTS_TXT_CONTENT,
   generateSitemapXml,
@@ -67,6 +68,51 @@ export default {
     const url = new URL(request.url);
     const secHeaders = getSecurityHeaders();
 
+    // 0. Early Pre-Parse Content-Length Header Guard
+    const clHeader = request.headers.get('content-length');
+    if (clHeader !== null && clHeader !== '') {
+      const parsedLen = parseInt(clHeader, 10);
+      if (isNaN(parsedLen) || parsedLen < 0) {
+        return new Response(JSON.stringify({ success: false, error: 'Invalid Content-Length header.' }), {
+          status: 400,
+          headers: {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            ...getCorsHeaders(request, env),
+          },
+        });
+      }
+
+      if (url.pathname.startsWith('/api/')) {
+        const routeLimit = getBodySizeLimit(url.pathname, request.method);
+        if (parsedLen > routeLimit) {
+          return new Response(
+            JSON.stringify({ success: false, error: 'Payload too large: Request body exceeds maximum allowed size.' }),
+            {
+              status: 413,
+              headers: {
+                'Content-Type': 'application/json',
+                'Cache-Control': 'no-store, no-cache, must-revalidate',
+                ...getCorsHeaders(request, env),
+              },
+            }
+          );
+        }
+      } else if (request.method !== 'GET' && request.method !== 'HEAD' && parsedLen > 0) {
+        return new Response(
+          JSON.stringify({ success: false, error: 'Payload too large: Non-API endpoints do not accept body payloads.' }),
+          {
+            status: 413,
+            headers: {
+              'Content-Type': 'application/json',
+              'Cache-Control': 'no-store, no-cache, must-revalidate',
+              ...getCorsHeaders(request, env),
+            },
+          }
+        );
+      }
+    }
+
     // 1. API router
     if (url.pathname.startsWith('/api/')) {
       try {
@@ -78,6 +124,7 @@ export default {
           headers: {
             'Content-Type': 'application/json',
             'Cache-Control': 'no-store, no-cache, must-revalidate',
+            ...getCorsHeaders(request, env),
           },
         });
       }

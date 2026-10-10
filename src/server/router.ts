@@ -155,12 +155,23 @@ import {
   sanitizeReviewImageReference,
   MAX_IMAGE_SIZE_BYTES,
   REVIEW_MAX_IMAGE_SIZE,
+  MAX_REVIEW_IMAGE_COUNT,
+  MAX_REVIEW_AGGREGATE_BYTES,
+  validateAndDecodeReviewPhoto,
+  isValidBase64,
   uint8ArrayToBase64,
   base64ToUint8Array,
   D1_SAFE_BLOB_CHUNK_BYTES,
   MAX_IMAGE_DIMENSION,
   MAX_REVIEW_IMAGE_DIMENSION,
 } from './imageSecurity';
+import {
+  getBodySizeLimit,
+  readRawBodyWithLimit,
+  BODY_LIMIT_DEFAULT,
+  BODY_LIMIT_WEBHOOK,
+  BODY_LIMIT_MEDIA_UPLOAD,
+} from './bodyLimits';
 
 let activeApiRequest: Request | null = null;
 let activeEnv: Env | null = null;
@@ -422,18 +433,67 @@ function jsonResponse(data: any, status = 200, customHeaders: Record<string, str
 }
 
 /**
- * Centralized safe JSON request body parser.
- * - Safely parses incoming JSON request payloads.
+ * Centralized safe JSON request body parser with pre-parse size limit enforcement.
+ * - Inspects Content-Length header upfront and streams body chunks with early abort (HTTP 413)
+ *   before full JSON allocation in memory, preventing Worker OOM crashes.
+ * - Enforces endpoint-specific limits (Auth: 64KB, Orders: 128KB, Reviews: 12MB, Admin: 1MB).
  * - Returns { data: parsed, errorResponse: null } on valid JSON (including empty object `{}`).
  * - Returns HTTP 400 Bad Request if the JSON payload is malformed or invalid.
+ * - Returns HTTP 413 Payload Too Large if the body exceeds the route limit.
  * - NEVER silently converts malformed JSON into {}, null, an empty body, or another fallback object.
  * - Ensures parser stack traces or internals are never leaked.
  */
 export async function safeParseJson<T = any>(
-  request: Request
+  request: Request,
+  customMaxBytes?: number
 ): Promise<{ data: T; errorResponse: null } | { data: null; errorResponse: Response }> {
+  let maxBytes = customMaxBytes;
+  if (!maxBytes) {
+    try {
+      const parsedUrl = new URL(request.url);
+      maxBytes = getBodySizeLimit(parsedUrl.pathname, request.method);
+    } catch {
+      maxBytes = BODY_LIMIT_DEFAULT;
+    }
+  }
+
+  const { buffer, error } = await readRawBodyWithLimit(request, maxBytes);
+  if (error) {
+    return {
+      data: null,
+      errorResponse: jsonResponse(
+        { success: false, error: error.error },
+        error.status
+      ),
+    };
+  }
+
+  if (!buffer || buffer.byteLength === 0) {
+    return {
+      data: null,
+      errorResponse: jsonResponse(
+        { success: false, error: 'Malformed JSON payload. Please provide valid JSON.' },
+        400
+      ),
+    };
+  }
+
+  let rawText: string;
   try {
-    const data = (await request.json()) as T;
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    rawText = decoder.decode(buffer);
+  } catch {
+    return {
+      data: null,
+      errorResponse: jsonResponse(
+        { success: false, error: 'Malformed JSON payload. Please provide valid JSON.' },
+        400
+      ),
+    };
+  }
+
+  try {
+    const data = JSON.parse(rawText) as T;
     return { data: (data ?? ({} as T)), errorResponse: null };
   } catch {
     return {
@@ -3861,7 +3921,12 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       let fileBuffer: ArrayBuffer | null = null;
 
       if (contentTypeHeader.includes('multipart/form-data')) {
-        const formData = await request.formData();
+        const { buffer: rawUploadBytes, error: bodyErr } = await readRawBodyWithLimit(request, BODY_LIMIT_MEDIA_UPLOAD);
+        if (bodyErr) {
+          return jsonResponse({ success: false, error: bodyErr.error }, bodyErr.status);
+        }
+        const syntheticReq = new Response(rawUploadBytes, { headers: { 'Content-Type': contentTypeHeader } });
+        const formData = await syntheticReq.formData();
         const file = formData.get('file') as File | null;
         const uploadPurpose = String(formData.get('purpose') || '').trim().toLowerCase();
         if (!file) {
@@ -3878,16 +3943,27 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         }
         fileBuffer = await file.arrayBuffer();
       } else {
-        const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+        const { data: body, errorResponse: jsonErr } = await safeParseJson(request, BODY_LIMIT_MEDIA_UPLOAD);
         if (jsonErr) return jsonErr;
         const uploadPurpose = String(body?.purpose || '').trim().toLowerCase();
         const dataUrl = body?.dataUrl || body?.image || '';
         if (!dataUrl || typeof dataUrl !== 'string') {
           return jsonResponse({ success: false, error: 'Expected dataUrl in JSON body' }, 400);
         }
-        const matches = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+        const matches = dataUrl.match(/^data:([^;,]+);base64,(.+)$/s);
         if (matches) {
-          const base64Str = matches[2];
+          const declaredMime = matches[1].trim().toLowerCase();
+          const base64Str = matches[2].trim();
+
+          const allowedUploadMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/x-icon', 'image/vnd.microsoft.icon'];
+          if (!allowedUploadMimes.includes(declaredMime)) {
+            return jsonResponse({ success: false, error: `Unsupported image MIME type: "${declaredMime}".` }, 400);
+          }
+
+          if (!isValidBase64(base64Str)) {
+            return jsonResponse({ success: false, error: 'Malformed or corrupted Base64 image payload.' }, 400);
+          }
+
           const approxSize = Math.ceil((base64Str.length * 3) / 4);
           const maxLimit = uploadPurpose === 'review' ? REVIEW_MAX_IMAGE_SIZE : MAX_IMAGE_SIZE_BYTES;
           if (approxSize > maxLimit) {
@@ -4634,42 +4710,38 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           }
         }
 
-        // 5. Sanitize and validate photos metadata (Strictly 2 MB per image, JPEG/PNG/WebP, max 5 photos)
+        // 5. Sanitize and validate photos metadata (Strictly 2 MB per image, 8 MB aggregate, JPEG/PNG/WebP, max 5 photos)
         const reviewImages: string[] = [];
 
         try {
-          if (Array.isArray(reviewData.images)) {
-            for (const rawImg of reviewData.images.slice(0, 5)) {
-              if (typeof rawImg !== 'string') continue;
+          if (reviewData.images !== undefined && reviewData.images !== null) {
+            if (!Array.isArray(reviewData.images)) {
+              return jsonResponse({
+                success: false,
+                error: 'Review images must be an array.',
+              }, 400);
+            }
 
-              // Handle Base64 Data URLs (e.g. from customer review upload)
-              const base64Match = rawImg.match(/^data:image\/(jpeg|png|webp);base64,(.+)$/i);
-              if (base64Match) {
-                const base64Content = base64Match[2];
-                const approxBinaryLength = Math.floor((base64Content.length * 3) / 4);
-                if (approxBinaryLength > 2 * 1024 * 1024) {
-                  return jsonResponse({
-                    success: false,
-                    error: 'Attached review photo exceeds maximum allowed limit of 2 MB.',
-                  }, 400);
-                }
+            if (reviewData.images.length > MAX_REVIEW_IMAGE_COUNT) {
+              return jsonResponse({
+                success: false,
+                error: `Maximum ${MAX_REVIEW_IMAGE_COUNT} images allowed per review.`,
+              }, 400);
+            }
 
-                const u8 = base64ToUint8Array(base64Content);
-                if (u8.byteLength > 2 * 1024 * 1024) {
-                  return jsonResponse({
-                    success: false,
-                    error: 'Attached review photo exceeds maximum allowed limit of 2 MB.',
-                  }, 400);
-                }
+            let aggregateDecodedBytes = 0;
 
-                const validation = validateReviewPhotoBuffer(u8);
-                if (!validation.valid || !validation.mime || !validation.extension) {
-                  return jsonResponse({
-                    success: false,
-                    error: validation.error || 'Invalid review photo format. Only JPEG, PNG, and WebP are accepted.',
-                  }, 400);
-                }
+            for (const rawImg of reviewData.images) {
+              const photoResult = validateAndDecodeReviewPhoto(rawImg, aggregateDecodedBytes);
+              if (!photoResult.valid) {
+                return jsonResponse({
+                  success: false,
+                  error: photoResult.error || 'Invalid review photo provided.',
+                }, 400);
+              }
 
+              if (photoResult.bytes && photoResult.mime) {
+                aggregateDecodedBytes += photoResult.bytes.byteLength;
                 const imageId = `rev-img-${Date.now()}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`;
                 if (env.DB) {
                   await saveReviewImageBlobInD1(
@@ -4677,28 +4749,23 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
                     imageId,
                     null,
                     targetProductId,
-                    validation.mime,
-                    u8
+                    photoResult.mime,
+                    photoResult.bytes
                   );
                   createdReviewImageIds.push(imageId);
                 }
                 reviewImages.push(`/api/reviews/images/${imageId}`);
-                continue;
-              }
-
-              // Internal media references / safe URL references (arbitrary external URLs are rejected)
-              const sanitized = sanitizeReviewImageReference(rawImg);
-              if (sanitized) {
-                const mediaKeyMatch = sanitized.match(/(?:^\/api\/media\/|^)([a-zA-Z0-9_\-.]+)$/);
+              } else if (photoResult.isReference && photoResult.referenceUrl) {
+                const mediaKeyMatch = photoResult.referenceUrl.match(/(?:^\/api\/media\/|^)([a-zA-Z0-9_\-.]+)$/);
                 if (mediaKeyMatch && isValidMediaKey(mediaKeyMatch[1]) && env.DB) {
                   try {
                     const exists = await mediaAssetExistsInD1(env.DB, mediaKeyMatch[1]);
                     if (!exists) {
-                      continue; // Skip invalid or nonexistent internal media assets
+                      continue; // Skip nonexistent internal media assets
                     }
                   } catch {}
                 }
-                reviewImages.push(sanitized);
+                reviewImages.push(photoResult.referenceUrl);
               }
             }
           }
@@ -7582,7 +7649,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
     if (method === 'POST') {
       try {
-        const rawBody = await request.text();
+        const { buffer: rawBytes, error: bodyErr } = await readRawBodyWithLimit(request, BODY_LIMIT_WEBHOOK);
+        if (bodyErr) {
+          return jsonResponse({ success: false, error: bodyErr.error }, bodyErr.status);
+        }
+        const rawBody = rawBytes ? new TextDecoder('utf-8').decode(rawBytes) : '';
         let body: any = {};
         if (rawBody && rawBody.trim()) {
           try {

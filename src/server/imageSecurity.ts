@@ -364,8 +364,163 @@ export function generateSafeMediaKey(extension: string): string {
   return `asset-${timestamp}-${rand}.${safeExt}`;
 }
 
-export const MAX_REVIEW_PHOTO_BYTES = 2 * 1024 * 1024; // 2 MB (2,097,152 bytes)
+export const MAX_REVIEW_IMAGE_COUNT = 5; // Maximum 5 images per review
+export const MAX_REVIEW_PHOTO_BYTES = 2 * 1024 * 1024; // 2 MB (2,097,152 bytes) per image
+export const MAX_REVIEW_AGGREGATE_BYTES = 8 * 1024 * 1024; // 8 MB (8,388,608 bytes) aggregate decoded review images
 export const ALLOWED_REVIEW_PHOTO_FORMATS = ['jpeg', 'png', 'webp'] as const;
+export const ALLOWED_REVIEW_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const;
+
+/**
+ * Strict regex validation for RFC 4648 Base64 character set and padding.
+ * Enforces valid character set [A-Za-z0-9+/], multiple-of-4 length, and valid '=' padding at end.
+ * Disallows arbitrary whitespace, invalid symbols, or middle padding.
+ */
+export function isValidBase64(str: string): boolean {
+  if (!str || typeof str !== 'string') return false;
+  const clean = str.trim();
+  if (clean.length === 0 || clean.length % 4 !== 0) return false;
+  return /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{4})$/.test(clean);
+}
+
+export interface ReviewPhotoValidationResult {
+  valid: boolean;
+  isReference?: boolean;
+  referenceUrl?: string;
+  bytes?: Uint8Array;
+  mime?: string;
+  extension?: string;
+  format?: 'jpeg' | 'png' | 'webp';
+  size?: number;
+  error?: string;
+}
+
+/**
+ * Strictly validates and decodes a review photo entry (Base64 Data URL or safe reference).
+ * Enforces:
+ * - Data URL prefix with permitted MIME type (image/jpeg, image/png, image/webp)
+ * - RFC 4648 Base64 format and integrity
+ * - Individual decoded size <= 2 MB
+ * - Aggregate decoded size <= 8 MB
+ * - Authoritative magic byte inspection (JPEG/PNG/WebP only)
+ * - Dimension ceiling (<= 2560px)
+ * - Script/SVG/HTML polyglot injection blocking
+ */
+export function validateAndDecodeReviewPhoto(
+  rawImage: any,
+  currentAggregateBytes = 0
+): ReviewPhotoValidationResult {
+  if (typeof rawImage !== 'string') {
+    return { valid: false, error: 'Review image must be a string.' };
+  }
+  const trimmed = rawImage.trim();
+  if (!trimmed) {
+    return { valid: false, error: 'Review image string cannot be empty.' };
+  }
+
+  // 1. Data URL Base64 image upload
+  if (trimmed.startsWith('data:')) {
+    const dataUrlMatch = trimmed.match(/^data:([^;,]+);base64,(.+)$/s);
+    if (!dataUrlMatch) {
+      return {
+        valid: false,
+        error: 'Malformed image data URL format. Expected "data:<mime>;base64,<payload>".',
+      };
+    }
+
+    const declaredMime = dataUrlMatch[1].trim().toLowerCase();
+    const base64Data = dataUrlMatch[2].trim();
+
+    // Check declared MIME type against whitelist
+    if (!ALLOWED_REVIEW_MIME_TYPES.includes(declaredMime as any)) {
+      return {
+        valid: false,
+        error: `Unsupported image MIME type "${declaredMime}". Only JPEG, PNG, and WebP are allowed.`,
+      };
+    }
+
+    // Check Base64 string syntax
+    if (!isValidBase64(base64Data)) {
+      return {
+        valid: false,
+        error: 'Malformed or corrupted Base64 image payload.',
+      };
+    }
+
+    // Fast approximate size check
+    const approxBytes = Math.floor((base64Data.length * 3) / 4);
+    if (approxBytes > MAX_REVIEW_PHOTO_BYTES) {
+      return {
+        valid: false,
+        error: 'Attached review photo exceeds maximum allowed limit of 2 MB.',
+      };
+    }
+
+    // Decode to Uint8Array
+    let bytes: Uint8Array;
+    try {
+      bytes = base64ToUint8Array(base64Data);
+    } catch {
+      return {
+        valid: false,
+        error: 'Malformed or corrupted Base64 image payload.',
+      };
+    }
+
+    if (bytes.byteLength === 0) {
+      return {
+        valid: false,
+        error: 'Attached review photo payload is empty.',
+      };
+    }
+
+    if (bytes.byteLength > MAX_REVIEW_PHOTO_BYTES) {
+      return {
+        valid: false,
+        error: 'Attached review photo exceeds maximum allowed limit of 2 MB.',
+      };
+    }
+
+    if (currentAggregateBytes + bytes.byteLength > MAX_REVIEW_AGGREGATE_BYTES) {
+      return {
+        valid: false,
+        error: 'Total attached review photos exceed aggregate size limit of 8 MB.',
+      };
+    }
+
+    // Inspect binary magic bytes, dimensions, and polyglot safety
+    const validation = validateReviewPhotoBuffer(bytes);
+    if (!validation.valid || !validation.mime || !validation.extension || !validation.format) {
+      return {
+        valid: false,
+        error: validation.error || 'Invalid or corrupted review photo format.',
+      };
+    }
+
+    return {
+      valid: true,
+      bytes,
+      mime: validation.mime,
+      extension: validation.extension,
+      format: validation.format,
+      size: bytes.byteLength,
+    };
+  }
+
+  // 2. Safe Reference / internal URL
+  const sanitizedRef = sanitizeReviewImageReference(trimmed);
+  if (!sanitizedRef) {
+    return {
+      valid: false,
+      error: 'Invalid, corrupted, or untrusted review image reference.',
+    };
+  }
+
+  return {
+    valid: true,
+    isReference: true,
+    referenceUrl: sanitizedRef,
+  };
+}
 
 /**
  * Validates review photo buffer against 2 MB limit and enforces JPEG/PNG/WebP formats.
