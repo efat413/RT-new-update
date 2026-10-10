@@ -321,10 +321,15 @@ function jsonResponse(data: any, status = 200, customHeaders: Record<string, str
     }
 
     // 2. Review 503 responses:
-    // Allow health check probes or explicit temporarily unavailable service messages
+    // Allow health check probes or explicit temporarily unavailable / degraded service messages
     if (finalStatus === 503) {
       const isHealthCheckProbe = payload.status === 'error' && Object.keys(payload).length === 1;
-      const isServiceUnavailable = typeof payload.error === 'string' && payload.error.includes('temporarily unavailable');
+      const isServiceUnavailable =
+        (typeof payload.error === 'string' &&
+          (payload.error.includes('temporarily unavailable') || payload.error.includes('temporarily degraded'))) ||
+        payload.status === 'SERVICE_DEGRADED' ||
+        (typeof payload.message === 'string' && payload.message.includes('temporarily degraded'));
+
       if (!isHealthCheckProbe && !isServiceUnavailable) {
         console.error('[503 Converted to Safe 500 Internal Error]:', payload.error || payload);
         finalStatus = 500;
@@ -343,8 +348,10 @@ function jsonResponse(data: any, status = 200, customHeaders: Record<string, str
 
       const isServiceUnavailable =
         finalStatus === 503 &&
-        typeof payload.error === 'string' &&
-        payload.error.includes('temporarily unavailable');
+        ((typeof payload.error === 'string' &&
+          (payload.error.includes('temporarily unavailable') || payload.error.includes('temporarily degraded'))) ||
+          payload.status === 'SERVICE_DEGRADED' ||
+          (typeof payload.message === 'string' && payload.message.includes('temporarily degraded')));
 
       if (payload.error && payload.error !== 'Internal server error.' && !isSafeOrderErrorMessage && !isServiceUnavailable) {
         console.error('[Server Internal Error Logged Safely]:', payload.error);
@@ -670,20 +677,57 @@ function cleanupOrderAbuseMaps(): void {
   }
 }
 
-async function checkRateLimit(
+export type RateLimitPolicy = 'fail-closed' | 'fail-open';
+
+export interface RateLimitCheckResult {
+  allowed: boolean;
+  remainingSeconds?: number;
+  count?: number;
+  degraded?: boolean;
+}
+
+export interface RateLimitOptions {
+  policy?: RateLimitPolicy; // 'fail-closed' (security-critical) vs 'fail-open' (HA/revenue)
+  isDev?: boolean;
+  timeOffsetMs?: number;
+}
+
+/**
+ * Privacy-safe key masking for observability & logging:
+ * Guarantees zero credential, email, or contact phone PII leakage in logs.
+ */
+export function maskRateLimitKey(key: string): string {
+  if (!key) return '';
+  return key
+    .replace(/([a-zA-Z0-9_.+-])[a-zA-Z0-9_.+-]*@([a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)/g, '$1***@$2')
+    .replace(/(?:\+?880|0)?1[3-9]\d{8}/g, (match) => {
+      const len = match.length;
+      return match.slice(0, 3) + '****' + match.slice(len - 4);
+    })
+    .replace(/(\d{1,3}\.\d{1,3}\.)\d{1,3}\.(\d{1,3})/g, '$1***.$2');
+}
+
+export async function checkRateLimit(
   key: string,
   limit = 5,
   windowSeconds = 900,
-  db?: D1Database
-): Promise<{ allowed: boolean; remainingSeconds?: number }> {
-  const now = Date.now();
+  db?: D1Database,
+  options?: RateLimitOptions
+): Promise<RateLimitCheckResult> {
+  const now = Date.now() + (options?.timeOffsetMs || 0);
+  const isSecurityCritical =
+    options?.policy === 'fail-closed' ||
+    (!options?.policy && (key.startsWith('login:') || key.startsWith('reg:') || key.startsWith('pwd-reset')));
+  const effectivePolicy: RateLimitPolicy =
+    options?.policy || (isSecurityCritical ? 'fail-closed' : 'fail-open');
 
-  // Tier 1: Check memory map
+  // Tier 1: Check memory map for fast local rejection
   const memEntry = loginAttemptMap.get(key);
   if (memEntry && memEntry.lockedUntil > now) {
     return {
       allowed: false,
       remainingSeconds: Math.ceil((memEntry.lockedUntil - now) / 1000),
+      count: memEntry.count,
     };
   }
 
@@ -699,76 +743,144 @@ async function checkRateLimit(
         if (row.reset_at > now && row.count >= limit) {
           const rem = Math.ceil((row.reset_at - now) / 1000);
           loginAttemptMap.set(key, { count: row.count, lockedUntil: row.reset_at });
-          return { allowed: false, remainingSeconds: rem };
+          return { allowed: false, remainingSeconds: rem, count: row.count };
         } else if (row.reset_at <= now) {
           await db.prepare('DELETE FROM rate_limits WHERE key = ?').bind(key).run().catch(() => {});
         }
       }
-    } catch (err) {
-      console.error('[RateLimit Error] Rate limits table check failed in D1:', err);
-      // Security: Rate-limit failures must not silently result in allowed: true
-      return { allowed: false, remainingSeconds: 60 };
+    } catch (err: any) {
+      const maskedKey = maskRateLimitKey(key);
+      if (effectivePolicy === 'fail-closed') {
+        console.error(`[RateLimit Fail-Closed] D1 rate-limits table query failed for ${maskedKey}:`, err?.message || err);
+        return { allowed: false, remainingSeconds: 60, degraded: true };
+      } else {
+        // High-Availability / Revenue route: Degraded mode (Fail-Open)
+        console.warn(`[RateLimit Degraded] D1 rate-limits query failed for ${maskedKey}, failing open:`, err?.message || err);
+        return { allowed: true, degraded: true };
+      }
     }
+  } else {
+    // Missing D1 binding
+    if (effectivePolicy === 'fail-closed') {
+      if (options?.isDev) {
+        return { allowed: true, degraded: true };
+      }
+      console.error(`[RateLimit Fail-Closed] Missing D1 binding for security-critical route: ${maskRateLimitKey(key)}`);
+      return { allowed: false, remainingSeconds: 300, degraded: true };
+    }
+    return { allowed: true, degraded: true };
   }
 
   return { allowed: true };
 }
 
-async function recordFailedAttempt(
+export async function recordFailedAttempt(
   key: string,
   limit = 5,
   windowSeconds = 900,
   db?: D1Database
-): Promise<void> {
+): Promise<{ count: number; resetAt: number }> {
   const now = Date.now();
   const resetAt = now + windowSeconds * 1000;
+  let finalCount = 1;
+  let finalResetAt = resetAt;
 
-  // In-memory update
-  const entry = loginAttemptMap.get(key) || { count: 0, lockedUntil: 0 };
-  entry.count += 1;
-  if (entry.count >= limit) {
-    entry.lockedUntil = resetAt;
-  }
-  loginAttemptMap.set(key, entry);
-
-  // D1 distributed atomic upsert
+  // D1 distributed atomic upsert with RETURNING count, reset_at
   if (db) {
     try {
-      await db.prepare(
+      const stmt = db.prepare(
         `INSERT INTO rate_limits (key, count, reset_at)
          VALUES (?, 1, ?)
          ON CONFLICT(key) DO UPDATE SET
            count = CASE WHEN reset_at <= ? THEN 1 ELSE count + 1 END,
-           reset_at = CASE WHEN reset_at <= ? THEN ? ELSE reset_at END`
-      ).bind(key, resetAt, now, now, resetAt).run();
-    } catch (err) {
-      console.error('[RateLimit Error] Atomic record failed attempt error in D1:', err);
+           reset_at = CASE WHEN reset_at <= ? THEN ? ELSE reset_at END
+         RETURNING count, reset_at`
+      ).bind(key, resetAt, now, now, resetAt);
+
+      const result = await stmt.first<{ count: number; reset_at: number }>().catch(() => null);
+      if (result && typeof result.count === 'number') {
+        finalCount = result.count;
+        finalResetAt = result.reset_at;
+      } else {
+        await stmt.run().catch(() => {});
+        const entry = loginAttemptMap.get(key) || { count: 0, lockedUntil: 0 };
+        finalCount = entry.count + 1;
+        finalResetAt = entry.lockedUntil > now ? entry.lockedUntil : resetAt;
+      }
+    } catch (err: any) {
+      console.warn(`[RateLimit Warning] Atomic record failed attempt error in D1 for ${maskRateLimitKey(key)}:`, err?.message || err);
+      const entry = loginAttemptMap.get(key) || { count: 0, lockedUntil: 0 };
+      finalCount = entry.count + 1;
+      finalResetAt = entry.lockedUntil > now ? entry.lockedUntil : resetAt;
     }
+  } else {
+    const entry = loginAttemptMap.get(key) || { count: 0, lockedUntil: 0 };
+    finalCount = entry.count + 1;
+    finalResetAt = entry.lockedUntil > now ? entry.lockedUntil : resetAt;
   }
+
+  // Update in-memory entry synchronized with distributed counter
+  loginAttemptMap.set(key, {
+    count: finalCount,
+    lockedUntil: finalCount >= limit ? finalResetAt : 0,
+  });
+
+  return { count: finalCount, resetAt: finalResetAt };
 }
 
-async function clearFailedAttempts(key: string, db?: D1Database): Promise<void> {
+export async function clearFailedAttempts(key: string, db?: D1Database): Promise<void> {
   loginAttemptMap.delete(key);
   if (db) {
     try {
       await db.prepare('DELETE FROM rate_limits WHERE key = ?').bind(key).run().catch(() => {});
-    } catch {}
+    } catch (err: any) {
+      console.warn(`[RateLimit Warning] Failed to delete D1 rate limit for ${maskRateLimitKey(key)}:`, err?.message || err);
+    }
+  }
+}
+
+export async function rollbackRateLimit(
+  key: string,
+  db?: D1Database
+): Promise<void> {
+  const mem = loginAttemptMap.get(key);
+  if (mem) {
+    mem.count = Math.max(0, mem.count - 1);
+    if (mem.count === 0) {
+      loginAttemptMap.delete(key);
+    } else {
+      loginAttemptMap.set(key, mem);
+    }
+  }
+  if (db) {
+    try {
+      await db
+        .prepare('UPDATE rate_limits SET count = MAX(0, count - 1) WHERE key = ?')
+        .bind(key)
+        .run()
+        .catch(() => {});
+    } catch (err: any) {
+      console.warn(`[RateLimit Rollback Warning] Failed to rollback D1 key for ${maskRateLimitKey(key)}:`, err?.message || err);
+    }
   }
 }
 
 // In-memory sliding log for IP order attempts (atomic per edge isolate)
-const orderIpRateLimitMap = new Map<string, number[]>();
+export const orderIpRateLimitMap = new Map<string, number[]>();
+export { loginAttemptMap };
 
 export async function checkAndConsumeOrderRateLimit(
   clientIp: string,
   limit = 4,
   windowSeconds = 600,
   db?: D1Database,
-  timeOffsetMs = 0
-): Promise<{ allowed: boolean; remainingSeconds?: number }> {
+  timeOffsetMs = 0,
+  options?: RateLimitOptions
+): Promise<RateLimitCheckResult> {
   const now = Date.now() + timeOffsetMs;
   const windowMs = windowSeconds * 1000;
   const key = `order_ip:${clientIp}`;
+  let degraded = false;
 
   // 1. Sliding window check & update in memory (atomic for isolate)
   const timestamps = (orderIpRateLimitMap.get(key) || []).filter((t) => now - t < windowMs);
@@ -776,7 +888,7 @@ export async function checkAndConsumeOrderRateLimit(
     const oldest = timestamps[0];
     const rem = Math.max(1, Math.ceil((oldest + windowMs - now) / 1000));
     orderIpRateLimitMap.set(key, timestamps);
-    return { allowed: false, remainingSeconds: rem };
+    return { allowed: false, remainingSeconds: rem, count: timestamps.length };
   }
 
   // 2. Multi-edge Cloudflare D1 distributed check (if DB is bound)
@@ -798,18 +910,21 @@ export async function checkAndConsumeOrderRateLimit(
 
       if (result && result.count > limit && result.reset_at > now) {
         const rem = Math.max(1, Math.ceil((result.reset_at - now) / 1000));
-        return { allowed: false, remainingSeconds: rem };
+        return { allowed: false, remainingSeconds: rem, count: result.count };
       }
-    } catch (d1Err) {
-      console.error('[RateLimit Error] Atomic order rate limit check failed in D1:', d1Err);
+    } catch (d1Err: any) {
+      degraded = true;
+      console.warn(`[RateLimit Degraded] Atomic order rate limit check failed in D1 for ${maskRateLimitKey(key)}, allowing via degraded mode:`, d1Err?.message || d1Err);
     }
+  } else {
+    degraded = true;
   }
 
   // Reserve slot
   timestamps.push(now);
   orderIpRateLimitMap.set(key, timestamps);
 
-  return { allowed: true };
+  return { allowed: true, degraded };
 }
 
 export async function rollbackOrderRateLimit(
@@ -822,15 +937,7 @@ export async function rollbackOrderRateLimit(
     timestamps.pop();
     orderIpRateLimitMap.set(key, timestamps);
   }
-  if (db) {
-    try {
-      await db
-        .prepare(`UPDATE rate_limits SET count = MAX(0, count - 1) WHERE key = ?`)
-        .bind(key)
-        .run()
-        .catch(() => {});
-    } catch {}
-  }
+  await rollbackRateLimit(key, db);
 }
 
 import {
@@ -1883,27 +1990,37 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
       // Check both IP-level credential spray limit (25 attempts per 15 min) and target account limit (5 per 15 min)
       const [ipRateCheck, rateCheck] = await Promise.all([
-        checkRateLimit(ipRateKey, 25, 900, env.DB),
-        checkRateLimit(rateKey, 5, 900, env.DB),
+        checkRateLimit(ipRateKey, 25, 900, env.DB, { policy: 'fail-closed', isDev }),
+        checkRateLimit(rateKey, 5, 900, env.DB, { policy: 'fail-closed', isDev }),
       ]);
 
       if (!ipRateCheck.allowed) {
+        const isDegraded = Boolean(ipRateCheck.degraded);
         return jsonResponse(
           {
             success: false,
-            error: `Too many login attempts from this network. Please wait ${ipRateCheck.remainingSeconds || 300} seconds before trying again.`,
+            error: isDegraded
+              ? 'Authentication service temporarily degraded. Rate-limiting check unavailable. Please try again shortly.'
+              : `Too many login attempts from this network. Please wait ${ipRateCheck.remainingSeconds || 300} seconds before trying again.`,
+            retryAfter: ipRateCheck.remainingSeconds || 300,
           },
-          429
+          isDegraded ? 503 : 429,
+          { 'Retry-After': String(ipRateCheck.remainingSeconds || 300) }
         );
       }
 
       if (!rateCheck.allowed) {
+        const isDegraded = Boolean(rateCheck.degraded);
         return jsonResponse(
           {
             success: false,
-            error: `Too many failed login attempts for this account. Please wait ${rateCheck.remainingSeconds || 300} seconds before trying again.`,
+            error: isDegraded
+              ? 'Authentication service temporarily degraded. Rate-limiting check unavailable. Please try again shortly.'
+              : `Too many failed login attempts for this account. Please wait ${rateCheck.remainingSeconds || 300} seconds before trying again.`,
+            retryAfter: rateCheck.remainingSeconds || 300,
           },
-          429
+          isDegraded ? 503 : 429,
+          { 'Retry-After': String(rateCheck.remainingSeconds || 300) }
         );
       }
 
@@ -2035,18 +2152,21 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const regEmailKey = email ? `reg:email:${email}` : `reg:empty-email:${clientIp}`;
 
       const [ipCheck, ipSuccessCheck, emailCheck] = await Promise.all([
-        checkRateLimit(regIpKey, 10, 900, env.DB),
-        checkRateLimit(regIpSuccessKey, 5, 3600, env.DB),
-        checkRateLimit(regEmailKey, 5, 900, env.DB),
+        checkRateLimit(regIpKey, 10, 900, env.DB, { policy: 'fail-closed', isDev }),
+        checkRateLimit(regIpSuccessKey, 5, 3600, env.DB, { policy: 'fail-closed', isDev }),
+        checkRateLimit(regEmailKey, 5, 900, env.DB, { policy: 'fail-closed', isDev }),
       ]);
 
       if (!ipCheck.allowed || !ipSuccessCheck.allowed || !emailCheck.allowed) {
+        const isDegraded = Boolean(ipCheck.degraded || ipSuccessCheck.degraded || emailCheck.degraded);
         return jsonResponse(
           {
             success: false,
-            error: 'Too many registration requests. Please wait a few minutes before trying again.',
+            error: isDegraded
+              ? 'Registration service temporarily degraded. Rate-limiting check unavailable. Please try again shortly.'
+              : 'Too many registration requests. Please wait a few minutes before trying again.',
           },
-          429,
+          isDegraded ? 503 : 429,
           {
             'Retry-After': '900',
           }
@@ -2061,12 +2181,18 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       ]);
 
       if (!name) {
+        await rollbackRateLimit(regIpKey, env.DB);
+        if (email) await rollbackRateLimit(regEmailKey, env.DB);
         return jsonResponse({ success: false, error: 'Full name is required.' }, 400);
       }
       if (!email || !email.includes('@')) {
+        await rollbackRateLimit(regIpKey, env.DB);
+        if (email) await rollbackRateLimit(regEmailKey, env.DB);
         return jsonResponse({ success: false, error: 'Valid email address is required.' }, 400);
       }
       if (!password || password.length < MIN_PASSWORD_LENGTH) {
+        await rollbackRateLimit(regIpKey, env.DB);
+        if (email) await rollbackRateLimit(regEmailKey, env.DB);
         return jsonResponse({ success: false, error: 'Password must be at least 8 characters long.' }, 400);
       }
 
@@ -2151,19 +2277,22 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const comboRateKey = `pwd-reset:${clientIp}:${rawEmail}`;
 
       const [ipRateCheck, emailRateCheck, comboRateCheck] = await Promise.all([
-        checkRateLimit(ipRateKey, 10, 900, env.DB),
-        checkRateLimit(emailRateKey, 5, 900, env.DB),
-        checkRateLimit(comboRateKey, 5, 900, env.DB),
+        checkRateLimit(ipRateKey, 10, 900, env.DB, { policy: 'fail-closed', isDev }),
+        checkRateLimit(emailRateKey, 5, 900, env.DB, { policy: 'fail-closed', isDev }),
+        checkRateLimit(comboRateKey, 5, 900, env.DB, { policy: 'fail-closed', isDev }),
       ]);
 
       if (!ipRateCheck.allowed || !emailRateCheck.allowed || !comboRateCheck.allowed) {
+        const isDegraded = Boolean(ipRateCheck.degraded || emailRateCheck.degraded || comboRateCheck.degraded);
         return jsonResponse(
           {
             success: false,
-            status: 'RATE_LIMITED',
-            message: 'Too many password reset requests. Please try again later.',
+            status: isDegraded ? 'SERVICE_DEGRADED' : 'RATE_LIMITED',
+            message: isDegraded
+              ? 'Password reset service temporarily degraded. Please try again shortly.'
+              : 'Too many password reset requests. Please try again later.',
           },
-          429
+          isDegraded ? 503 : 429
         );
       }
 
@@ -2304,16 +2433,20 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const isDev = isDevEnvironment(env);
       const clientIp = getClientIp(request, isDev);
       const verifyRateKey = `pwd-reset-verify:${clientIp}`;
-      const verifyRateCheck = await checkRateLimit(verifyRateKey, 10, 900, env.DB);
+      const verifyRateCheck = await checkRateLimit(verifyRateKey, 10, 900, env.DB, { policy: 'fail-closed', isDev });
       if (!verifyRateCheck.allowed) {
+        const isDegraded = Boolean(verifyRateCheck.degraded);
+        const msg = isDegraded
+          ? 'Password reset service temporarily degraded. Please try again shortly.'
+          : 'Too many password reset attempts. Please try again later.';
         return jsonResponse(
           {
             success: false,
-            status: 'RATE_LIMITED',
-            message: 'Too many password reset attempts. Please try again later.',
-            error: 'Too many password reset attempts. Please try again later.',
+            status: isDegraded ? 'SERVICE_DEGRADED' : 'RATE_LIMITED',
+            message: msg,
+            error: msg,
           },
-          429
+          isDegraded ? 503 : 429
         );
       }
 
@@ -3670,10 +3803,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     const burstKey = `upload_burst:user:${userId}`;
     const hourKey = `upload_hour:user:${userId}`;
 
+    const isDev = isDevEnvironment(env);
     // Distributed Rate Limit Checks via D1 rate_limits table & in-memory cache
     const [burstCheck, hourCheck] = await Promise.all([
-      checkRateLimit(burstKey, 10, 60, env.DB),
-      checkRateLimit(hourKey, 60, 3600, env.DB),
+      checkRateLimit(burstKey, 10, 60, env.DB, { policy: 'fail-open', isDev }),
+      checkRateLimit(hourKey, 60, 3600, env.DB, { policy: 'fail-open', isDev }),
     ]);
 
     if (!burstCheck.allowed) {
@@ -4417,7 +4551,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         // Rate limiting applies to non-admin review submissions
         if (!isAdminCreation) {
           // 1. IP-based rate limiting (max 5 reviews per 10 minutes)
-          const ipCheck = await checkRateLimit(reviewIpKey, 5, 600, env.DB);
+          const ipCheck = await checkRateLimit(reviewIpKey, 5, 600, env.DB, { policy: 'fail-open', isDev });
           if (!ipCheck.allowed) {
             return jsonResponse({
               success: false,
@@ -4427,7 +4561,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
           // 2. Per-product throttling (max 2 reviews per product per IP per 10 minutes)
           const prodThrottleKey = `rev-prod:${clientIp}:${targetProductId}`;
-          const prodCheck = await checkRateLimit(prodThrottleKey, 2, 600, env.DB);
+          const prodCheck = await checkRateLimit(prodThrottleKey, 2, 600, env.DB, { policy: 'fail-open', isDev });
           if (!prodCheck.allowed) {
             return jsonResponse({
               success: false,
@@ -4446,6 +4580,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
             'SELECT id FROM reviews WHERE product_id = ? AND comment = ? LIMIT 1'
           ).bind(targetProductId, comment).first();
           if (dup) {
+            if (!isAdminCreation) {
+              await rollbackRateLimit(reviewIpKey, env.DB);
+              await rollbackRateLimit(`rev-prod:${clientIp}:${targetProductId}`, env.DB);
+            }
             return jsonResponse({
               success: false,
               error: 'A review with identical content has already been submitted for this product.'
@@ -5576,7 +5714,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
       // 1. Backend Enforced IP Rate Limit: Maximum 4 successful order attempts in a rolling 10-minute window
       const timeOffsetMs = isDev ? (Number(request.headers.get('x-test-timestamp-offset')) || 0) : 0;
-      const rateLimitCheck = await checkAndConsumeOrderRateLimit(clientIp, 4, 600, env.DB, timeOffsetMs);
+      const rateLimitCheck = await checkAndConsumeOrderRateLimit(clientIp, 4, 600, env.DB, timeOffsetMs, { policy: 'fail-open', isDev });
       if (!rateLimitCheck.allowed) {
         const retrySecs = rateLimitCheck.remainingSeconds || 600;
         return jsonResponse(
@@ -5714,7 +5852,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       }
 
       // 2. Abuse Protection: Hourly phone-based limit (maximum 6 in 1 hour; no 60s cooldown)
-      const phoneSustainedCheck = await checkRateLimit(`order_ph_hour:${cleanPhone}`, 6, 3600, env.DB);
+      const phoneSustainedCheck = await checkRateLimit(`order_ph_hour:${cleanPhone}`, 6, 3600, env.DB, { policy: 'fail-open', isDev });
       if (!phoneSustainedCheck.allowed) {
         await rollbackOrderRateLimit(clientIp, env.DB);
         const retrySecs = phoneSustainedCheck.remainingSeconds || 600;
@@ -5851,6 +5989,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const doubleClickFingerprint = `${clientIp}:${cleanPhone}:${payloadFingerprint.slice(0, 16)}`;
       const recent = orderRecentSubmissionMap.get(doubleClickFingerprint);
       if (recent && Date.now() - recent.timestamp < 15000) {
+        await rollbackOrderRateLimit(clientIp, env.DB);
         return jsonResponse(
           {
             success: true,
@@ -5860,6 +5999,12 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           },
           200
         );
+      }
+
+      // Check client abort before committing transaction
+      if (request.signal?.aborted) {
+        await rollbackOrderRateLimit(clientIp, env.DB);
+        return jsonResponse({ success: false, error: 'Client aborted request.' }, 499);
       }
 
       // 5. Server-side authoritative validation, pricing calculation & stock deduction via insertOrder
@@ -5990,7 +6135,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         const clientIp = getClientIp(request, isDev);
 
         // A. Check failure cooldown (prevents brute-force)
-        const cooldownCheck = await checkRateLimit(`track_cd:${clientIp}`, 1, TRACKING_COOLDOWN_SECONDS, env.DB);
+        const cooldownCheck = await checkRateLimit(`track_cd:${clientIp}`, 1, TRACKING_COOLDOWN_SECONDS, env.DB, { policy: 'fail-open', isDev });
         if (!cooldownCheck.allowed) {
           const rem = cooldownCheck.remainingSeconds || TRACKING_COOLDOWN_SECONDS;
           return jsonResponse(
@@ -6011,7 +6156,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         }
 
         // B. Check general request volume (rate-limits both successful and failed lookups)
-        const volCheck = await checkRateLimit(`track_vol:${clientIp}`, TRACKING_REQ_LIMIT, TRACKING_REQ_WINDOW, env.DB);
+        const volCheck = await checkRateLimit(`track_vol:${clientIp}`, TRACKING_REQ_LIMIT, TRACKING_REQ_WINDOW, env.DB, { policy: 'fail-open', isDev });
         if (!volCheck.allowed) {
           const rem = volCheck.remainingSeconds || TRACKING_REQ_WINDOW;
           return jsonResponse(
@@ -6035,7 +6180,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         const verifyPhone = (url.searchParams.get('phone') || '').replace(/\D/g, '');
         if (!verifyPhone || verifyPhone.length < 11) {
           await recordFailedAttempt(`track_vol:${clientIp}`, TRACKING_REQ_LIMIT, TRACKING_REQ_WINDOW, env.DB);
-          await recordFailedAttempt(`track_fail:${clientIp}`, TRACKING_FAIL_LIMIT, TRACKING_FAIL_WINDOW, env.DB);
+          const failRec = await recordFailedAttempt(`track_fail:${clientIp}`, TRACKING_FAIL_LIMIT, TRACKING_FAIL_WINDOW, env.DB);
+          if (failRec.count >= TRACKING_FAIL_LIMIT) {
+            await recordFailedAttempt(`track_cd:${clientIp}`, 1, TRACKING_COOLDOWN_SECONDS, env.DB);
+          }
           return jsonResponse(
             {
               success: false,
@@ -6047,7 +6195,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
         // D. Target order lookup limiter (prevents distributed brute-forcing of a single order)
         const targetKey = `track_ord:${orderId.toLowerCase()}`;
-        const targetCheck = await checkRateLimit(targetKey, TRACKING_ORDER_LIMIT, TRACKING_ORDER_WINDOW, env.DB);
+        const targetCheck = await checkRateLimit(targetKey, TRACKING_ORDER_LIMIT, TRACKING_ORDER_WINDOW, env.DB, { policy: 'fail-open', isDev });
         if (!targetCheck.allowed) {
           const rem = targetCheck.remainingSeconds || TRACKING_ORDER_WINDOW;
           return jsonResponse(
@@ -6074,13 +6222,12 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         const isMatch = Boolean(order && cleanOrderPhone.length >= 11 && cleanOrderPhone.endsWith(verifyPhone.slice(-11)));
 
         if (!isMatch) {
-          // Increment failed attempt count for cooldown tracking
+          // Increment failed attempt count for cooldown tracking across distributed isolates
           const failKey = `track_fail:${clientIp}`;
-          await recordFailedAttempt(failKey, TRACKING_FAIL_LIMIT, TRACKING_FAIL_WINDOW, env.DB);
+          const failRec = await recordFailedAttempt(failKey, TRACKING_FAIL_LIMIT, TRACKING_FAIL_WINDOW, env.DB);
 
-          // Check if failure limit reached; if so, trigger cooldown
-          const memEntry = loginAttemptMap.get(failKey);
-          if (memEntry && memEntry.count >= TRACKING_FAIL_LIMIT) {
+          // Check if failure limit reached using distributed count; if so, trigger cooldown
+          if (failRec.count >= TRACKING_FAIL_LIMIT) {
             await recordFailedAttempt(`track_cd:${clientIp}`, 1, TRACKING_COOLDOWN_SECONDS, env.DB);
           }
 
@@ -7227,10 +7374,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       (auth.role === 'super_admin' || hasPermission(auth, 'courier.tracking'));
 
     if (!hasTrackingPerm) {
-      const clientIp = getClientIp(request);
+      const isDev = isDevEnvironment(env);
+      const clientIp = getClientIp(request, isDev);
 
       // Check cooldown
-      const cooldownCheck = await checkRateLimit(`track_cd:${clientIp}`, 1, TRACKING_COOLDOWN_SECONDS, env.DB);
+      const cooldownCheck = await checkRateLimit(`track_cd:${clientIp}`, 1, TRACKING_COOLDOWN_SECONDS, env.DB, { policy: 'fail-open', isDev });
       if (!cooldownCheck.allowed) {
         const rem = cooldownCheck.remainingSeconds || TRACKING_COOLDOWN_SECONDS;
         return jsonResponse(
@@ -7246,7 +7394,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       }
 
       // Check volume limit
-      const volCheck = await checkRateLimit(`track_vol:${clientIp}`, TRACKING_REQ_LIMIT, TRACKING_REQ_WINDOW, env.DB);
+      const volCheck = await checkRateLimit(`track_vol:${clientIp}`, TRACKING_REQ_LIMIT, TRACKING_REQ_WINDOW, env.DB, { policy: 'fail-open', isDev });
       if (!volCheck.allowed) {
         const rem = volCheck.remainingSeconds || TRACKING_REQ_WINDOW;
         return jsonResponse(
@@ -7265,7 +7413,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const verifyPhone = (url.searchParams.get('phone') || '').replace(/\D/g, '');
       if (!verifyPhone || verifyPhone.length < 11) {
         await recordFailedAttempt(`track_vol:${clientIp}`, TRACKING_REQ_LIMIT, TRACKING_REQ_WINDOW, env.DB);
-        await recordFailedAttempt(`track_fail:${clientIp}`, TRACKING_FAIL_LIMIT, TRACKING_FAIL_WINDOW, env.DB);
+        const failRec = await recordFailedAttempt(`track_fail:${clientIp}`, TRACKING_FAIL_LIMIT, TRACKING_FAIL_WINDOW, env.DB);
+        if (failRec.count >= TRACKING_FAIL_LIMIT) {
+          await recordFailedAttempt(`track_cd:${clientIp}`, 1, TRACKING_COOLDOWN_SECONDS, env.DB);
+        }
         return jsonResponse(
           { success: false, error: 'Valid 11-digit contact number is required to view courier tracking.' },
           400
@@ -7281,9 +7432,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const cleanRowPhone = (orderRow?.customer_phone || '').replace(/\D/g, '');
       if (!orderRow || cleanRowPhone.length < 11 || !cleanRowPhone.endsWith(verifyPhone.slice(-11))) {
         const failKey = `track_fail:${clientIp}`;
-        await recordFailedAttempt(failKey, TRACKING_FAIL_LIMIT, TRACKING_FAIL_WINDOW, env.DB);
-        const memEntry = loginAttemptMap.get(failKey);
-        if (memEntry && memEntry.count >= TRACKING_FAIL_LIMIT) {
+        const failRec = await recordFailedAttempt(failKey, TRACKING_FAIL_LIMIT, TRACKING_FAIL_WINDOW, env.DB);
+        if (failRec.count >= TRACKING_FAIL_LIMIT) {
           await recordFailedAttempt(`track_cd:${clientIp}`, 1, TRACKING_COOLDOWN_SECONDS, env.DB);
         }
         return jsonResponse(
