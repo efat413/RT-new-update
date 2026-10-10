@@ -33,7 +33,7 @@ jobs:
           cache: 'npm'
 
       - name: Install Dependencies
-        run: npm ci
+        run: npm ci --include=optional
 
       - name: TypeScript Typecheck
         run: npx tsc --noEmit
@@ -67,7 +67,7 @@ jobs:
           cache: 'npm'
 
       - name: Install Dependencies
-        run: npm ci
+        run: npm ci --include=optional
 
       - name: Build Production Assets
         run: npm run build
