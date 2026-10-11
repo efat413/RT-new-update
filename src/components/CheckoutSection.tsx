@@ -274,7 +274,22 @@ export const CheckoutSection: React.FC = () => {
           email: currentUser?.email,
           userId: currentUser?.id,
         },
-        items: [...cart],
+        // Send only the product data needed for an order. Product records can contain
+        // large base64 image data / galleries that exceed the Worker checkout limit (128 KB).
+        // Images are already stored with the catalog; do not duplicate embedded image bytes in orders.
+        items: cart.map((item) => ({
+          ...item,
+          product: {
+            ...item.product,
+            imageUrl: item.product.imageUrl?.startsWith('data:') ? '' : item.product.imageUrl,
+            images: undefined,
+            description: item.product.description?.slice(0, 1000),
+            specs: undefined,
+            sizes: undefined,
+            colors: undefined,
+            videoUrl: undefined,
+          },
+        })),
         subtotal: cartSubtotal,
         deliveryFee,
         totalAmount: grandTotal,
