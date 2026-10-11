@@ -5242,49 +5242,7 @@ function localApiDevPlugin(): Plugin {
         }
 
         // 9. MEDIA UPLOAD (DEV MODE)
-        if (url.pathname === '/api/upload' && method === 'POST') {
-          const authResult = requireDevAuth(req);
-          if (authResult.error) return sendDevError(res, authResult.error);
-          if (authResult.auth?.role === 'customer') {
-            res.statusCode = 403;
-            return res.end(JSON.stringify({ success: false, error: 'Forbidden: Customers cannot upload media.' }));
-          }
-
-          // Per-user upload rate limit (server-verified identity)
-          const userId = authResult.auth?.user?.id || authResult.auth?.user?.email || 'dev-user';
-          const burstKey = `upload_burst:user:${userId}`;
-          const hourKey = `upload_hour:user:${userId}`;
-
-          if (!checkDevRateLimit(burstKey, 10, 60)) {
-            const entry = devRateLimits.get(burstKey);
-            const retrySecs = entry ? Math.max(1, Math.ceil((entry.resetAt - Date.now()) / 1000)) : 60;
-            res.statusCode = 429;
-            res.setHeader('Content-Type', 'application/json');
-            res.setHeader('Retry-After', String(retrySecs));
-            res.setHeader('X-RateLimit-Limit', '10');
-            res.setHeader('X-RateLimit-Remaining', '0');
-            return res.end(JSON.stringify({
-              success: false,
-              error: 'Upload rate limit exceeded. Please wait a moment before uploading more images.',
-              retryAfter: retrySecs,
-            }));
-          }
-
-          if (!checkDevRateLimit(hourKey, 60, 3600)) {
-            const entry = devRateLimits.get(hourKey);
-            const retrySecs = entry ? Math.max(1, Math.ceil((entry.resetAt - Date.now()) / 1000)) : 3600;
-            res.statusCode = 429;
-            res.setHeader('Content-Type', 'application/json');
-            res.setHeader('Retry-After', String(retrySecs));
-            res.setHeader('X-RateLimit-Limit', '60');
-            res.setHeader('X-RateLimit-Remaining', '0');
-            return res.end(JSON.stringify({
-              success: false,
-              error: 'Hourly upload limit reached. Please wait before uploading more images.',
-              retryAfter: retrySecs,
-            }));
-          }
-
+        if ((url.pathname === '/api/upload' || url.pathname === '/api/media/upload') && method === 'POST') {
           const contentLength = parseInt((req.headers['content-length'] || '0') as string, 10);
           if (contentLength > MAX_IMAGE_SIZE_BYTES) {
             res.statusCode = 413;
@@ -5298,6 +5256,7 @@ function localApiDevPlugin(): Plugin {
               const fullBuffer = Buffer.concat(chunks);
               const contentType = req.headers['content-type'] || '';
               let fileBuffer = fullBuffer;
+              let uploadPurpose = '';
 
               if (contentType.includes('application/json')) {
                 let parsed: any;
@@ -5311,6 +5270,7 @@ function localApiDevPlugin(): Plugin {
                     error: 'Malformed JSON payload. Please provide valid JSON.',
                   }));
                 }
+                uploadPurpose = String(parsed?.purpose || '').trim().toLowerCase();
                 const dataUrl = parsed?.dataUrl || parsed?.image || parsed?.url;
                 if (!dataUrl || typeof dataUrl !== 'string') {
                   res.statusCode = 400;
@@ -5338,7 +5298,69 @@ function localApiDevPlugin(): Plugin {
                       fileBuffer = fullBuffer.subarray(headerIdx + 4);
                     }
                   }
+                  // Check for purpose in raw form-data if present
+                  const rawString = fullBuffer.toString('latin1', 0, Math.min(2048, fullBuffer.length));
+                  if (rawString.includes('name="purpose"') && rawString.includes('deposit_slip')) {
+                    uploadPurpose = 'deposit_slip';
+                  } else if (rawString.includes('name="purpose"') && rawString.includes('order')) {
+                    uploadPurpose = 'order';
+                  }
                 }
+              }
+
+              const isOrderUpload = uploadPurpose === 'deposit_slip' || uploadPurpose === 'order' || uploadPurpose === 'checkout';
+
+              let burstKey: string;
+              let hourKey: string;
+              let burstLimit = 10;
+              let hourLimit = 60;
+
+              if (isOrderUpload) {
+                const clientIp = (req.socket?.remoteAddress || '127.0.0.1').replace(/^.*:/, '');
+                burstKey = `upload_slip_burst:ip:${clientIp}`;
+                hourKey = `upload_slip_hour:ip:${clientIp}`;
+                burstLimit = 10;
+                hourLimit = 40;
+              } else {
+                const authResult = requireDevAuth(req);
+                if (authResult.error) return sendDevError(res, authResult.error);
+                if (authResult.auth?.role === 'customer') {
+                  res.statusCode = 403;
+                  return res.end(JSON.stringify({ success: false, error: 'Forbidden: Customers cannot upload media.' }));
+                }
+                const userId = authResult.auth?.user?.id || authResult.auth?.user?.email || 'dev-user';
+                burstKey = `upload_burst:user:${userId}`;
+                hourKey = `upload_hour:user:${userId}`;
+              }
+
+              if (!checkDevRateLimit(burstKey, burstLimit, 60)) {
+                const entry = devRateLimits.get(burstKey);
+                const retrySecs = entry ? Math.max(1, Math.ceil((entry.resetAt - Date.now()) / 1000)) : 60;
+                res.statusCode = 429;
+                res.setHeader('Content-Type', 'application/json');
+                res.setHeader('Retry-After', String(retrySecs));
+                res.setHeader('X-RateLimit-Limit', String(burstLimit));
+                res.setHeader('X-RateLimit-Remaining', '0');
+                return res.end(JSON.stringify({
+                  success: false,
+                  error: 'Upload rate limit exceeded. Please wait a moment before uploading more images.',
+                  retryAfter: retrySecs,
+                }));
+              }
+
+              if (!checkDevRateLimit(hourKey, hourLimit, 3600)) {
+                const entry = devRateLimits.get(hourKey);
+                const retrySecs = entry ? Math.max(1, Math.ceil((entry.resetAt - Date.now()) / 1000)) : 3600;
+                res.statusCode = 429;
+                res.setHeader('Content-Type', 'application/json');
+                res.setHeader('Retry-After', String(retrySecs));
+                res.setHeader('X-RateLimit-Limit', String(hourLimit));
+                res.setHeader('X-RateLimit-Remaining', '0');
+                return res.end(JSON.stringify({
+                  success: false,
+                  error: 'Hourly upload limit reached. Please wait before uploading more images.',
+                  retryAfter: retrySecs,
+                }));
               }
 
               if (!fileBuffer || fileBuffer.length === 0) {

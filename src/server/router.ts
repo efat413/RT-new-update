@@ -3851,58 +3851,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
   // ==========================================
   // 4B. MEDIA ASSET UPLOAD & SERVING (D1 STORAGE)
   // ==========================================
-  if (path === '/api/upload' && method === 'POST') {
-    const { auth, errorResponse } = await requireAuth(request, env);
-    if (errorResponse) return errorResponse;
-    if (auth!.role === 'customer') {
-      return jsonResponse({ success: false, error: 'Forbidden: Customers cannot upload media.' }, 403);
-    }
-
-    // Server-verified user identity (never trust client-supplied userId)
-    const userId = auth!.dbUser?.id || auth!.tokenUser?.userId || auth!.tokenUser?.email || 'authenticated-user';
-    const burstKey = `upload_burst:user:${userId}`;
-    const hourKey = `upload_hour:user:${userId}`;
-
+  if ((path === '/api/upload' || path === '/api/media/upload') && method === 'POST') {
     const isDev = isDevEnvironment(env);
-    // Distributed Rate Limit Checks via D1 rate_limits table & in-memory cache
-    const [burstCheck, hourCheck] = await Promise.all([
-      checkRateLimit(burstKey, 10, 60, env.DB, { policy: 'fail-open', isDev }),
-      checkRateLimit(hourKey, 60, 3600, env.DB, { policy: 'fail-open', isDev }),
-    ]);
-
-    if (!burstCheck.allowed) {
-      const retrySecs = burstCheck.remainingSeconds || 60;
-      return jsonResponse(
-        {
-          success: false,
-          error: 'Upload rate limit exceeded. Please wait a moment before uploading more images.',
-          retryAfter: retrySecs,
-        },
-        429,
-        {
-          'Retry-After': String(retrySecs),
-          'X-RateLimit-Limit': '10',
-          'X-RateLimit-Remaining': '0',
-        }
-      );
-    }
-
-    if (!hourCheck.allowed) {
-      const retrySecs = hourCheck.remainingSeconds || 3600;
-      return jsonResponse(
-        {
-          success: false,
-          error: 'Hourly upload limit reached. Please wait before uploading more images.',
-          retryAfter: retrySecs,
-        },
-        429,
-        {
-          'Retry-After': String(retrySecs),
-          'X-RateLimit-Limit': '60',
-          'X-RateLimit-Remaining': '0',
-        }
-      );
-    }
+    const clientIp = getClientIp(request, isDev);
 
     try {
       // 1. Strict pre-upload size check BEFORE processing the entire body
@@ -3919,6 +3870,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
       const contentTypeHeader = request.headers.get('Content-Type') || '';
       let fileBuffer: ArrayBuffer | null = null;
+      let uploadPurpose = '';
 
       if (contentTypeHeader.includes('multipart/form-data')) {
         const { buffer: rawUploadBytes, error: bodyErr } = await readRawBodyWithLimit(request, BODY_LIMIT_MEDIA_UPLOAD);
@@ -3928,24 +3880,26 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         const syntheticReq = new Response(rawUploadBytes, { headers: { 'Content-Type': contentTypeHeader } });
         const formData = await syntheticReq.formData();
         const file = formData.get('file') as File | null;
-        const uploadPurpose = String(formData.get('purpose') || '').trim().toLowerCase();
+        uploadPurpose = String(formData.get('purpose') || '').trim().toLowerCase();
         if (!file) {
           return jsonResponse({ success: false, error: 'No file provided in form data' }, 400);
         }
-        const maxLimit = uploadPurpose === 'review' ? REVIEW_MAX_IMAGE_SIZE : MAX_IMAGE_SIZE_BYTES;
+        const maxLimit = uploadPurpose === 'review' ? REVIEW_MAX_IMAGE_SIZE : (uploadPurpose === 'deposit_slip' || uploadPurpose === 'order' ? 5 * 1024 * 1024 : MAX_IMAGE_SIZE_BYTES);
         if (file.size > maxLimit) {
           return jsonResponse({
             success: false,
             error: uploadPurpose === 'review'
               ? 'File size exceeds maximum allowed 2MB limit for review photos.'
-              : 'File size exceeds maximum allowed 10MB limit.',
+              : (uploadPurpose === 'deposit_slip' || uploadPurpose === 'order'
+                ? 'File size exceeds maximum allowed 5MB limit for payment screenshot / deposit slip.'
+                : 'File size exceeds maximum allowed 10MB limit.'),
           }, 413);
         }
         fileBuffer = await file.arrayBuffer();
       } else {
         const { data: body, errorResponse: jsonErr } = await safeParseJson(request, BODY_LIMIT_MEDIA_UPLOAD);
         if (jsonErr) return jsonErr;
-        const uploadPurpose = String(body?.purpose || '').trim().toLowerCase();
+        uploadPurpose = String(body?.purpose || '').trim().toLowerCase();
         const dataUrl = body?.dataUrl || body?.image || '';
         if (!dataUrl || typeof dataUrl !== 'string') {
           return jsonResponse({ success: false, error: 'Expected dataUrl in JSON body' }, 400);
@@ -3965,13 +3919,15 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           }
 
           const approxSize = Math.ceil((base64Str.length * 3) / 4);
-          const maxLimit = uploadPurpose === 'review' ? REVIEW_MAX_IMAGE_SIZE : MAX_IMAGE_SIZE_BYTES;
+          const maxLimit = uploadPurpose === 'review' ? REVIEW_MAX_IMAGE_SIZE : (uploadPurpose === 'deposit_slip' || uploadPurpose === 'order' ? 5 * 1024 * 1024 : MAX_IMAGE_SIZE_BYTES);
           if (approxSize > maxLimit) {
             return jsonResponse({
               success: false,
               error: uploadPurpose === 'review'
                 ? 'File size exceeds maximum allowed 2MB limit for review photos.'
-                : 'File size exceeds maximum allowed 10MB limit.',
+                : (uploadPurpose === 'deposit_slip' || uploadPurpose === 'order'
+                  ? 'File size exceeds maximum allowed 5MB limit for payment screenshot / deposit slip.'
+                  : 'File size exceeds maximum allowed 10MB limit.'),
             }, 413);
           }
           const u8 = base64ToUint8Array(base64Str);
@@ -3980,13 +3936,80 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
               success: false,
               error: uploadPurpose === 'review'
                 ? 'File size exceeds maximum allowed 2MB limit for review photos.'
-                : 'File size exceeds maximum allowed 10MB limit.',
+                : (uploadPurpose === 'deposit_slip' || uploadPurpose === 'order'
+                  ? 'File size exceeds maximum allowed 5MB limit for payment screenshot / deposit slip.'
+                  : 'File size exceeds maximum allowed 10MB limit.'),
             }, 413);
           }
-          fileBuffer = u8.buffer;
+          fileBuffer = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
         } else {
           return jsonResponse({ success: false, error: 'Invalid data URL format' }, 400);
         }
+      }
+
+      const isOrderUpload = uploadPurpose === 'deposit_slip' || uploadPurpose === 'order' || uploadPurpose === 'checkout';
+
+      // Access Control & Rate Limiting:
+      // Order deposit slips & customized checkout images may be uploaded by customers/guests
+      let burstKey: string;
+      let hourKey: string;
+      let burstLimit = 10;
+      let hourLimit = 60;
+
+      if (isOrderUpload) {
+        burstKey = `upload_slip_burst:ip:${clientIp}`;
+        hourKey = `upload_slip_hour:ip:${clientIp}`;
+        burstLimit = 10;
+        hourLimit = 40;
+      } else {
+        const { auth, errorResponse } = await requireAuth(request, env);
+        if (errorResponse) return errorResponse;
+        if (auth!.role === 'customer') {
+          return jsonResponse({ success: false, error: 'Forbidden: Customers cannot upload media.' }, 403);
+        }
+        const userId = auth!.dbUser?.id || auth!.tokenUser?.userId || auth!.tokenUser?.email || 'authenticated-user';
+        burstKey = `upload_burst:user:${userId}`;
+        hourKey = `upload_hour:user:${userId}`;
+      }
+
+      // Distributed Rate Limit Checks via D1 rate_limits table & in-memory cache
+      const [burstCheck, hourCheck] = await Promise.all([
+        checkRateLimit(burstKey, burstLimit, 60, env.DB, { policy: 'fail-open', isDev }),
+        checkRateLimit(hourKey, hourLimit, 3600, env.DB, { policy: 'fail-open', isDev }),
+      ]);
+
+      if (!burstCheck.allowed) {
+        const retrySecs = burstCheck.remainingSeconds || 60;
+        return jsonResponse(
+          {
+            success: false,
+            error: 'Upload rate limit exceeded. Please wait a moment before uploading more images.',
+            retryAfter: retrySecs,
+          },
+          429,
+          {
+            'Retry-After': String(retrySecs),
+            'X-RateLimit-Limit': String(burstLimit),
+            'X-RateLimit-Remaining': '0',
+          }
+        );
+      }
+
+      if (!hourCheck.allowed) {
+        const retrySecs = hourCheck.remainingSeconds || 3600;
+        return jsonResponse(
+          {
+            success: false,
+            error: 'Hourly upload limit reached. Please wait before uploading more images.',
+            retryAfter: retrySecs,
+          },
+          429,
+          {
+            'Retry-After': String(retrySecs),
+            'X-RateLimit-Limit': String(hourLimit),
+            'X-RateLimit-Remaining': '0',
+          }
+        );
       }
 
       if (!fileBuffer || fileBuffer.byteLength === 0) {
@@ -5808,6 +5831,33 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       if (!orderData) {
         await rollbackOrderRateLimit(clientIp, env.DB);
         return jsonResponse({ success: false, error: 'Invalid order payload.' }, 400);
+      }
+
+      // Security hardening: Reject inline Base64 image payloads to prevent Worker OOM and unconstrained body bloat
+      if (orderData.dbblDetails?.depositSlipUrl && orderData.dbblDetails.depositSlipUrl.startsWith('data:')) {
+        await rollbackOrderRateLimit(clientIp, env.DB);
+        return jsonResponse(
+          {
+            success: false,
+            error: 'Inline Base64 images are not permitted in order payloads. Please upload images via the media upload endpoint first.',
+          },
+          400
+        );
+      }
+      if (Array.isArray(orderData.items)) {
+        for (const item of orderData.items) {
+          const itemImg = (item as any)?.customImage || (item as any)?.imageUrl;
+          if (typeof itemImg === 'string' && itemImg.startsWith('data:')) {
+            await rollbackOrderRateLimit(clientIp, env.DB);
+            return jsonResponse(
+              {
+                success: false,
+                error: 'Inline Base64 custom images are not permitted in order payloads. Please upload images via the media upload endpoint first.',
+              },
+              400
+            );
+          }
+        }
       }
 
       // Authoritative Identity Determination:

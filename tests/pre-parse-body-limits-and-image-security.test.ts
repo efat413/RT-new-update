@@ -114,12 +114,12 @@ describe('1. Endpoint-Specific Body Size Threshold Calculation', () => {
     expect(BODY_LIMIT_AUTH).toBe(65536);
   });
 
-  it('assigns strict 128 KB limit to checkout and order recalculation', () => {
+  it('assigns strict 256 KB limit to checkout and order recalculation', () => {
     expect(getBodySizeLimit('/api/orders', 'POST')).toBe(BODY_LIMIT_ORDER);
     expect(getBodySizeLimit('/api/orders/recalculate', 'POST')).toBe(BODY_LIMIT_ORDER);
     expect(getBodySizeLimit('/api/orders/ord-123/advance-payment', 'PATCH')).toBe(BODY_LIMIT_ORDER);
     expect(getBodySizeLimit('/api/tracking', 'POST')).toBe(BODY_LIMIT_ORDER);
-    expect(BODY_LIMIT_ORDER).toBe(131072);
+    expect(BODY_LIMIT_ORDER).toBe(262144);
   });
 
   it('assigns calculated 12 MB limit to customer review creation with photos', () => {
@@ -386,8 +386,8 @@ describe('4. Router & Worker Endpoint Integration Tests', () => {
   };
 
   it('enforces 413 on oversized Order Checkout via handleApiRequest', async () => {
-    // Limit for /api/orders POST is 128 KB
-    const largeCustomerNotes = 'x'.repeat(140 * 1024); // 140 KB payload
+    // Limit for /api/orders POST is 256 KB
+    const largeCustomerNotes = 'x'.repeat(280 * 1024); // 280 KB payload
     const body = JSON.stringify({
       customer: { fullName: 'Rahim Khan', phone: '01711111111', fullAddress: 'Dhaka', district: 'Dhaka' },
       items: [{ productId: 'prod-1', quantity: 1 }],

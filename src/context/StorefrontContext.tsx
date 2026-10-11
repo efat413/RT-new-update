@@ -3,6 +3,7 @@ import {
   Product,
   Category,
   CartItem,
+  OrderItem,
   Order,
   StoreSettings,
   CarouselSlide,
@@ -144,7 +145,7 @@ export interface StorefrontContextType {
     userId?: string;
     userEmail?: string;
     customer: Order['customer'];
-    items: CartItem[];
+    items: (CartItem | OrderItem)[];
     subtotal: number;
     deliveryFee: number;
     totalAmount: number;
@@ -1142,7 +1143,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     userId?: string;
     userEmail?: string;
     customer: Order['customer'];
-    items: CartItem[];
+    items: (CartItem | OrderItem)[];
     subtotal: number;
     deliveryFee: number;
     totalAmount: number;
@@ -1170,7 +1171,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       userId: orderData.userId,
       userEmail: orderData.userEmail,
       customer: orderData.customer,
-      items: orderData.items,
+      items: orderData.items as CartItem[],
       subtotal: orderData.subtotal,
       deliveryFee: orderData.deliveryFee,
       totalAmount: orderData.totalAmount,

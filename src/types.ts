@@ -185,6 +185,21 @@ export interface Coupon {
   isActive: boolean;
 }
 
+export interface OrderItem {
+  productId?: string;
+  variantId?: string;
+  product?: Partial<Product> & { id: string; title?: string };
+  quantity: number;
+  selectedSize?: string;
+  selectedColor?: string;
+  customization?: string;
+  customImage?: string;
+  buyingPriceSnapshot?: number;
+  sellingPriceSnapshot?: number;
+  productCost?: number;
+  productGrossProfit?: number;
+}
+
 export interface Order {
   id: string;
   orderNumber: string;

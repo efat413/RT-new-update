@@ -47,7 +47,9 @@ export function uint8ArrayToBase64(bytes: Uint8Array): string {
 export function base64ToUint8Array(base64: string): Uint8Array {
   if (typeof Buffer !== 'undefined') {
     const buf = Buffer.from(base64, 'base64');
-    return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+    const copy = new Uint8Array(buf.byteLength);
+    copy.set(buf);
+    return copy;
   }
   const binary = atob(base64);
   const len = binary.length;

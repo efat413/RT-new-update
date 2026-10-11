@@ -17,6 +17,7 @@ import {
 import { useStore } from '../context/StoreContext';
 import { DeliveryZone, PaymentMethod, Coupon } from '../types';
 import { SearchableDistrictSelect } from './SearchableDistrictSelect';
+import { uploadImage } from '../services/storeApi';
 
 interface FormErrors {
   fullName?: string;
@@ -70,6 +71,7 @@ export const CheckoutSection: React.FC = () => {
   const [senderAccountOrPhone, setSenderAccountOrPhone] = useState('');
   const [transactionId, setTransactionId] = useState('');
   const [depositSlipUrl, setDepositSlipUrl] = useState('');
+  const [isUploadingSlip, setIsUploadingSlip] = useState(false);
   const [copiedAccount, setCopiedAccount] = useState(false);
   const [showQrModal, setShowQrModal] = useState(false);
 
@@ -148,18 +150,31 @@ export const CheckoutSection: React.FC = () => {
     }
   };
 
-  const handleSlipUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleSlipUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       if (file.size > 5 * 1024 * 1024) {
         setErrorMessage('Deposit slip image size must be under 5MB.');
         return;
       }
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setDepositSlipUrl(reader.result as string);
-      };
-      reader.readAsDataURL(file);
+      if (!file.type.startsWith('image/')) {
+        setErrorMessage('Please upload a valid image file (JPEG, PNG, WebP).');
+        return;
+      }
+      setIsUploadingSlip(true);
+      setErrorMessage('');
+      try {
+        const uploadRes = await uploadImage(file, 'deposit_slip');
+        if (!uploadRes.success || !uploadRes.url) {
+          setErrorMessage(uploadRes.error || 'Failed to upload deposit slip. Please try again.');
+          return;
+        }
+        setDepositSlipUrl(uploadRes.url);
+      } catch {
+        setErrorMessage('Network error uploading deposit slip screenshot.');
+      } finally {
+        setIsUploadingSlip(false);
+      }
     }
   };
 
@@ -274,20 +289,22 @@ export const CheckoutSection: React.FC = () => {
           email: currentUser?.email,
           userId: currentUser?.id,
         },
-        // Send only the product data needed for an order. Product records can contain
-        // large base64 image data / galleries that exceed the Worker checkout limit (128 KB).
-        // Images are already stored with the catalog; do not duplicate embedded image bytes in orders.
+        // Frontend Payload Sanitization:
+        // Transmit only required item identifiers and customer choices:
+        // productId, variantId, quantity, selected options, and custom metadata.
+        // Strips all heavy server-managed catalog fields (prices, stock, full descriptions, image galleries)
+        // to prevent request body bloat and enforce server-authoritative pricing.
         items: cart.map((item) => ({
-          ...item,
+          productId: item.product.id,
+          variantId: (item as any).variantId || undefined,
+          quantity: item.quantity,
+          selectedSize: item.selectedSize || undefined,
+          selectedColor: item.selectedColor || undefined,
+          customization: (item as any).customization || undefined,
+          customImage: (item as any).customImage?.startsWith('data:') ? undefined : (item as any).customImage,
           product: {
-            ...item.product,
-            imageUrl: item.product.imageUrl?.startsWith('data:') ? '' : item.product.imageUrl,
-            images: undefined,
-            description: item.product.description?.slice(0, 1000),
-            specs: undefined,
-            sizes: undefined,
-            colors: undefined,
-            videoUrl: undefined,
+            id: item.product.id,
+            title: item.product.title,
           },
         })),
         subtotal: cartSubtotal,
@@ -304,7 +321,7 @@ export const CheckoutSection: React.FC = () => {
                 senderBank: senderBank.trim() || 'Dutch-Bangla Bank / NexusPay',
                 senderAccountOrPhone: senderAccountOrPhone.trim(),
                 transactionId: transactionId.trim(),
-                depositSlipUrl: depositSlipUrl || undefined,
+                depositSlipUrl: depositSlipUrl && !depositSlipUrl.startsWith('data:') ? depositSlipUrl : undefined,
               }
             : undefined,
       };
@@ -751,7 +768,13 @@ export const CheckoutSection: React.FC = () => {
                 <div className="flex items-center gap-2">
                   <label className="flex-1 px-3 py-2 bg-slate-800 border border-slate-700 hover:border-indigo-500 rounded-xl text-xs text-slate-300 cursor-pointer flex items-center justify-center gap-2 transition-colors">
                     <Upload className="w-3.5 h-3.5 text-indigo-400" />
-                    <span>{depositSlipUrl ? 'Change Screenshot' : 'Choose Image File'}</span>
+                    <span>
+                      {isUploadingSlip
+                        ? 'Uploading screenshot...'
+                        : depositSlipUrl
+                        ? 'Change Screenshot'
+                        : 'Choose Image File'}
+                    </span>
                     <input
                       type="file"
                       accept="image/*"

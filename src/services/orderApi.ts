@@ -206,11 +206,35 @@ export const orderApi = {
         headers['Idempotency-Key'] = idempotencyKey;
       }
 
+      // Defense-in-depth sanitization: strip any heavy catalog metadata or inline Base64 from order body
+      const sanitizedOrder = {
+        ...order,
+        items: (order.items || []).map((it: any) => ({
+          productId: it?.productId || it?.product?.id,
+          variantId: it?.variantId || undefined,
+          quantity: it?.quantity,
+          selectedSize: it?.selectedSize || undefined,
+          selectedColor: it?.selectedColor || undefined,
+          customization: it?.customization || undefined,
+          customImage: it?.customImage?.startsWith('data:') ? undefined : it?.customImage,
+          product: it?.product ? {
+            id: it.product.id,
+            title: it.product.title,
+          } : undefined,
+        })),
+        dbblDetails: order.dbblDetails ? {
+          ...order.dbblDetails,
+          depositSlipUrl: order.dbblDetails.depositSlipUrl?.startsWith('data:')
+            ? undefined
+            : order.dbblDetails.depositSlipUrl,
+        } : undefined,
+      };
+
       const res = await fetch(`${API_BASE}/orders`, {
         method: 'POST',
         credentials: 'include',
         headers,
-        body: JSON.stringify({ order, idempotencyKey }),
+        body: JSON.stringify({ order: sanitizedOrder, idempotencyKey }),
         signal: controller.signal,
       });
       clearTimeout(timeoutId);

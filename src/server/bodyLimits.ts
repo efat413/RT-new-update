@@ -7,7 +7,7 @@
 
 // Route-specific size thresholds
 export const BODY_LIMIT_AUTH = 64 * 1024; // 64 KB: Credentials, password reset tokens, auth profile
-export const BODY_LIMIT_ORDER = 128 * 1024; // 128 KB: Checkout orders, address, item arrays, advance payments
+export const BODY_LIMIT_ORDER = 256 * 1024; // 256 KB: Checkout orders, address, item arrays, customization metadata, advance payments
 export const BODY_LIMIT_WEBHOOK = 64 * 1024; // 64 KB: Courier status updates and delivery lifecycle events
 export const BODY_LIMIT_REVIEW_UPLOAD = 12 * 1024 * 1024; // 12 MB: Up to 5 photos (8 MB aggregate decoded binary + 33% base64 expansion + envelope)
 export const BODY_LIMIT_REVIEW_MODERATION = 128 * 1024; // 128 KB: Review status updates & text edits (no image upload)
@@ -29,7 +29,12 @@ export function getBodySizeLimit(pathname: string, method = 'POST'): number {
   const normMethod = method.toUpperCase();
 
   // 1. Direct Media Upload Endpoint (supports up to 10MB binary + base64 expansion)
-  if (normPath === '/api/media/upload' || normPath.startsWith('/api/media/upload/')) {
+  if (
+    normPath === '/api/media/upload' ||
+    normPath.startsWith('/api/media/upload/') ||
+    normPath === '/api/upload' ||
+    normPath.startsWith('/api/upload/')
+  ) {
     return BODY_LIMIT_MEDIA_UPLOAD;
   }
 
