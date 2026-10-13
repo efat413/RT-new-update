@@ -991,22 +991,32 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     showNotification('info', `Booking ${courierName}...`, `Connecting to ${courierName} API for order #${order.orderNumber}...`, 4000);
 
-    const effectiveBaseUrl = parcelData?.baseUrl || targetCourier?.baseUrl;
-    const effectiveTrackingPattern = parcelData?.trackingUrlPattern || targetCourier?.trackingUrlPattern;
+    const effectiveCourierCode = courierCode.toLowerCase();
+    const courierProvider: 'steadfast' | 'pathao' | 'redx' =
+      effectiveCourierCode.includes('pathao') ? 'pathao' :
+      effectiveCourierCode.includes('redx') ? 'redx' : 'steadfast';
 
-    const courierPayload = {
-      id: targetCourier?.id,
-      code: courierCode,
-      name: courierName,
-      baseUrl: effectiveBaseUrl,
-      trackingUrlPattern: effectiveTrackingPattern,
+    const dispatchDto = {
+      orderId: order.id,
+      courierProvider,
+      parcelOverrides: {
+        weight: parcelData?.weight != null ? Number(parcelData.weight) : undefined,
+        notes: (parcelData?.note || parcelData?.notes || '').trim() || undefined,
+        deliveryType: parcelData?.delivery_type != null ? String(parcelData.delivery_type) : undefined,
+      },
     };
 
-    const dispatchRes = await orderApi.dispatchCourier(order, parcelData, courierPayload);
+    const dispatchRes = await orderApi.dispatchCourier(dispatchDto);
     if (dispatchRes.success && (dispatchRes.trackingCode || dispatchRes.consignmentId)) {
       const trackingCode = dispatchRes.trackingCode || '';
       const consignmentId = dispatchRes.consignmentId || '';
-      const pattern = effectiveTrackingPattern || 'https://steadfast.com.bd/t/{trackingCode}';
+      const pattern =
+        targetCourier?.trackingUrlPattern ||
+        (courierProvider === 'pathao'
+          ? 'https://merchant.pathao.com/tracking?consignment_id={trackingCode}'
+          : courierProvider === 'redx'
+          ? 'https://redx.com.bd/track/{trackingCode}'
+          : 'https://steadfast.com.bd/t/{trackingCode}');
       const trackingUrl = pattern.includes('{trackingCode}') ? pattern.replace('{trackingCode}', trackingCode) : `${pattern}/${trackingCode}`;
 
       const booking: CourierBooking = {

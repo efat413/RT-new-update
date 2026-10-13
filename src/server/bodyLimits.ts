@@ -8,6 +8,7 @@
 // Route-specific size thresholds
 export const BODY_LIMIT_AUTH = 64 * 1024; // 64 KB: Credentials, password reset tokens, auth profile
 export const BODY_LIMIT_ORDER = 256 * 1024; // 256 KB: Checkout orders, address, item arrays, customization metadata, advance payments
+export const BODY_LIMIT_COURIER_DISPATCH = 16 * 1024; // 16 KB: Strict dedicated limit for minimal courier dispatch DTO
 export const BODY_LIMIT_WEBHOOK = 64 * 1024; // 64 KB: Courier status updates and delivery lifecycle events
 export const BODY_LIMIT_REVIEW_UPLOAD = 12 * 1024 * 1024; // 12 MB: Up to 5 photos (8 MB aggregate decoded binary + 33% base64 expansion + envelope)
 export const BODY_LIMIT_REVIEW_MODERATION = 128 * 1024; // 128 KB: Review status updates & text edits (no image upload)
@@ -76,6 +77,11 @@ export function getBodySizeLimit(pathname: string, method = 'POST'): number {
     normPath.startsWith('/api/steadfast/webhook')
   ) {
     return BODY_LIMIT_WEBHOOK;
+  }
+
+  // 6. Courier Parcel Dispatch (strict 16 KB limit sized strictly for minimal DTO)
+  if (normPath === '/api/courier/dispatch' && normMethod === 'POST') {
+    return BODY_LIMIT_COURIER_DISPATCH;
   }
 
   // 6. Review Moderation / Status Edits without photo upload (128 KB)

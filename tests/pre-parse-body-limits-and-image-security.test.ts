@@ -6,6 +6,7 @@ import {
   readRawBodyWithLimit,
   BODY_LIMIT_AUTH,
   BODY_LIMIT_ORDER,
+  BODY_LIMIT_COURIER_DISPATCH,
   BODY_LIMIT_WEBHOOK,
   BODY_LIMIT_REVIEW_UPLOAD,
   BODY_LIMIT_REVIEW_MODERATION,
@@ -151,6 +152,12 @@ describe('1. Endpoint-Specific Body Size Threshold Calculation', () => {
     expect(getBodySizeLimit('/api/courier/webhook', 'POST')).toBe(BODY_LIMIT_WEBHOOK);
     expect(getBodySizeLimit('/api/steadfast/webhook', 'POST')).toBe(BODY_LIMIT_WEBHOOK);
     expect(getBodySizeLimit('/api/webhook/steadfast', 'POST')).toBe(BODY_LIMIT_WEBHOOK);
+  });
+
+  it('assigns 16 KB strict limit to courier dispatch endpoint', () => {
+    expect(getBodySizeLimit('/api/courier/dispatch', 'POST')).toBe(BODY_LIMIT_COURIER_DISPATCH);
+    expect(BODY_LIMIT_COURIER_DISPATCH).toBe(16 * 1024);
+    expect(BODY_LIMIT_COURIER_DISPATCH).toBe(16384);
   });
 
   it('falls back to 256 KB default for other mutating endpoints', () => {

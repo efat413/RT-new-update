@@ -58,6 +58,16 @@ export interface PaginatedOrdersResponse {
   error?: string;
 }
 
+export interface CourierDispatchDto {
+  orderId: string;
+  courierProvider: 'steadfast' | 'pathao' | 'redx';
+  parcelOverrides?: {
+    weight?: number;
+    notes?: string;
+    deliveryType?: string;
+  };
+}
+
 const API_BASE = '/api';
 
 function getHeaders(): Record<string, string> {
@@ -380,22 +390,57 @@ export const orderApi = {
   },
 
   /**
-   * Dispatches parcel via secure server-side proxy (credentials strictly managed by server)
+   * Dispatches parcel via secure server-side proxy with minimal DTO.
+   * Strips entire order trees, catalog dumps, image/base64 data, and raw credentials.
    */
-  async dispatchCourier(order: Order, parcelData?: any, courier?: any): Promise<OrderApiResponse> {
+  async dispatchCourier(
+    dtoOrOrder: CourierDispatchDto | Order | any,
+    parcelData?: any,
+    courier?: any
+  ): Promise<OrderApiResponse> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 45000);
 
     try {
+      // Build strictly minimal DTO: strip full order objects, image trees, and credentials
+      let payload: CourierDispatchDto;
+
+      if (dtoOrOrder && typeof dtoOrOrder === 'object' && 'orderId' in dtoOrOrder && 'courierProvider' in dtoOrOrder) {
+        payload = {
+          orderId: String(dtoOrOrder.orderId).trim(),
+          courierProvider: dtoOrOrder.courierProvider,
+          parcelOverrides: dtoOrOrder.parcelOverrides
+            ? {
+                weight: dtoOrOrder.parcelOverrides.weight != null ? Number(dtoOrOrder.parcelOverrides.weight) : undefined,
+                notes: dtoOrOrder.parcelOverrides.notes ? String(dtoOrOrder.parcelOverrides.notes).trim() : undefined,
+                deliveryType: dtoOrOrder.parcelOverrides.deliveryType ? String(dtoOrOrder.parcelOverrides.deliveryType).trim() : undefined,
+              }
+            : undefined,
+        };
+      } else {
+        // Backward-compatibility normalization: if passed (order, parcelData, courier)
+        const orderId = String(dtoOrOrder?.id || dtoOrOrder?.orderNumber || parcelData?.invoice || '').trim();
+        const rawProvider = String(courier?.code || courier?.name || parcelData?.courier || 'steadfast').toLowerCase();
+        const courierProvider: 'steadfast' | 'pathao' | 'redx' =
+          rawProvider.includes('pathao') ? 'pathao' :
+          rawProvider.includes('redx') ? 'redx' : 'steadfast';
+
+        payload = {
+          orderId,
+          courierProvider,
+          parcelOverrides: {
+            weight: parcelData?.weight != null ? Number(parcelData.weight) : undefined,
+            notes: (parcelData?.note || parcelData?.notes || '').trim() || undefined,
+            deliveryType: parcelData?.delivery_type != null ? String(parcelData.delivery_type) : undefined,
+          },
+        };
+      }
+
       const res = await fetch(`${API_BASE}/courier/dispatch`, {
         method: 'POST',
         credentials: 'include',
         headers: getHeaders(),
-        body: JSON.stringify({
-          order,
-          parcelData,
-          courier,
-        }),
+        body: JSON.stringify(payload),
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
@@ -417,6 +462,7 @@ export const orderApi = {
         trackingCode: data.tracking_code || data.trackingCode,
         consignmentId: data.consignment_id || data.consignmentId,
         data: data.data,
+        message: data.message,
       };
     } catch (err: any) {
       clearTimeout(timeoutId);

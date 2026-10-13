@@ -961,6 +961,24 @@ export const LEGACY_PERMISSION_MAPPINGS: Record<string, LegacyPermissionMapping>
     sensitivity: 'operational',
     description: 'Legacy alias for courier parcel dispatch/booking.',
   },
+  'DISPATCH_COURIER': {
+    legacyKey: 'DISPATCH_COURIER',
+    canonicalKey: 'courier.booking',
+    sensitivity: 'operational',
+    description: 'Granular courier dispatch permission.',
+  },
+  'dispatch_courier': {
+    legacyKey: 'dispatch_courier',
+    canonicalKey: 'courier.booking',
+    sensitivity: 'operational',
+    description: 'Snake_case courier dispatch permission alias.',
+  },
+  'dispatchCourier': {
+    legacyKey: 'dispatchCourier',
+    canonicalKey: 'courier.booking',
+    sensitivity: 'operational',
+    description: 'CamelCase courier dispatch permission alias.',
+  },
   'order.dispatch': {
     legacyKey: 'order.dispatch',
     canonicalKey: 'courier.booking',

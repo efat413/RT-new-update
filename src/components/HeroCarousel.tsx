@@ -186,7 +186,7 @@ export const HeroCarousel: React.FC = () => {
             {...bannerImageProps}
             fetchPriority={currentSlide === 0 ? 'high' : 'auto'}
             loading={currentSlide === 0 ? 'eager' : 'lazy'}
-            decoding="async"
+            decoding={currentSlide === 0 ? 'sync' : 'async'}
             alt={slide.headline || slide.title || 'Promotional Banner'}
             className={`w-full h-full ${fitMode === 'cover' ? 'object-cover' : 'object-contain'} object-center transition-opacity duration-300`}
             onError={(e) => {

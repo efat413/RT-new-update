@@ -134,6 +134,8 @@ import {
   callSteadfastApi,
   dispatchOrderToSteadfast,
   normalizeSteadfastStatus,
+  dispatchViaCourierProvider,
+  normalizeCourierProvider,
 } from './courier';
 import {
   verifyCourierWebhookAuth,
@@ -1015,6 +1017,7 @@ import {
   isSuperAdminUserIdServer,
   detectPrivilegeEscalationAttempt,
   normalizePermissionsInput,
+  getCanonicalPermissionKey,
 } from './permissions';
 
 /**
@@ -1316,6 +1319,29 @@ function hasPermission(
         (auth.permissions['reviews.approve'] && auth.permissions['reviews.edit'])
       )
     );
+  }
+
+  if (
+    keyStr === 'DISPATCH_COURIER' ||
+    keyStr === 'dispatch_courier' ||
+    keyStr === 'dispatchCourier' ||
+    keyStr === 'courier.dispatch' ||
+    keyStr === 'courier.booking'
+  ) {
+    return (
+      Boolean(
+        auth.permissions && (
+          auth.permissions['courier.booking'] ||
+          (auth.permissions as any)['courier.dispatch'] ||
+          (auth.permissions as any)['DISPATCH_COURIER']
+        )
+      ) || Boolean(auth.legacyPermissions?.canManageOrders)
+    );
+  }
+
+  const canonicalKey = getCanonicalPermissionKey(keyStr);
+  if (canonicalKey && auth.permissions && auth.permissions[canonicalKey]) {
+    return true;
   }
 
   // Granular PermissionKey check
@@ -7119,51 +7145,61 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     if (jsonErr) return jsonErr;
 
     try {
-      const orderParam = body?.order as Order;
-      const parcelData = body.parcelData || {};
-
-      if (!orderParam || (!orderParam.id && !orderParam.orderNumber)) {
-        return jsonResponse({ success: false, error: 'Order details are required for courier dispatch.' }, 400);
+      if (!body || typeof body !== 'object') {
+        return jsonResponse({ success: false, error: 'Invalid dispatch request body.' }, 400);
       }
 
-      // Read authoritative order from Cloudflare D1
-      const order = await getOrderById(env.DB, orderParam.id || orderParam.orderNumber);
+      // 1. Minimal DTO extraction: orderId and courierProvider (with backward-compatible fallbacks)
+      const orderId = String(body.orderId || body.order?.id || body.order?.orderNumber || '').trim();
+      if (!orderId) {
+        return jsonResponse({ success: false, error: 'orderId is required for courier dispatch.' }, 400);
+      }
+
+      const rawProvider = String(
+        body.courierProvider ||
+        body.courier?.code ||
+        body.courier?.name ||
+        body.courierCode ||
+        body.parcelData?.courier ||
+        'steadfast'
+      );
+      const provider = normalizeCourierProvider(rawProvider);
+
+      const parcelOverrides = body.parcelOverrides || {
+        weight: body.parcelData?.weight,
+        notes: body.parcelData?.note || body.parcelData?.notes,
+        deliveryType: body.parcelData?.delivery_type != null ? String(body.parcelData.delivery_type) : undefined,
+      };
+
+      // 2. Authoritative D1 fetch: Query orderId directly from Cloudflare D1
+      const order = await getOrderById(env.DB, orderId);
       if (!order) {
-        return jsonResponse({ success: false, error: 'Order not found.' }, 404);
+        return jsonResponse({ success: false, error: `Order "${orderId}" not found in database.` }, 404);
       }
 
-      // Retrieve server credentials strictly from server environment or D1
-      const settings = await getStoreSettings(env.DB);
-      const courierParam = body.courier || {};
-      const courierCode = String(courierParam.code || courierParam.name || body.courierCode || parcelData.courier || 'Steadfast').toLowerCase();
-      const isSteadfast = courierCode.includes('steadfast');
-      const courierName = courierParam.name || (isSteadfast ? 'Steadfast Courier' : (courierParam.code || 'Courier'));
-
-      // Format recipient address from authoritative D1 order
-      const rawAddress = (parcelData.recipient_address || order.customer.fullAddress || '').trim();
-      const rawArea = (parcelData.area || '').trim();
-      const rawDistrict = (parcelData.district || order.customer.district || '').trim();
-      const addressParts: string[] = [rawAddress];
-      if (rawArea && !rawAddress.toLowerCase().includes(rawArea.toLowerCase())) {
-        addressParts.push(rawArea);
-      }
-      if (rawDistrict && !rawAddress.toLowerCase().includes(rawDistrict.toLowerCase())) {
-        addressParts.push(rawDistrict);
-      }
-      const combinedAddress = addressParts.filter(Boolean).join(', ').substring(0, 250);
-
-      // Description & lot
-      let itemDescription = (parcelData.item_description || '').trim();
-      let totalLot = parcelData.total_lot != null ? Number(parcelData.total_lot) : 0;
-      if (!itemDescription && Array.isArray(order.items) && order.items.length > 0) {
-        itemDescription = order.items.map((it) => `${it.product?.title || 'Product'} x ${it.quantity}`).join(', ');
-      }
-      if (!totalLot && Array.isArray(order.items)) {
-        totalLot = order.items.reduce((sum, it) => sum + (it.quantity || 1), 0);
+      // 3. Duplicate Dispatch Locking & Idempotency:
+      // Prevent double booking if order already has an active consignment ID or non-terminal courier status
+      const existingConsignmentId = String(order.consignmentId || order.courierBooking?.consignmentId || '').trim();
+      const existingTrackingCode = String(order.courierWaybill || order.courierBooking?.waybillId || '').trim();
+      if (existingConsignmentId || existingTrackingCode) {
+        return jsonResponse({
+          success: false,
+          error: `Duplicate dispatch prevented: Order #${order.orderNumber} already has an active courier consignment (${existingConsignmentId || existingTrackingCode}).`,
+        }, 409);
       }
 
-      // Authoritative Server-Side Calculation of Final Order Total and Customer Due
-      // 1. Load authoritative order items
+      const existingCourierStatus = (order.courierStatus || '').toLowerCase().trim();
+      if (existingCourierStatus && !['unbooked', 'draft', 'pending', ''].includes(existingCourierStatus)) {
+        const normalized = normalizeSteadfastStatus(existingCourierStatus);
+        if (!normalized.isFinal) {
+          return jsonResponse({
+            success: false,
+            error: `Duplicate dispatch prevented: Order #${order.orderNumber} is currently in active courier transit status (${order.courierStatus}).`,
+          }, 409);
+        }
+      }
+
+      // 4. Server-Authoritative Net COD Balance Calculation (subtracting verified advance payments)
       const items = Array.isArray(order.items) ? order.items : [];
       let authoritativeSubtotal = 0;
       if (items.length > 0) {
@@ -7181,7 +7217,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         authoritativeSubtotal = Number(order.subtotal) || 0;
       }
 
-      // 2. Recalculate current final order total (Subtotal + Delivery Fee - Discount)
       const authoritativeDeliveryFee = Math.max(0, Number(order.deliveryFee ?? 0));
       const authoritativeDiscount = Math.max(0, Number(order.discountAmount ?? 0));
       const authoritativeFinalTotal = Math.max(
@@ -7189,21 +7224,15 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         Math.round((authoritativeSubtotal + authoritativeDeliveryFee - authoritativeDiscount) * 100) / 100
       );
 
-      // 3. Load current advance payment
       const authoritativeAdvance = Math.max(0, Number(order.advancePayment) || 0);
-
-      // 4. Calculate customer due: Customer Due = Final Order Total - Advance Payment
       const authoritativeCustomerDue = Math.max(
         0,
         Math.round((authoritativeFinalTotal - authoritativeAdvance) * 100) / 100
       );
 
-      // 5. Courier COD = Customer Due (or 0 if fully paid/prepaid)
-      // Never accept frontend-supplied cod_amount as authoritative
       const isPrepaid = order.paymentStatus === 'PAID' || order.paymentStatus === 'Paid' || authoritativeCustomerDue === 0;
       const codAmount = isPrepaid ? 0 : authoritativeCustomerDue;
 
-      // 6. Synchronize payment status
       let synchronizedPaymentStatus = order.paymentStatus;
       if (isPrepaid || authoritativeCustomerDue === 0) {
         if (authoritativeFinalTotal > 0 && order.paymentStatus !== 'PAID' && order.paymentStatus !== 'Paid') {
@@ -7219,231 +7248,31 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         }
       }
 
-      const recipientPhone = (parcelData.recipient_phone || order.customer.phone || '').replace(/[^0-9]/g, '');
+      // 5. Provider Schemas: Map server-validated order state to exact third-party schemas
+      const settings = await getStoreSettings(env.DB);
+      const dispatchResult = await dispatchViaCourierProvider(
+        provider,
+        order,
+        codAmount,
+        parcelOverrides,
+        env,
+        settings
+      );
 
-      if (isSteadfast) {
-        // Production Steadfast credentials must come exclusively from Cloudflare Worker secrets
-        const apiKey = (env.STEADFAST_API_KEY || '').trim();
-        const secretKey = (env.STEADFAST_SECRET_KEY || '').trim();
-
-        if (!apiKey || !secretKey) {
-          return jsonResponse({
-            success: false,
-            error: 'Steadfast Courier API credentials are not configured in Worker secrets.',
-          }, 400);
-        }
-
-        // Validate courierParam.baseUrl if provided by client request
-        if (courierParam.baseUrl) {
-          const val = validateCourierApiDestination(courierParam.baseUrl, { courierType: 'steadfast' });
-          if (!val.valid) {
-            return jsonResponse({
-              success: false,
-              error: 'Invalid Steadfast courier destination. Only approved Steadfast gateways (portal.packzy.com) are permitted.',
-            }, 400);
-          }
-          courierParam.baseUrl = val.normalizedUrl || courierParam.baseUrl;
-        }
-
-        // Build Steadfast payload
-        const steadfastPayload: Record<string, any> = {
-          invoice: String(parcelData.invoice || order.orderNumber),
-          recipient_name: String(parcelData.recipient_name || order.customer.fullName).trim(),
-          recipient_phone: recipientPhone,
-          recipient_address: combinedAddress,
-          cod_amount: codAmount,
-          delivery_type: parcelData.delivery_type === 1 ? 1 : 0,
-        };
-
-        if (parcelData.alternative_phone) {
-          const altPhone = String(parcelData.alternative_phone).replace(/[^0-9]/g, '');
-          if (altPhone) steadfastPayload.alternative_phone = altPhone;
-        }
-        if (parcelData.recipient_email) {
-          steadfastPayload.recipient_email = String(parcelData.recipient_email).trim();
-        }
-        const note = (parcelData.note || order.customer.notes || `Order #${order.orderNumber} - Rongdhonu Trade`).trim();
-        if (note) steadfastPayload.note = note;
-        if (itemDescription) steadfastPayload.item_description = itemDescription.substring(0, 200);
-        if (totalLot > 0) steadfastPayload.total_lot = totalLot;
-        if (parcelData.weight != null && Number(parcelData.weight) > 0) {
-          steadfastPayload.weight = Number(parcelData.weight);
-        }
-
-        // Dispatch to Steadfast via resilient multi-gateway handler
-        const sfResult = await dispatchOrderToSteadfast(steadfastPayload, {
-          apiKey,
-          secretKey,
-          baseUrl: courierParam.baseUrl,
-        });
-
-        const sfData = sfResult.data || {};
-
-        if (sfResult.ok && (sfData.status === 200 || sfData.consignment)) {
-          const consignment = sfData.consignment || sfData;
-          const trackingCode = (consignment.tracking_code || '').trim();
-          const consignmentId = String(consignment.consignment_id || consignment.id || '').trim();
-
-          if (!trackingCode || !consignmentId) {
-            return jsonResponse({
-              success: false,
-              error: 'Steadfast booking failed: API response did not contain a valid tracking code or consignment ID. Order remains unbooked.',
-            }, 400);
-          }
-
-          // Persist courier details to Cloudflare D1 order record
-          await updateOrderInD1(env.DB, order.id, {
-            consignmentId,
-            courierWaybill: trackingCode,
-            courierName: courierName || 'Steadfast',
-            courierStatus: 'In Transit',
-            shippingStatus: 'Shipped',
-            lastCourierSync: new Date().toISOString(),
-            totalAmount: authoritativeFinalTotal,
-            subtotal: authoritativeSubtotal,
-            customerDue: authoritativeCustomerDue,
-            dueAmount: authoritativeCustomerDue,
-            advancePayment: authoritativeAdvance,
-            paymentStatus: synchronizedPaymentStatus,
-            courierBooking: {
-              provider: courierName || 'Steadfast',
-              waybillId: trackingCode,
-              trackingUrl: `https://steadfast.com.bd/t/${trackingCode}`,
-              consignmentId,
-              bookedAt: new Date().toISOString(),
-            },
-          }).catch((err) => console.error('Error saving courier tracking to D1 order:', err));
-
-          return jsonResponse({
-            success: true,
-            tracking_code: trackingCode,
-            consignment_id: consignmentId,
-            cod_amount: codAmount,
-            customerDue: authoritativeCustomerDue,
-            totalAmount: authoritativeFinalTotal,
-            advancePayment: authoritativeAdvance,
-            message: `Order dispatched to ${courierName} successfully!`,
-          });
-        }
-
-        const rawDetail = sfResult.error || sfData.message || (sfData.errors ? (typeof sfData.errors === 'string' ? sfData.errors : JSON.stringify(sfData.errors)) : 'Steadfast dispatch failed. Please check order details.');
-        const errorDetail = typeof rawDetail === 'string' && rawDetail.length < 300 && !/sqlite|token|secret|stack|\.ts/i.test(rawDetail)
-          ? rawDetail
-          : 'Steadfast dispatch failed. Please check order details.';
+      if (!dispatchResult.ok) {
         return jsonResponse({
           success: false,
-          error: errorDetail,
-        }, 400);
+          error: dispatchResult.error || `Courier dispatch failed with ${dispatchResult.courierName}.`,
+        }, dispatchResult.status >= 400 && dispatchResult.status < 500 ? dispatchResult.status : 400);
       }
 
-      // Handling for non-Steadfast couriers (Pathao, RedX, Paperfly, or custom courier)
-      const apiKey = (courierParam.apiKey || body.apiKey || parcelData.apiKey || '').trim();
-      const secretKey = (courierParam.secretKey || body.secretKey || parcelData.secretKey || '').trim();
-      const baseUrl = (courierParam.baseUrl || body.baseUrl || parcelData.baseUrl || '').trim();
-      const trackingPattern = (courierParam.trackingUrlPattern || '').trim() || 'https://steadfast.com.bd/t/{trackingCode}';
+      const trackingCode = String(dispatchResult.trackingCode || '').trim();
+      const consignmentId = String(dispatchResult.consignmentId || '').trim();
+      const courierName = dispatchResult.courierName;
+      const trackingUrl = dispatchResult.trackingUrl || `https://steadfast.com.bd/t/${trackingCode}`;
 
-      // Security check: NEVER send Steadfast secrets to generic courier URLs
-      if ((env.STEADFAST_API_KEY && apiKey === env.STEADFAST_API_KEY) || (env.STEADFAST_SECRET_KEY && secretKey === env.STEADFAST_SECRET_KEY)) {
-        return jsonResponse({
-          success: false,
-          error: 'Security violation: Steadfast credentials cannot be sent to other courier gateways.',
-        }, 400);
-      }
-
-      if (!apiKey) {
-        return jsonResponse({
-          success: false,
-          error: `${courierName} API credentials are not configured. Please enter API Key or configure it in Courier APIs tab.`,
-        }, 400);
-      }
-
-      let trackingCode = '';
-      let consignmentId = '';
-
-      if (baseUrl) {
-        // Enforce SSRF validation and allowlist for generic courier gateway
-        const val = validateCourierApiDestination(baseUrl, { courierType: courierCode });
-        if (!val.valid) {
-          return jsonResponse({
-            success: false,
-            error: val.error || `Invalid courier API destination for ${courierName}. Destination domain is not approved or violates SSRF protection.`,
-          }, 400);
-        }
-
-        try {
-          const cleanBase = val.normalizedUrl!.replace(/\/+$/, '');
-          const endpoint = cleanBase.includes('/v1') || cleanBase.includes('/api') ? `${cleanBase}/orders` : `${cleanBase}/api/v1/orders`;
-          
-          const endpointVal = validateCourierApiDestination(endpoint, { courierType: courierCode });
-          if (!endpointVal.valid) {
-            return jsonResponse({
-              success: false,
-              error: endpointVal.error || `Invalid courier API endpoint URL.`,
-            }, 400);
-          }
-
-          const headers: Record<string, string> = {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            'Authorization': apiKey.startsWith('Bearer ') ? apiKey : `Bearer ${apiKey}`,
-            'Api-Key': apiKey,
-          };
-          if (secretKey) {
-            headers['Secret-Key'] = secretKey;
-            headers['X-Secret-Key'] = secretKey;
-          }
-
-          const fetchResult = await safeFetchCourierApi({
-            url: endpoint,
-            method: 'POST',
-            headers,
-            body: JSON.stringify({
-              invoice: String(parcelData.invoice || order.orderNumber),
-              recipient_name: String(parcelData.recipient_name || order.customer.fullName).trim(),
-              recipient_phone: recipientPhone,
-              recipient_address: combinedAddress,
-              cod_amount: codAmount,
-              note: parcelData.note || order.customer.notes || `Order #${order.orderNumber}`,
-              weight: Number(parcelData.weight) || 0.5,
-              items_count: totalLot || 1,
-            }),
-            timeoutMs: 12000,
-            courierType: courierCode,
-            maxRedirects: 2,
-          });
-
-          if (fetchResult.ok) {
-            const data: any = fetchResult.data || {};
-            trackingCode = (data.tracking_code || data.trackingCode || data.consignment_id || data.id || '').trim();
-            consignmentId = String(data.consignment_id || data.consignmentId || data.id || '').trim();
-          } else if (fetchResult.status === 401 || fetchResult.status === 403) {
-            const data: any = fetchResult.data || {};
-            return jsonResponse({
-              success: false,
-              error: data.message || `Invalid API credentials for ${courierName}. Please check API Key and Secret.`,
-            }, 400);
-          } else if (!fetchResult.ok) {
-            return jsonResponse({
-              success: false,
-              error: fetchResult.error || `Courier gateway error from ${courierName}.`,
-            }, 400);
-          }
-        } catch (fetchErr: any) {
-          console.error('Non-steadfast courier dispatch error:', fetchErr);
-        }
-      }
-
-      if (!trackingCode || !consignmentId) {
-        return jsonResponse({
-          success: false,
-          error: `Courier booking failed: ${courierName} did not return a valid tracking code or consignment ID. Order remains in Pending state.`,
-        }, 400);
-      }
-
-      const trackingUrl = trackingPattern.includes('{trackingCode}')
-        ? trackingPattern.replace('{trackingCode}', trackingCode)
-        : `${trackingPattern}/${trackingCode}`;
-
+      // 6. Atomic Persistence in D1:
+      // Persist consignment ID, tracking code, and updated order status in D1
       await updateOrderInD1(env.DB, order.id, {
         consignmentId,
         courierWaybill: trackingCode,
@@ -7464,7 +7293,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           consignmentId,
           bookedAt: new Date().toISOString(),
         },
-      }).catch((err) => console.error('Error saving courier tracking to D1 order:', err));
+      });
 
       return jsonResponse({
         success: true,
@@ -7474,9 +7303,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         customerDue: authoritativeCustomerDue,
         totalAmount: authoritativeFinalTotal,
         advancePayment: authoritativeAdvance,
-        message: `Order dispatched to ${courierName} successfully!`,
+        courier: provider,
+        message: `Order #${order.orderNumber} dispatched to ${courierName} successfully!`,
       });
     } catch (err: any) {
+      console.error('Failed to dispatch courier order:', err);
       return jsonResponse({ success: false, error: 'Courier dispatch failed. Please try again.' }, 500);
     }
   }
