@@ -131,7 +131,7 @@ const ProductCardComponent: React.FC<ProductCardProps> = ({ product, priority = 
           <img
             {...primaryImgProps}
             loading={priority ? 'eager' : 'lazy'}
-            decoding={priority ? 'sync' : 'async'}
+            decoding="async"
             fetchPriority={priority ? 'high' : 'auto'}
             alt={`${product.title} - ${category ? category.name : 'Rongdhonu Trade'}`}
             className={`w-full h-full object-cover object-center transition-all duration-500 ease-out ${

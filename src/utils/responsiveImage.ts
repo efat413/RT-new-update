@@ -256,7 +256,9 @@ export function getResponsiveImageProps(
     width: preset.width,
     height: preset.height,
     loading: isPriority ? ('eager' as const) : ('lazy' as const),
-    decoding: isPriority ? ('sync' as const) : ('async' as const),
+    // Keep priority images eager/high-priority, but decode asynchronously to avoid
+    // forcing image decode work onto the main thread during initial rendering.
+    decoding: 'async' as const,
     fetchPriority: isPriority ? ('high' as const) : ('auto' as const),
     style: {
       aspectRatio: preset.aspectRatio,
