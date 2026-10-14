@@ -809,13 +809,12 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     if (!id) return null;
     const cleanId = id.trim();
     const existing = productsRef.current.find(
-      (p) => Boolean(p && typeof p === 'object' && (p.id === cleanId || p.slug === cleanId || (typeof p.title === 'string' && p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') === cleanId)))
+      (p) => p.id === cleanId || p.slug === cleanId || (typeof p.title === 'string' && p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') === cleanId)
     );
     if (existing) {
       setSingleProduct(existing);
       setProductNotFound(false);
     } else {
-      setSingleProduct(null);
       setIsProductLoading(true);
       setProductNotFound(false);
     }
