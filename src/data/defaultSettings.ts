@@ -16,15 +16,15 @@ export const DEFAULT_STORE_SETTINGS: StoreSettings = {
   currencySymbol: '৳',
   steadfastApiKey: '',
   steadfastSecretKey: '',
-  // Payment details must be configured by the admin before DBBL / NexusPay is shown.
   dbblBank: {
-    bankName: '',
-    accountHolderName: '',
+    bankName: 'Dutch-Bangla Bank PLC',
+    accountHolderName: 'Rongdhonu Trade',
     accountNumber: '',
     branchName: '',
     routingNumber: '',
     qrCodeUrl: '',
-    instructions: '',
+    instructions:
+      '',
   },
   antiSpamEnabled: true,
   maxOrdersPerPhonePerDay: 3,

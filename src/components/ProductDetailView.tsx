@@ -122,7 +122,8 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
   }, [productId, loadProductById]);
 
   // Use the fetched product or the matching one from products (matches by slug, id, or normalized title)
-  const product = singleProduct || products.find((p) => p.slug === productId || p.id === productId || p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') === productId) || null;
+  const matchesProduct = (p: Product | null | undefined) => Boolean(p && (p.id === productId || p.slug === productId || (typeof p.title === 'string' && p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') === productId)));
+  const product = (matchesProduct(singleProduct) ? singleProduct : null) || products.find((p) => matchesProduct(p)) || null;
 
   // Dynamic URL Synchronization:
   // As soon as a single product is viewed or loaded, automatically update the browser's
@@ -344,11 +345,11 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
   // 3. Normal Product Display
   const activeImage = imageList[selectedImageIdx] || product.imageUrl;
   const isSavedInWishlist = wishlist.includes(product.id);
-  const approvedReviews = useMemo(() => {
-    return Array.isArray(reviews)
-      ? reviews.filter((r) => r && (r.productId === product.id || (product.slug && r.productId === product.slug)) && r.status === 'approved')
-      : [];
-  }, [reviews, product.id, product.slug]);
+  // Keep this as a derived value, not a hook: loading/not-found branches above return early,
+  // so a hook here would violate React's Rules of Hooks when loading completes.
+  const approvedReviews = Array.isArray(reviews)
+    ? reviews.filter((r) => r && (r.productId === product.id || (product.slug && r.productId === product.slug)) && r.status === 'approved')
+    : [];
 
   const approvedReviewsCount = reviews && reviews.length > 0
     ? approvedReviews.length
