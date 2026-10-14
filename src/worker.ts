@@ -231,7 +231,7 @@ export default {
           } catch {}
         } else {
           product = INITIAL_PRODUCTS.find(
-            (p) => p.id === prodParam || p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') === prodParam
+            (p) => Boolean(p && typeof p === 'object' && (p.id === prodParam || (typeof p.title === 'string' && p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') === prodParam)))
           ) || null;
         }
 
