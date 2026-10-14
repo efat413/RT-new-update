@@ -122,7 +122,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
   }, [productId, loadProductById]);
 
   // Use the fetched product or the matching one from products (matches by slug, id, or normalized title)
-  const product = singleProduct || products.find((p) => p.slug === productId || p.id === productId || p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') === productId) || null;
+  const product = (singleProduct && (singleProduct.id === productId || singleProduct.slug === productId) ? singleProduct : null) || products.find((p) => p.id === productId || p.slug === productId || (typeof p.title === 'string' && p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') === productId)) || null;
 
   // Dynamic URL Synchronization:
   // As soon as a single product is viewed or loaded, automatically update the browser's
