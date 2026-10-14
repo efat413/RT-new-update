@@ -16,15 +16,15 @@ export const DEFAULT_STORE_SETTINGS: StoreSettings = {
   currencySymbol: '৳',
   steadfastApiKey: '',
   steadfastSecretKey: '',
+  // Payment details must be configured by the admin before DBBL / NexusPay is shown.
   dbblBank: {
-    bankName: 'Dutch-Bangla Bank PLC',
-    accountHolderName: 'Rongdhonu Trade',
-    accountNumber: '148.151.0029341',
-    branchName: 'Uttara Branch, Dhaka',
-    routingNumber: '090264000',
-    qrCodeUrl: 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=DBBL-NEXUSPAY-1481510029341',
-    instructions:
-      'Please transfer the total order amount to our Dutch-Bangla Bank account via DBBL App, NexusPay, or any BEFTN/NPSB bank transfer. Use your phone number as reference, then paste your Transaction ID below.',
+    bankName: '',
+    accountHolderName: '',
+    accountNumber: '',
+    branchName: '',
+    routingNumber: '',
+    qrCodeUrl: '',
+    instructions: '',
   },
   antiSpamEnabled: true,
   maxOrdersPerPhonePerDay: 3,

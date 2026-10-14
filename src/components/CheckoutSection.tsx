@@ -40,6 +40,7 @@ export const CheckoutSection: React.FC = () => {
     setRecentSuccessOrder,
     currentUser,
     applyCoupon,
+    coupons,
   } = useStore();
 
   // Customer Delivery Information State
@@ -131,16 +132,22 @@ export const CheckoutSection: React.FC = () => {
     setPromoCodeInput('');
   };
 
-  // Active DBBL Bank Settings from Admin Settings or defaults
+  // Show DBBL / NexusPay only when the admin has configured a real account number.
   const dbblBank = {
-    bankName: settings.dbblBank?.bankName || 'Dutch-Bangla Bank PLC',
-    accountHolderName: settings.dbblBank?.accountHolderName || settings.siteName || 'Rongdhonu Trade',
-    accountNumber: settings.dbblBank?.accountNumber || '',
+    bankName: settings.dbblBank?.bankName || '',
+    accountHolderName: settings.dbblBank?.accountHolderName || settings.siteName || '',
+    accountNumber: settings.dbblBank?.accountNumber?.trim() || '',
     branchName: settings.dbblBank?.branchName || '',
     routingNumber: settings.dbblBank?.routingNumber || '',
     qrCodeUrl: settings.dbblBank?.qrCodeUrl || '',
-    instructions: settings.dbblBank?.instructions || 'Send money or transfer via Dutch-Bangla Bank / NexusPay app or internet banking. Copy our Account Number, complete transfer, and paste the Transaction ID (TrxID) below.',
+    instructions: settings.dbblBank?.instructions || '',
   };
+  const isDbblConfigured = dbblBank.accountNumber.length > 0;
+  const hasActivePromoCodes = Array.isArray(coupons) && coupons.some((coupon) => coupon.isActive && coupon.code?.trim());
+
+  useEffect(() => {
+    if (!isDbblConfigured && selectedPayment === 'dbbl') setSelectedPayment('cod');
+  }, [isDbblConfigured, selectedPayment]);
 
   const handleCopyAccountNumber = () => {
     if (navigator.clipboard) {
@@ -575,7 +582,7 @@ export const CheckoutSection: React.FC = () => {
           Payment Method
         </h4>
 
-        <div className="grid grid-cols-2 gap-2">
+        <div className={`grid ${isDbblConfigured ? 'grid-cols-2' : 'grid-cols-1'} gap-2`}>
           {/* Cash on Delivery */}
           <button
             id="pay-method-cod-btn"
@@ -601,8 +608,8 @@ export const CheckoutSection: React.FC = () => {
             </span>
           </button>
 
-          {/* DBBL Bank / NexusPay */}
-          <button
+          {/* DBBL Bank / NexusPay: hidden until configured in Admin Settings */}
+          {isDbblConfigured && <button
             id="pay-method-dbbl-btn"
             type="button"
             onClick={() => setSelectedPayment('dbbl')}
@@ -617,18 +624,18 @@ export const CheckoutSection: React.FC = () => {
                 <Building2 className="w-3.5 h-3.5 text-indigo-600" />
                 DBBL / NexusPay
               </span>
-              {selectedPayment === 'dbbl' && (
+              {isDbblConfigured && selectedPayment === 'dbbl' && (
                 <Check className="w-3.5 h-3.5 text-indigo-600" />
               )}
             </div>
             <span className="text-[10px] text-slate-500 block">
               Direct Bank & Bangla QR
             </span>
-          </button>
+          </button>}
         </div>
 
         {/* Inline DBBL Bank Details Form if selected */}
-        {selectedPayment === 'dbbl' && (
+        {isDbblConfigured && selectedPayment === 'dbbl' && (
           <div className="p-4 rounded-2xl bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 text-white border border-indigo-500/30 shadow-xl space-y-4">
             <div className="flex items-center justify-between border-b border-indigo-800/60 pb-3">
               <div className="flex items-center gap-2">
@@ -818,8 +825,8 @@ export const CheckoutSection: React.FC = () => {
         )}
       </div>
 
-      {/* 4. PROMO CODE / VOUCHER SECTION (BEFORE FINAL ORDER BUTTON) */}
-      <div className="pt-2 border-t border-slate-200">
+      {/* 4. PROMO CODE / VOUCHER SECTION (only when an active promo exists) */}
+      {hasActivePromoCodes && <div className="pt-2 border-t border-slate-200">
         <div className="bg-slate-50 rounded-2xl p-3.5 border border-slate-200 space-y-2.5">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
@@ -894,7 +901,7 @@ export const CheckoutSection: React.FC = () => {
             </div>
           )}
         </div>
-      </div>
+      </div>}
 
       {/* 5. ORDER SUMMARY & SUBMIT BUTTON CARD */}
       <div className="p-5 rounded-2xl bg-slate-50 border border-slate-200/90 shadow-xs space-y-4">
