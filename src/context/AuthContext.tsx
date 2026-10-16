@@ -194,14 +194,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     const unsubscribe = onAuthUnauthorized(() => {
       hadActiveSessionRef.current = false;
+      authApi.clearCache();
       setCurrentUser(null);
       setIsAdminLoggedIn(false);
       persistAdminAuthToStorage(false);
       persistCurrentUserToStorage(null);
     });
 
+    const handleAdminAuthChanged = (e: Event) => {
+      const customEvent = e as CustomEvent<{ user: UserAccount | null }>;
+      const user = customEvent.detail?.user;
+      if (user) {
+        hadActiveSessionRef.current = true;
+        const isPrivileged =
+          user.role === 'admin' ||
+          user.role === 'super_admin' ||
+          user.role === 'sub_admin';
+        setCurrentUser(user);
+        setIsAdminLoggedIn(isPrivileged);
+        setIsAuthInitializing(false);
+      } else {
+        hadActiveSessionRef.current = false;
+        setCurrentUser(null);
+        setIsAdminLoggedIn(false);
+        setIsAuthInitializing(false);
+      }
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('rongdhonu_admin_auth_changed', handleAdminAuthChanged);
+    }
+
     return () => {
       unsubscribe();
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('rongdhonu_admin_auth_changed', handleAdminAuthChanged);
+      }
     };
   }, []);
 
@@ -310,6 +338,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = useCallback(() => {
     hadActiveSessionRef.current = false;
+    authApi.clearCache();
     removeAuthToken();
     authApi.logout();
     setCurrentUser(null);
@@ -317,9 +346,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setIsAuthInitializing(false);
     persistAdminAuthToStorage(false);
     persistCurrentUserToStorage(null);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('rongdhonu_admin_auth_changed', { detail: { user: null } }));
+    }
   }, []);
 
   const adminLogin = useCallback(async (usernameOrEmail: string, password: string): Promise<boolean> => {
+    authApi.clearCache();
     setIsAuthInitializing(true);
     const trimmedInput = usernameOrEmail.trim();
     const trimmedPassword = password.trim();
@@ -347,6 +380,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setIsAuthInitializing(false);
         setCurrentUser(apiRes.user);
         setIsAdminLoggedIn(isPrivileged);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('rongdhonu_admin_auth_changed', { detail: { user: apiRes.user } }));
+        }
         return isPrivileged;
       }
     } catch {}
@@ -361,6 +397,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         persistAdminAuthToStorage(true);
         setIsAdminLoggedIn(true);
         setIsAuthInitializing(false);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('rongdhonu_admin_auth_changed', { detail: { user: res.user } }));
+        }
         return true;
       }
     }

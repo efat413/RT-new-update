@@ -156,6 +156,9 @@ import { orderApi } from '../services/orderApi';
 import { formatWhatsAppLink, normalizeWhatsAppNumber } from '../utils/phone';
 import { copyToClipboardSafe } from '../utils/clipboard';
 import { AdminProvider } from '../context/AdminProvider';
+import { AdminAuthProvider, useAdminAuth } from '../context/AdminAuthContext';
+import { AdminRouteGuard } from './admin/AdminRouteGuard';
+import { AdminDashboard } from './admin/AdminDashboard';
 
 interface ConfidentialProfitBadgeProps {
   profitVal: number;
@@ -221,7 +224,7 @@ export const getEditOrderSubtotal = (items: any[]): number => {
   }, 0);
 };
 
-const AdminPanelContent: React.FC = () => {
+export const AdminPanelContent: React.FC = () => {
   const {
     products,
     categories,
@@ -675,21 +678,29 @@ const AdminPanelContent: React.FC = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  let adminAuth: any = null;
+  try {
+    adminAuth = useAdminAuth();
+  } catch {}
+
+  const effectiveAdminUser = adminAuth?.adminUser || currentUser;
+  const effectiveIsAdminLoggedIn = adminAuth ? adminAuth.isAdminAuthenticated : isAdminLoggedIn;
+
   // Privileged check: Strictly requires valid authenticated admin session AND privileged user role
   const isPrivilegedAdmin =
-    isAdminLoggedIn &&
+    effectiveIsAdminLoggedIn &&
     Boolean(
-      currentUser &&
-      (currentUser.role === 'super_admin' ||
-        currentUser.role === 'admin' ||
-        currentUser.role === 'sub_admin')
+      effectiveAdminUser &&
+      (effectiveAdminUser.role === 'super_admin' ||
+        effectiveAdminUser.role === 'admin' ||
+        effectiveAdminUser.role === 'sub_admin')
     );
 
   // Super Admin security check: Strictly Super Administrator only
   const isSuperAdmin = Boolean(
     isPrivilegedAdmin &&
-    currentUser &&
-    currentUser.role === 'super_admin'
+    effectiveAdminUser &&
+    effectiveAdminUser.role === 'super_admin'
   );
 
   // Granular financial permissions for buying prices and profit visibility
@@ -11138,8 +11149,10 @@ const AdminPanelContent: React.FC = () => {
 
 export const AdminPanel: React.FC = () => {
   return (
-    <AdminProvider>
-      <AdminPanelContent />
-    </AdminProvider>
+    <AdminAuthProvider>
+      <AdminRouteGuard>
+        <AdminDashboard />
+      </AdminRouteGuard>
+    </AdminAuthProvider>
   );
 };
