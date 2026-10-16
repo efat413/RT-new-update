@@ -71,7 +71,9 @@ export interface StorefrontContextType {
   setSingleProduct: React.Dispatch<React.SetStateAction<Product | null>>;
   isProductLoading: boolean;
   productNotFound: boolean;
-  loadProductById: (id: string) => Promise<Product | null>;
+  productError: string | null;
+  loadProductById: (id: string, options?: { signal?: AbortSignal }) => Promise<Product | null>;
+  retryLoadProduct: () => Promise<Product | null>;
   refreshProductsByIds: (productIds: string[]) => Promise<void>;
 
   selectedCategory: string | null;
@@ -359,10 +361,32 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
     } catch {}
   }, []);
-  const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
+  const [selectedProductId, setSelectedProductIdState] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const pathname = window.location.pathname;
+      if (pathname.startsWith('/product/')) {
+        return decodeURIComponent(pathname.replace(/^\/product\//, '').replace(/\/$/, '')).trim() || null;
+      }
+    } catch {}
+    return null;
+  });
+
+  const setSelectedProductId = useCallback((id: string | null) => {
+    setSelectedProductIdState((prev) => (prev === id ? prev : id));
+  }, []);
+
   const [singleProduct, setSingleProduct] = useState<Product | null>(null);
-  const [isProductLoading, setIsProductLoading] = useState<boolean>(false);
+  const [isProductLoading, setIsProductLoading] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      return window.location.pathname.startsWith('/product/');
+    } catch {
+      return false;
+    }
+  });
   const [productNotFound, setProductNotFound] = useState<boolean>(false);
+  const [productError, setProductError] = useState<string | null>(null);
 
   const [selectedCategory, setSelectedCategoryState] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null;
@@ -805,45 +829,146 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const productsRef = useRef<Product[]>(products);
   productsRef.current = products;
 
-  const loadProductById = useCallback(async (id: string): Promise<Product | null> => {
+  // Active request tracking to eliminate race conditions, double-mount overwrite, and out-of-order responses
+  const activeProductRequestIdRef = useRef<number>(0);
+  const activeProductAbortCtrlRef = useRef<AbortController | null>(null);
+  const currentLoadingIdRef = useRef<string | null>(null);
+
+  const loadProductById = useCallback(async (id: string, options?: { signal?: AbortSignal }): Promise<Product | null> => {
     if (!id) return null;
     const cleanId = id.trim();
-    const existing = productsRef.current.find(
-      (p) => p.id === cleanId || p.slug === cleanId || (typeof p.title === 'string' && p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') === cleanId)
-    );
+    currentLoadingIdRef.current = cleanId;
+
+    // 1. Check if we already have this exact product in singleProduct or products catalog
+    const matchesTarget = (p: Product | null | undefined): boolean => {
+      if (!p) return false;
+      const cleanTarget = cleanId.toLowerCase();
+      return (
+        p.id.toLowerCase() === cleanTarget ||
+        (Boolean(p.slug) && p.slug!.toLowerCase() === cleanTarget) ||
+        (typeof p.title === 'string' && p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') === cleanTarget)
+      );
+    };
+
+    const existingInSingle = matchesTarget(singleProduct) ? singleProduct : null;
+    const existingInList = productsRef.current.find((p) => matchesTarget(p)) || null;
+    const existing = existingInSingle || existingInList;
+
+    // Abort previous in-flight request if navigating or re-requesting
+    if (activeProductAbortCtrlRef.current) {
+      activeProductAbortCtrlRef.current.abort();
+      activeProductAbortCtrlRef.current = null;
+    }
+
+    const abortCtrl = new AbortController();
+    activeProductAbortCtrlRef.current = abortCtrl;
+    const currentRequestId = ++activeProductRequestIdRef.current;
+
+    // ATOMIC STATE TRANSITION:
+    // If not already present in memory, set isProductLoading = true immediately.
+    // Reset productNotFound to false and productError to null.
+    // NEVER flash 404/NotFound while a fetch is in flight!
     if (existing) {
       setSingleProduct(existing);
       setProductNotFound(false);
+      setProductError(null);
     } else {
       setIsProductLoading(true);
       setProductNotFound(false);
+      setProductError(null);
+    }
+
+    // Connect caller's signal if provided
+    if (options?.signal) {
+      if (options.signal.aborted) {
+        abortCtrl.abort();
+      } else {
+        options.signal.addEventListener('abort', () => abortCtrl.abort(), { once: true });
+      }
     }
 
     try {
-      const fetched = await productsApi.getById(cleanId);
-      if (fetched && (fetched as any).status !== 'inactive' && !(fetched as any).isDeleted) {
+      const detailed = await productsApi.getByIdDetailed(cleanId, { signal: abortCtrl.signal });
+
+      // Stale response / race-condition guard:
+      // If user navigated away or another fetch took over, discard silently
+      if (activeProductRequestIdRef.current !== currentRequestId) {
+        return null;
+      }
+
+      if (detailed.success && detailed.product) {
+        const fetched = detailed.product;
+        const isInactiveOrDeleted = (fetched as any).status === 'inactive' || Boolean((fetched as any).isDeleted);
+        if (isInactiveOrDeleted) {
+          // Public customers cannot view inactive products
+          setSingleProduct(null);
+          setProductNotFound(true);
+          setProductError(null);
+          setIsProductLoading(false);
+          return null;
+        }
+
         setSingleProduct(fetched);
         setProductNotFound(false);
+        setProductError(null);
         setIsProductLoading(false);
+
+        // Opportunistically cache in products list so future lookups are instant
+        setProducts((prev) => {
+          if (prev.some((p) => p.id === fetched.id)) {
+            return prev.map((p) => (p.id === fetched.id ? fetched : p));
+          }
+          return [fetched, ...prev];
+        });
+
         return fetched;
-      } else {
+      }
+
+      // Check status: True 404 Not Found vs 5xx/Network Error
+      if (detailed.status === 404) {
         if (!existing) {
           setSingleProduct(null);
           setProductNotFound(true);
+          setProductError(null);
         }
         setIsProductLoading(false);
         return existing || null;
       }
-    } catch (err) {
+
+      // 5xx / Network Error / Timeout (Recoverable)
+      if (!existing) {
+        setProductNotFound(false); // Strictly NOT 404!
+        setProductError(detailed.error || 'Unable to connect to the store server. Please try again.');
+        setSingleProduct(null);
+      }
+      setIsProductLoading(false);
+      return existing || null;
+    } catch (err: any) {
+      if (activeProductRequestIdRef.current !== currentRequestId) {
+        return null;
+      }
+      const isAbort = err?.name === 'AbortError' || err?.message?.toLowerCase().includes('abort');
+      if (isAbort) {
+        return null;
+      }
       console.error('Failed to fetch product by id:', err);
       if (!existing) {
-        setProductNotFound(true);
+        setProductNotFound(false); // Strictly NOT 404!
+        setProductError('Network connection issue. Please check your connection and retry.');
         setSingleProduct(null);
       }
       setIsProductLoading(false);
       return existing || null;
     }
-  }, []);
+  }, [singleProduct]);
+
+  const retryLoadProduct = useCallback(async (): Promise<Product | null> => {
+    const targetId = currentLoadingIdRef.current || selectedProductId;
+    if (targetId) {
+      return loadProductById(targetId);
+    }
+    return null;
+  }, [selectedProductId, loadProductById]);
 
   const refreshProductsByIds = useCallback(async (productIds: string[]) => {
     if (!Array.isArray(productIds) || productIds.length === 0) return;
@@ -1576,7 +1701,9 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setSingleProduct,
     isProductLoading,
     productNotFound,
+    productError,
     loadProductById,
+    retryLoadProduct,
     refreshProductsByIds,
     selectedCategory,
     setSelectedCategory,
@@ -1662,7 +1789,9 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     singleProduct,
     isProductLoading,
     productNotFound,
+    productError,
     loadProductById,
+    retryLoadProduct,
     refreshProductsByIds,
     selectedCategory,
     navigateToCategory,

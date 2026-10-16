@@ -31,9 +31,21 @@ function safeErrorMessage(rawMsg: any, status: number = 200): string {
   return rawMsg;
 }
 
-async function apiRequest<T>(url: string, options?: RequestInit, timeoutMs = 45000): Promise<{ success: boolean; data?: T; error?: string }> {
+async function apiRequest<T>(
+  url: string,
+  options?: RequestInit,
+  timeoutMs = 45000
+): Promise<{ success: boolean; data?: T; error?: string; status?: number }> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  if (options?.signal) {
+    if (options.signal.aborted) {
+      controller.abort();
+    } else {
+      options.signal.addEventListener('abort', () => controller.abort(), { once: true });
+    }
+  }
 
   try {
     const isMutation = options?.method && options.method.toUpperCase() !== 'GET' && options.method.toUpperCase() !== 'HEAD';
@@ -89,30 +101,31 @@ async function apiRequest<T>(url: string, options?: RequestInit, timeoutMs = 450
       }
       return {
         success: false,
+        status: res.status,
         error: errorMsg,
       };
     }
     if (json && json.success === false && json.error) {
       return {
         success: false,
+        status: res.status || 400,
         error: safeErrorMessage(json.error, res.status),
       };
     }
     return {
       success: true,
+      status: res.status,
       data: json as T,
     };
   } catch (err: any) {
     clearTimeout(timeoutId);
-    if (err?.name === 'AbortError' || err?.message?.toLowerCase().includes('abort')) {
-      return {
-        success: false,
-        error: 'Request timed out while contacting the server. Please try again.',
-      };
-    }
+    const isAbort = err?.name === 'AbortError' || err?.message?.toLowerCase().includes('abort');
     return {
       success: false,
-      error: 'Unable to communicate with the server. Please try again.',
+      status: isAbort ? 499 : 0,
+      error: isAbort
+        ? 'Request timed out or was cancelled. Please try again.'
+        : 'Unable to communicate with the server. Please try again.',
     };
   }
 }
@@ -373,11 +386,28 @@ export const productsApi = {
     throw new Error(res.error || 'Failed to fetch paginated products. Please try again.');
   },
 
-  async getById(id: string): Promise<Product | null> {
+  async getByIdDetailed(
+    id: string,
+    options?: { signal?: AbortSignal }
+  ): Promise<{ success: boolean; product: Product | null; status?: number; error?: string }> {
     const res = await apiRequest<{ success: boolean; product: Product }>(
-      `${API_BASE}/products/${encodeURIComponent(id)}`
+      `${API_BASE}/products/${encodeURIComponent(id)}`,
+      { signal: options?.signal }
     );
-    return res.success && res.data && res.data.product ? res.data.product : null;
+    if (res.success && res.data?.product) {
+      return { success: true, product: res.data.product, status: 200 };
+    }
+    return {
+      success: false,
+      product: null,
+      status: res.status,
+      error: res.error,
+    };
+  },
+
+  async getById(id: string, options?: { signal?: AbortSignal }): Promise<Product | null> {
+    const res = await this.getByIdDetailed(id, options);
+    return res.product;
   },
 
   async create(product: Partial<Product>): Promise<Product> {

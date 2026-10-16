@@ -70,7 +70,9 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
     singleProduct,
     isProductLoading,
     productNotFound,
+    productError,
     loadProductById,
+    retryLoadProduct,
     currentView,
     selectedProductId,
     setCurrentView,
@@ -113,12 +115,18 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
   });
 
   // Fetch product directly from server on mount or when productId prop changes
+  // Supports request cancellation via AbortController to discard stale/double-mounted requests
   useEffect(() => {
-    if (productId) {
-      loadProductById(productId);
-    }
+    if (!productId) return;
+    const abortCtrl = new AbortController();
+    loadProductById(productId, { signal: abortCtrl.signal });
+
     // Scroll window smoothly to top when viewing a new product
     window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    return () => {
+      abortCtrl.abort();
+    };
   }, [productId, loadProductById]);
 
   // Use the fetched product or the matching one from products (matches by slug, id, or normalized title)
@@ -132,7 +140,8 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
   useEffect(() => {
     if (!product || typeof window === 'undefined') return;
 
-    const targetUrl = getProductUrl(product);
+    const canonicalSlug = product.slug || product.id;
+    const targetUrl = `/product/${encodeURIComponent(canonicalSlug)}`;
     const currentPath = window.location.pathname;
 
     // Dynamically update the address bar without reloading the page
@@ -144,14 +153,13 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
       );
     }
 
-    const activeIdentifier = product.slug || product.id;
-    if (selectedProductId !== activeIdentifier) {
-      setSelectedProductId(activeIdentifier);
+    if (selectedProductId !== canonicalSlug) {
+      setSelectedProductId(canonicalSlug);
     }
     if (currentView !== 'product') {
       setCurrentView('product');
     }
-  }, [product, getProductUrl, selectedProductId, setSelectedProductId, currentView, setCurrentView]);
+  }, [product?.id, product?.slug, selectedProductId, setSelectedProductId, currentView, setCurrentView]);
 
   const category = categories.find((c) => c.id === product?.categoryId);
 
@@ -234,7 +242,8 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
   };
 
   // 1. Loading Skeleton State
-  if (isProductLoading && !product) {
+  // Strictly active while loading, or before product/error/notFound is resolved for this productId
+  if ((isProductLoading && !product) || (!product && !productNotFound && !productError)) {
     return (
       <div className="py-6 sm:py-10 max-w-7xl mx-auto">
         {/* Breadcrumb Skeleton */}
@@ -274,7 +283,56 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
     );
   }
 
-  // 2. 404 Product Not Found State
+  // 2. Recoverable Network / Server Error State (5xx or Connection Drop)
+  if (productError && !product) {
+    return (
+      <div className="py-12 sm:py-16 max-w-4xl mx-auto px-4 text-center">
+        <div className="bg-white rounded-3xl border border-slate-200 shadow-sm p-8 sm:p-12 space-y-6">
+          <div className="w-20 h-20 rounded-3xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto border border-amber-100 shadow-xs">
+            <AlertTriangle className="w-10 h-10" />
+          </div>
+
+          <div className="space-y-2 max-w-lg mx-auto">
+            <span className="inline-block px-3 py-1 rounded-full bg-amber-100/80 text-amber-800 text-xs font-bold uppercase tracking-wider">
+              Connection Notice
+            </span>
+            <h1 className="font-display font-extrabold text-2xl sm:text-3xl text-slate-900">
+              Unable to Load Product
+            </h1>
+            <p className="text-sm text-slate-500 leading-relaxed">
+              {productError || 'We encountered a temporary network or server issue while loading this product. Please check your connection and try again.'}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+            <button
+              type="button"
+              onClick={() => {
+                if (productId) {
+                  loadProductById(productId);
+                }
+              }}
+              className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs sm:text-sm font-bold shadow-md hover:shadow-lg active:scale-95 transition-all cursor-pointer"
+            >
+              <RotateCcw className="w-4 h-4" />
+              <span>Retry Loading</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleBackToHome}
+              className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-slate-900 hover:bg-black text-white text-xs sm:text-sm font-bold shadow-md hover:shadow-lg active:scale-95 transition-all cursor-pointer"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>Back to All Products</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 3. True 404 Product Not Found State (Product definitely does not exist in D1)
   if (productNotFound || (!product && !isProductLoading)) {
     const supportWhatsAppNumber = settings.footer?.supportWhatsApp || settings.phone || '';
     const whatsappHref = formatWhatsAppLink(

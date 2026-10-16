@@ -1279,10 +1279,13 @@ export async function getProductById(
     availableColumns,
     !options?.publicOnly && options?.includeBuyingPrice !== false
   );
+  const cleanId = (id || '').trim();
+  if (!cleanId) return null;
+
   // Match either internal product ID or current SEO URL slug
   let row = await db
     .prepare(`SELECT ${columns} FROM products WHERE id = ? OR slug = ? LIMIT 1`)
-    .bind(id, id)
+    .bind(cleanId, cleanId)
     .first<ProductRow>();
 
   // If not found as current product or slug, resolve via historical slug in product_slug_history
@@ -1300,11 +1303,21 @@ export async function getProductById(
           WHERE psh.slug = ?
           LIMIT 1
         `)
-        .bind(id)
+        .bind(cleanId)
         .first<ProductRow>();
     } catch {
       // Historical lookup gracefully proceeds if table empty or query fails
     }
+  }
+
+  // Case-insensitive fallback match for slug or ID
+  if (!row) {
+    try {
+      row = await db
+        .prepare(`SELECT ${columns} FROM products WHERE LOWER(id) = LOWER(?) OR LOWER(slug) = LOWER(?) LIMIT 1`)
+        .bind(cleanId, cleanId)
+        .first<ProductRow>();
+    } catch {}
   }
 
   return row ? rowToProduct(row) : null;

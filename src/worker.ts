@@ -1,5 +1,6 @@
 import { handleApiRequest, getCorsHeaders } from './server/router';
 import { Env } from './server/types';
+import { Product } from './types';
 import { getBodySizeLimit } from './server/bodyLimits';
 import {
   ROBOTS_TXT_CONTENT,
@@ -60,6 +61,8 @@ const VALID_SPA_ROUTES = new Set([
 function isValidSpaRoute(pathname: string): boolean {
   if (VALID_SPA_ROUTES.has(pathname)) return true;
   if (pathname.startsWith('/admin/')) return true;
+  if (pathname.startsWith('/product/')) return true;
+  if (pathname.startsWith('/category/')) return true;
   return false;
 }
 
@@ -217,22 +220,62 @@ export default {
 
     // 5. Technical SEO & SSR: Check for Product URL (query param or pathname)
     if (url.searchParams.has('product') || url.searchParams.has('p') || url.pathname.startsWith('/product/')) {
-      const prodParam = (
+      const rawParam = (
         url.searchParams.get('product') ||
         url.searchParams.get('p') ||
         url.pathname.replace(/^\/product\//, '').replace(/\/$/, '')
       ).trim();
+      const prodParam = decodeURIComponent(rawParam);
 
       if (prodParam) {
-        let product = null;
+        let product: Product | null = null;
+        let dbQueryFailed = false;
+
         if (env.DB) {
           try {
             product = await getProductById(env.DB, prodParam, { includeBuyingPrice: false, publicOnly: true });
-          } catch {}
+          } catch (err) {
+            console.warn('[Worker Product SEO] D1 query error for product:', prodParam, err);
+            dbQueryFailed = true;
+          }
         } else {
           product = INITIAL_PRODUCTS.find(
-            (p) => p.id === prodParam || p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') === prodParam
+            (p) => p.id === prodParam || p.slug === prodParam || p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') === prodParam
           ) || null;
+        }
+
+        // Resilient SPA Fallback:
+        // If D1 had a transient query error or timeout, do NOT return a hard static 404 HTML!
+        // Instead, serve the SPA index.html so the client app can boot, query the API, and present
+        // recoverable retry options without forcing the user into a dead-end page.
+        if (dbQueryFailed && !product) {
+          console.warn('[Worker Product SEO] Serving SPA index.html fallback for:', prodParam);
+          if (env.ASSETS) {
+            try {
+              const indexRes = await env.ASSETS.fetch(new Request(new URL('/', request.url).toString(), {
+                headers: request.headers,
+              }));
+              if (indexRes.ok) {
+                const html = await indexRes.text();
+                return new Response(html, {
+                  status: 200,
+                  headers: {
+                    'Content-Type': 'text/html; charset=UTF-8',
+                    'Cache-Control': 'no-cache, no-store, must-revalidate',
+                    ...secHeaders,
+                  },
+                });
+              }
+            } catch {}
+          }
+          return new Response(getFallbackHtmlTemplate(), {
+            status: 200,
+            headers: {
+              'Content-Type': 'text/html; charset=UTF-8',
+              'Cache-Control': 'no-cache, no-store, must-revalidate',
+              ...secHeaders,
+            },
+          });
         }
 
         // Return genuine 404 for missing or inactive/deleted products
