@@ -114,24 +114,78 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
     onConfirm: () => {},
   });
 
-  // Fetch product directly from server on mount or when productId prop changes
-  // Supports request cancellation via AbortController to discard stale/double-mounted requests
+  // Use the fetched product or the matching one from products (matches by slug, id, or normalized title)
+  const matchesProduct = (p: Product | null | undefined, targetId: string = productId) => {
+    if (!p || !targetId) return false;
+    const cleanTarget = targetId.trim().toLowerCase();
+    return Boolean(
+      p.id.toLowerCase() === cleanTarget ||
+      (p.slug && p.slug.toLowerCase() === cleanTarget) ||
+      (typeof p.title === 'string' && p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') === cleanTarget)
+    );
+  };
+  const product = (matchesProduct(singleProduct) ? singleProduct : null) || products.find((p) => matchesProduct(p)) || null;
+
+  // Isolated Scroll Reset:
+  // Restricts window.scrollTo(0, 0) strictly to initial route mount or explicit product navigation.
+  // Guarded using useRef (hasScrolledForProductRef) to prevent re-firing on in-place re-renders,
+  // image carousel clicks, variant selection, review submission, or background data hydration.
+  const hasScrolledForProductRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (!productId) return;
+
+    // Check if we have already scrolled for this product entity (matches against raw ID, canonical ID, or slug)
+    const isSameProduct = Boolean(
+      hasScrolledForProductRef.current &&
+      (hasScrolledForProductRef.current === productId ||
+       (product && (
+         product.id === hasScrolledForProductRef.current ||
+         (product.slug && product.slug === hasScrolledForProductRef.current)
+       )))
+    );
+
+    if (!isSameProduct) {
+      hasScrolledForProductRef.current = product?.id || productId;
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } else if (product?.id && hasScrolledForProductRef.current !== product.id) {
+      // Pin to canonical product ID once resolved so alias changes never re-trigger
+      hasScrolledForProductRef.current = product.id;
+    }
+  }, [productId, product?.id, product?.slug]);
+
+  const lastLoadedProductRef = useRef<string | null>(null);
+
+  // Fetch product directly from server on mount or when a different product is requested.
+  // Supports request cancellation via AbortController to discard stale/double-mounted requests.
+  useEffect(() => {
+    if (!productId) return;
+
+    // Guard: Prevent re-fetching if this exact product is already loaded or active in memory
+    const isAlreadyLoaded = Boolean(
+      lastLoadedProductRef.current &&
+      (lastLoadedProductRef.current === productId ||
+       (product && (
+         product.id === lastLoadedProductRef.current ||
+         (product.slug && product.slug === lastLoadedProductRef.current)
+       )))
+    );
+
+    if (isAlreadyLoaded) {
+      if (product?.id) {
+        lastLoadedProductRef.current = product.id;
+      }
+      return;
+    }
+
+    lastLoadedProductRef.current = product?.id || productId;
     const abortCtrl = new AbortController();
     loadProductById(productId, { signal: abortCtrl.signal });
-
-    // Scroll window smoothly to top when viewing a new product
-    window.scrollTo({ top: 0, behavior: 'smooth' });
 
     return () => {
       abortCtrl.abort();
     };
-  }, [productId, loadProductById]);
-
-  // Use the fetched product or the matching one from products (matches by slug, id, or normalized title)
-  const matchesProduct = (p: Product | null | undefined) => Boolean(p && (p.id === productId || p.slug === productId || (typeof p.title === 'string' && p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') === productId)));
-  const product = (matchesProduct(singleProduct) ? singleProduct : null) || products.find((p) => matchesProduct(p)) || null;
+  }, [productId, loadProductById, product?.id, product?.slug]);
 
   // Dynamic URL Synchronization:
   // As soon as a single product is viewed or loaded, automatically update the browser's
@@ -198,8 +252,16 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
     }
   }, [product?.id]);
 
-  // Initialize variant defaults when product loads
+  const initializedVariantProductIdRef = useRef<string | null>(null);
+
+  // Initialize variant defaults when a new product loads
   useEffect(() => {
+    if (!product?.id) return;
+    if (initializedVariantProductIdRef.current === product.id) {
+      return;
+    }
+    initializedVariantProductIdRef.current = product.id;
+
     setSelectedImageIdx(0);
     setQuantity(1);
     setActiveTab('overview');
@@ -217,12 +279,16 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
       setSelectedColor(undefined);
     }
     setValidationError(null);
+  }, [product?.id, product?.sizes, product?.colors]);
+
+  // Synchronize review author name when currentUser profile updates without resetting variant or image state
+  useEffect(() => {
     if (currentUser?.name) {
       setReviewAuthor(currentUser.name);
     } else {
       setReviewAuthor('');
     }
-  }, [product?.id, currentUser]);
+  }, [currentUser?.name]);
 
   const canDeleteReview = Boolean(
     isAdminLoggedIn ||

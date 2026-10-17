@@ -377,6 +377,8 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   }, []);
 
   const [singleProduct, setSingleProduct] = useState<Product | null>(null);
+  const singleProductRef = useRef<Product | null>(singleProduct);
+  singleProductRef.current = singleProduct;
   const [isProductLoading, setIsProductLoading] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
     try {
@@ -747,6 +749,9 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     }
   }, [refreshReviews]);
 
+  const reviewsRef = useRef<ProductReview[]>(reviews);
+  reviewsRef.current = reviews;
+
   const addProductReview = useCallback(async (reviewData: Omit<ProductReview, 'id' | 'createdAt'>) => {
     const authorName = reviewData.authorName || reviewData.author || 'Customer';
     try {
@@ -768,7 +773,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         setProducts((prev) =>
           prev.map((p) => {
             if (p.id !== reviewData.productId) return p;
-            const existingApproved = reviews.filter((r) => r.productId === reviewData.productId && r.status === 'approved');
+            const existingApproved = reviewsRef.current.filter((r) => r.productId === reviewData.productId && r.status === 'approved');
             const newCount = existingApproved.length + 1;
             const newAvg = (existingApproved.reduce((sum, r) => sum + (Number(r.rating) || 5), 0) + (Number(created.rating) || 5)) / newCount;
             return {
@@ -791,39 +796,42 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       console.error('Failed to submit review:', err);
       throw err;
     }
-  }, [reviews, refreshReviews]);
+  }, [refreshReviews]);
 
   const deleteProductReview = useCallback((reviewId: string) => {
-    const target = reviews.find((r) => r.id === reviewId);
-    if (!target) return;
-    const prodId = target.productId;
-    const updatedReviews = reviews.filter((r) => r.id !== reviewId);
-    setReviews(updatedReviews);
+    setReviews((prevReviews) => {
+      const target = prevReviews.find((r) => r.id === reviewId);
+      if (!target) return prevReviews;
+      const prodId = target.productId;
+      const updatedReviews = prevReviews.filter((r) => r.id !== reviewId);
 
-    const remainingApproved = updatedReviews.filter((r) => r.productId === prodId && r.status === 'approved');
-    const avgRating =
-      remainingApproved.length > 0
-        ? remainingApproved.reduce((acc, r) => acc + r.rating, 0) / remainingApproved.length
-        : 5.0;
+      const remainingApproved = updatedReviews.filter((r) => r.productId === prodId && r.status === 'approved');
+      const avgRating =
+        remainingApproved.length > 0
+          ? remainingApproved.reduce((acc, r) => acc + r.rating, 0) / remainingApproved.length
+          : 5.0;
 
-    setProducts((prev) =>
-      prev.map((p) =>
-        p.id === prodId
-          ? {
-              ...p,
-              rating: Number(avgRating.toFixed(1)),
-              reviewsCount: remainingApproved.length,
-            }
-          : p
-      )
-    );
+      setProducts((prev) =>
+        prev.map((p) =>
+          p.id === prodId
+            ? {
+                ...p,
+                rating: Number(avgRating.toFixed(1)),
+                reviewsCount: remainingApproved.length,
+              }
+            : p
+        )
+      );
+
+      return updatedReviews;
+    });
 
     showNotification(
       'info',
       'Review Removed 🗑️',
       'The customer review has been deleted and rating score has been updated.'
     );
-  }, [reviews, showNotification]);
+  }, [showNotification]);
 
   // Product Loading & Sync
   const productsRef = useRef<Product[]>(products);
@@ -850,7 +858,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       );
     };
 
-    const existingInSingle = matchesTarget(singleProduct) ? singleProduct : null;
+    const existingInSingle = matchesTarget(singleProductRef.current) ? singleProductRef.current : null;
     const existingInList = productsRef.current.find((p) => matchesTarget(p)) || null;
     const existing = existingInSingle || existingInList;
 
@@ -960,7 +968,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       setIsProductLoading(false);
       return existing || null;
     }
-  }, [singleProduct]);
+  }, []);
 
   const retryLoadProduct = useCallback(async (): Promise<Product | null> => {
     const targetId = currentLoadingIdRef.current || selectedProductId;
