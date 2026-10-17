@@ -5389,7 +5389,7 @@ export async function ensureBroadcasterDeliveriesTable(db: D1Database): Promise<
     `).run();
     await db.prepare('CREATE INDEX IF NOT EXISTS idx_broadcaster_scan_cache_page_camp ON broadcaster_scan_cache(page_id, campaign_id)').run();
 
-    // 20. Broadcaster Config & Persistent Campaign Jobs
+    // 20. Broadcaster Config & Recipient Memory Ledger
     await db.prepare(`
       CREATE TABLE IF NOT EXISTS broadcaster_config (
         id TEXT PRIMARY KEY DEFAULT 'default',
@@ -5399,13 +5399,79 @@ export async function ensureBroadcasterDeliveriesTable(db: D1Database): Promise<
         token_status TEXT DEFAULT 'unconfigured',
         min_delay_sec REAL NOT NULL DEFAULT 2,
         max_delay_sec REAL NOT NULL DEFAULT 5,
+        min_delay_ms INTEGER NOT NULL DEFAULT 2000,
+        max_delay_ms INTEGER NOT NULL DEFAULT 5000,
         batch_size INTEGER NOT NULL DEFAULT 50,
         batch_pause_sec REAL NOT NULL DEFAULT 30,
         default_message_templates TEXT,
+        anti_duplicate_enabled INTEGER NOT NULL DEFAULT 1,
         verified_at TEXT,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       )
     `).run();
+    await db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_broadcaster_config_page_id ON broadcaster_config(page_id)').run();
+
+    // Permanent recipient duplicate memory ledger: UNIQUE(page_id, recipient_psid)
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS broadcaster_recipient_memory (
+        id TEXT PRIMARY KEY,
+        page_id TEXT NOT NULL,
+        recipient_psid TEXT NOT NULL,
+        campaign_id TEXT,
+        status TEXT NOT NULL DEFAULT 'DELIVERED',
+        message_id TEXT,
+        first_messaged_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(page_id, recipient_psid)
+      )
+    `).run();
+    await db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_broadcaster_memory_page_psid ON broadcaster_recipient_memory(page_id, recipient_psid)').run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_broadcaster_memory_page ON broadcaster_recipient_memory(page_id)').run();
+
+    // Campaign state tracking table
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS broadcaster_campaigns (
+        id TEXT PRIMARY KEY,
+        page_id TEXT NOT NULL,
+        campaign_id TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK(status IN ('IDLE', 'RUNNING', 'PAUSED', 'STOPPED', 'COMPLETED', 'FAILED')),
+        total_count INTEGER DEFAULT 0,
+        processed_count INTEGER DEFAULT 0,
+        delivered_count INTEGER DEFAULT 0,
+        ambiguous_count INTEGER DEFAULT 0,
+        failed_count INTEGER DEFAULT 0,
+        skipped_count INTEGER DEFAULT 0,
+        remaining_count INTEGER DEFAULT 0,
+        min_delay_ms INTEGER DEFAULT 2000,
+        max_delay_ms INTEGER DEFAULT 5000,
+        batch_size INTEGER DEFAULT 50,
+        batch_pause_sec REAL DEFAULT 30,
+        message_template TEXT,
+        anti_duplicate_enabled INTEGER DEFAULT 1,
+        checkpoint_note TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `).run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_broadcaster_campaigns_page_status ON broadcaster_campaigns(page_id, status)').run();
+
+    // Granular job execution records
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS broadcaster_jobs (
+        id TEXT PRIMARY KEY,
+        campaign_id TEXT NOT NULL,
+        page_id TEXT NOT NULL,
+        recipient_psid TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('QUEUED', 'DELIVERED', 'FAILED', 'AMBIGUOUS', 'SKIPPED')),
+        message_id TEXT,
+        error_message TEXT,
+        sent_at TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `).run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_broadcaster_jobs_campaign ON broadcaster_jobs(campaign_id)').run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_broadcaster_jobs_status ON broadcaster_jobs(status)').run();
 
     await db.prepare(`
       CREATE TABLE IF NOT EXISTS broadcaster_campaign_jobs (
@@ -5437,6 +5503,15 @@ export async function ensureBroadcasterDeliveriesTable(db: D1Database): Promise<
     await db.prepare('CREATE INDEX IF NOT EXISTS idx_broadcaster_jobs_campaign ON broadcaster_campaign_jobs(campaign_id)').run();
 
     // Self-healing migrations for existing deployments
+    try {
+      await db.prepare('ALTER TABLE broadcaster_config ADD COLUMN min_delay_ms INTEGER NOT NULL DEFAULT 2000').run();
+    } catch {}
+    try {
+      await db.prepare('ALTER TABLE broadcaster_config ADD COLUMN max_delay_ms INTEGER NOT NULL DEFAULT 5000').run();
+    } catch {}
+    try {
+      await db.prepare('ALTER TABLE broadcaster_config ADD COLUMN anti_duplicate_enabled INTEGER NOT NULL DEFAULT 1').run();
+    } catch {}
     try {
       await db.prepare('ALTER TABLE broadcaster_config ADD COLUMN batch_size INTEGER NOT NULL DEFAULT 50').run();
     } catch {}
@@ -5471,9 +5546,12 @@ export interface BroadcasterConfigRecord {
   token_status: string;
   min_delay_sec: number;
   max_delay_sec: number;
+  min_delay_ms?: number;
+  max_delay_ms?: number;
   batch_size: number;
   batch_pause_sec: number;
   default_message_templates?: string | null;
+  anti_duplicate_enabled?: number | boolean;
   verified_at?: string | null;
   updated_at: string;
 }
@@ -5508,36 +5586,57 @@ export async function getBroadcasterConfig(db: D1Database, pageId?: string): Pro
   let query = 'SELECT * FROM broadcaster_config WHERE id = ?';
   let bindings = ['default'];
   if (pageId && pageId.trim()) {
-    query = 'SELECT * FROM broadcaster_config WHERE page_id = ? OR id = ? LIMIT 1';
-    bindings = [pageId.trim(), 'default'];
+    query = 'SELECT * FROM broadcaster_config WHERE page_id = ? OR id = ? OR id = ? ORDER BY CASE WHEN page_id = ? THEN 1 WHEN id = ? THEN 2 ELSE 3 END LIMIT 1';
+    const cleanPId = pageId.trim();
+    bindings = [cleanPId, `cfg_${cleanPId}`, 'default', cleanPId, `cfg_${cleanPId}`];
   }
   const config = await db.prepare(query).bind(...bindings).first<BroadcasterConfigRecord>();
   if (!config) return null;
+  const minSec = config.min_delay_sec != null ? Number(config.min_delay_sec) : 2;
+  const maxSec = config.max_delay_sec != null ? Number(config.max_delay_sec) : 5;
   return {
     ...config,
-    min_delay_sec: config.min_delay_sec != null ? Number(config.min_delay_sec) : 2,
-    max_delay_sec: config.max_delay_sec != null ? Number(config.max_delay_sec) : 5,
+    min_delay_sec: minSec,
+    max_delay_sec: maxSec,
+    min_delay_ms: config.min_delay_ms != null ? Number(config.min_delay_ms) : Math.round(minSec * 1000),
+    max_delay_ms: config.max_delay_ms != null ? Number(config.max_delay_ms) : Math.round(maxSec * 1000),
     batch_size: config.batch_size != null ? Number(config.batch_size) : 50,
     batch_pause_sec: config.batch_pause_sec != null ? Number(config.batch_pause_sec) : 30,
+    anti_duplicate_enabled: config.anti_duplicate_enabled != null ? (config.anti_duplicate_enabled === 1 || config.anti_duplicate_enabled === true) : true,
   };
 }
 
 export async function saveBroadcasterConfig(db: D1Database, config: Partial<BroadcasterConfigRecord>): Promise<void> {
   await ensureBroadcasterDeliveriesTable(db);
   const now = new Date().toISOString();
-  const id = config.id || 'default';
-  const pageId = config.page_id || '104829105829104';
-  const minDelay = config.min_delay_sec != null ? Number(config.min_delay_sec) : 2;
-  const maxDelay = config.max_delay_sec != null ? Number(config.max_delay_sec) : 5;
-  const batchSize = config.batch_size != null ? Number(config.batch_size) : 50;
-  const batchPauseSec = config.batch_pause_sec != null ? Number(config.batch_pause_sec) : 30;
-  const tokenStatus = config.token_status || 'unconfigured';
+  const pageId = String(config.page_id || '104829105829104').trim();
+  const id = config.id || `cfg_${pageId}`;
+
+  // Fetch existing config to strictly prevent blank tokens from wiping existing encrypted tokens
+  const existing = await getBroadcasterConfig(db, pageId);
+
+  // Preserve existing encrypted token and token preview if omitted or blank
+  const rawEncryptedToken = config.encrypted_access_token ? String(config.encrypted_access_token).trim() : '';
+  const effectiveEncryptedToken = rawEncryptedToken || existing?.encrypted_access_token || null;
+  const rawTokenPreview = config.token_preview ? String(config.token_preview).trim() : '';
+  const effectiveTokenPreview = rawTokenPreview || existing?.token_preview || (effectiveEncryptedToken ? 'EAAG_CONFIGURED' : 'unconfigured');
+  const tokenStatus = config.token_status || (effectiveEncryptedToken ? (existing?.token_status || 'configured') : 'unconfigured');
+
+  const minDelaySec = config.min_delay_sec != null ? Number(config.min_delay_sec) : (existing?.min_delay_sec ?? 2);
+  const maxDelaySec = config.max_delay_sec != null ? Number(config.max_delay_sec) : (existing?.max_delay_sec ?? 5);
+  const minDelayMs = config.min_delay_ms != null ? Number(config.min_delay_ms) : Math.round(minDelaySec * 1000);
+  const maxDelayMs = config.max_delay_ms != null ? Number(config.max_delay_ms) : Math.round(maxDelaySec * 1000);
+  const batchSize = config.batch_size != null ? Number(config.batch_size) : (existing?.batch_size ?? 50);
+  const batchPauseSec = config.batch_pause_sec != null ? Number(config.batch_pause_sec) : (existing?.batch_pause_sec ?? 30);
+  const defaultTemplates = config.default_message_templates !== undefined ? (config.default_message_templates || null) : (existing?.default_message_templates || null);
+  const antiDuplicate = config.anti_duplicate_enabled === false || config.anti_duplicate_enabled === 0 ? 0 : 1;
+  const verifiedAt = config.verified_at || existing?.verified_at || null;
 
   await db
     .prepare(`
       INSERT INTO broadcaster_config (
-        id, page_id, encrypted_access_token, token_preview, token_status, min_delay_sec, max_delay_sec, batch_size, batch_pause_sec, default_message_templates, verified_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, page_id, encrypted_access_token, token_preview, token_status, min_delay_sec, max_delay_sec, min_delay_ms, max_delay_ms, batch_size, batch_pause_sec, default_message_templates, anti_duplicate_enabled, verified_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         page_id = excluded.page_id,
         encrypted_access_token = COALESCE(excluded.encrypted_access_token, broadcaster_config.encrypted_access_token),
@@ -5545,24 +5644,30 @@ export async function saveBroadcasterConfig(db: D1Database, config: Partial<Broa
         token_status = excluded.token_status,
         min_delay_sec = excluded.min_delay_sec,
         max_delay_sec = excluded.max_delay_sec,
+        min_delay_ms = excluded.min_delay_ms,
+        max_delay_ms = excluded.max_delay_ms,
         batch_size = excluded.batch_size,
         batch_pause_sec = excluded.batch_pause_sec,
-        default_message_templates = COALESCE(excluded.default_message_templates, broadcaster_config.default_message_templates),
+        default_message_templates = excluded.default_message_templates,
+        anti_duplicate_enabled = excluded.anti_duplicate_enabled,
         verified_at = COALESCE(excluded.verified_at, broadcaster_config.verified_at),
         updated_at = excluded.updated_at
     `)
     .bind(
       id,
       pageId,
-      config.encrypted_access_token || null,
-      config.token_preview || null,
+      effectiveEncryptedToken,
+      effectiveTokenPreview,
       tokenStatus,
-      minDelay,
-      maxDelay,
+      minDelaySec,
+      maxDelaySec,
+      minDelayMs,
+      maxDelayMs,
       batchSize,
       batchPauseSec,
-      config.default_message_templates || null,
-      config.verified_at || null,
+      defaultTemplates,
+      antiDuplicate,
+      verifiedAt,
       now
     )
     .run();

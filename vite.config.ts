@@ -7074,7 +7074,9 @@ function localApiDevPlugin(): Plugin {
         // ==========================================
         // FACEBOOK BROADCASTER DEV HANDLERS
         // ==========================================
-        if (url.pathname === '/api/broadcaster/config' && method === 'GET') {
+        const broadcasterPath = url.pathname.replace(/^\/api\/admin\/broadcaster/, '/api/broadcaster');
+
+        if (broadcasterPath === '/api/broadcaster/config' && method === 'GET') {
           const authResult = requireDevAuth(req);
           if (authResult.error) return sendDevError(res, authResult.error);
           const pageId = url.searchParams.get('pageId') || '104829105829104';
@@ -7084,11 +7086,16 @@ function localApiDevPlugin(): Plugin {
             token_status: 'verified',
             min_delay_sec: 2,
             max_delay_sec: 5,
+            min_delay_ms: 2000,
+            max_delay_ms: 5000,
             batch_size: 50,
             batch_pause_sec: 30,
             default_message_templates: 'স্বাগতম {name}! রঙধনু ট্রেড এর বিশেষ আপডেট। | হ্যালো {name}! আপনার ডেলিভারি ও স্পেশাল অফার।',
+            anti_duplicate_enabled: 1,
             verified_at: new Date().toISOString(),
           };
+          const minSec = cfg.min_delay_sec != null ? Number(cfg.min_delay_sec) : 2;
+          const maxSec = cfg.max_delay_sec != null ? Number(cfg.max_delay_sec) : 5;
           res.statusCode = 200;
           return res.end(
             JSON.stringify({
@@ -7097,11 +7104,14 @@ function localApiDevPlugin(): Plugin {
                 pageId: cfg.page_id || pageId,
                 tokenPreview: cfg.token_preview || 'unconfigured',
                 tokenStatus: cfg.token_status || 'verified',
-                minDelaySec: cfg.min_delay_sec != null ? Number(cfg.min_delay_sec) : 2,
-                maxDelaySec: cfg.max_delay_sec != null ? Number(cfg.max_delay_sec) : 5,
+                minDelaySec: minSec,
+                maxDelaySec: maxSec,
+                minDelayMs: cfg.min_delay_ms != null ? Number(cfg.min_delay_ms) : Math.round(minSec * 1000),
+                maxDelayMs: cfg.max_delay_ms != null ? Number(cfg.max_delay_ms) : Math.round(maxSec * 1000),
                 batchSize: cfg.batch_size != null ? Number(cfg.batch_size) : 50,
                 batchPauseSec: cfg.batch_pause_sec != null ? Number(cfg.batch_pause_sec) : 30,
                 defaultMessageTemplates: cfg.default_message_templates || null,
+                antiDuplicateEnabled: cfg.anti_duplicate_enabled !== false && cfg.anti_duplicate_enabled !== 0,
                 verifiedAt: cfg.verified_at || null,
                 hasServerSecret: true,
               },
@@ -7109,17 +7119,18 @@ function localApiDevPlugin(): Plugin {
           );
         }
 
-        if (url.pathname === '/api/broadcaster/config' && method === 'POST') {
+        if (broadcasterPath === '/api/broadcaster/config' && method === 'POST') {
           const authResult = requireDevAuth(req);
           if (authResult.error) return sendDevError(res, authResult.error);
           return readBody((body) => {
-            const pageId = String(body?.pageId || '104829105829104').trim();
+            const pageId = String(body?.pageId || body?.page_id || '104829105829104').trim();
             const rawToken = body?.pageAccessToken ? String(body.pageAccessToken).trim() : undefined;
-            const minDelay = body?.minDelaySec;
-            const maxDelay = body?.maxDelaySec;
-            const batchSize = body?.batchSize;
-            const batchPauseSec = body?.batchPauseSec;
-            const defaultTemplates = body?.defaultMessageTemplates ? String(body.defaultMessageTemplates).trim() : undefined;
+            const minDelay = body?.minDelaySec ?? body?.min_delay_sec ?? body?.minDelayMs ?? body?.min_delay_ms;
+            const maxDelay = body?.maxDelaySec ?? body?.max_delay_sec ?? body?.maxDelayMs ?? body?.max_delay_ms;
+            const batchSize = body?.batchSize ?? body?.batch_size;
+            const batchPauseSec = body?.batchPauseSec ?? body?.batch_pause_sec;
+            const defaultTemplates = body?.defaultMessageTemplates ? String(body.defaultMessageTemplates).trim() : body?.default_message_templates;
+            const antiDuplicate = body?.antiDuplicateEnabled !== undefined ? body.antiDuplicateEnabled : body?.anti_duplicate_enabled;
 
             const delayValidation = validateDelayConfig(minDelay, maxDelay);
             if (!delayValidation.valid) {
@@ -7136,7 +7147,7 @@ function localApiDevPlugin(): Plugin {
             const current = devBroadcasterConfig.get(pageId) || {};
             let tokenPreview = current.token_preview || 'EAAG_M...9014';
             let tokenStatus = current.token_status || 'verified';
-            if (rawToken) {
+            if (rawToken && rawToken !== 'unconfigured') {
               tokenPreview = rawToken.length <= 10 ? '********' : `${rawToken.slice(0, 7)}...${rawToken.slice(-4)}`;
               tokenStatus = 'configured';
             }
@@ -7148,9 +7159,12 @@ function localApiDevPlugin(): Plugin {
               token_status: tokenStatus,
               min_delay_sec: delayValidation.min,
               max_delay_sec: delayValidation.max,
+              min_delay_ms: delayValidation.minMs,
+              max_delay_ms: delayValidation.maxMs,
               batch_size: batchValidation.batchSize,
               batch_pause_sec: batchValidation.batchPauseSec,
-              default_message_templates: defaultTemplates ?? current.default_message_templates,
+              default_message_templates: defaultTemplates !== undefined ? defaultTemplates : current.default_message_templates,
+              anti_duplicate_enabled: antiDuplicate === false || antiDuplicate === 0 ? 0 : 1,
             });
 
             res.statusCode = 200;
@@ -7168,11 +7182,11 @@ function localApiDevPlugin(): Plugin {
           });
         }
 
-        if (url.pathname === '/api/broadcaster/verify-token' && method === 'POST') {
+        if ((broadcasterPath === '/api/broadcaster/verify-token' || broadcasterPath === '/api/broadcaster/test-token') && method === 'POST') {
           const authResult = requireDevAuth(req);
           if (authResult.error) return sendDevError(res, authResult.error);
           return readBody((body) => {
-            const pageId = String(body?.pageId || '').trim();
+            const pageId = String(body?.pageId || body?.page_id || '').trim();
             const token = body?.pageAccessToken ? String(body.pageAccessToken).trim() : 'EAAG_CONFIGURED_DEV_TOKEN';
 
             if (!pageId) {
@@ -7203,7 +7217,7 @@ function localApiDevPlugin(): Plugin {
           });
         }
 
-        if (url.pathname === '/api/broadcaster/job-status' && method === 'GET') {
+        if (broadcasterPath === '/api/broadcaster/job-status' && method === 'GET') {
           const authResult = requireDevAuth(req);
           if (authResult.error) return sendDevError(res, authResult.error);
           const campaignId = url.searchParams.get('campaignId') || undefined;
@@ -7243,7 +7257,7 @@ function localApiDevPlugin(): Plugin {
           return res.end(JSON.stringify({ success: true, job }));
         }
 
-        if (url.pathname === '/api/broadcaster/pause' && method === 'POST') {
+        if (broadcasterPath === '/api/broadcaster/pause' && method === 'POST') {
           const authResult = requireDevAuth(req);
           if (authResult.error) return sendDevError(res, authResult.error);
           return readBody((body) => {
@@ -7264,7 +7278,7 @@ function localApiDevPlugin(): Plugin {
           });
         }
 
-        if (url.pathname === '/api/broadcaster/resume' && method === 'POST') {
+        if (broadcasterPath === '/api/broadcaster/resume' && method === 'POST') {
           const authResult = requireDevAuth(req);
           if (authResult.error) return sendDevError(res, authResult.error);
           return readBody((body) => {
@@ -7285,7 +7299,7 @@ function localApiDevPlugin(): Plugin {
           });
         }
 
-        if (url.pathname === '/api/broadcaster/stop' && method === 'POST') {
+        if (broadcasterPath === '/api/broadcaster/stop' && method === 'POST') {
           const authResult = requireDevAuth(req);
           if (authResult.error) return sendDevError(res, authResult.error);
           return readBody((body) => {
@@ -7306,24 +7320,44 @@ function localApiDevPlugin(): Plugin {
           });
         }
 
-        if (url.pathname === '/api/broadcaster/stats' && method === 'GET') {
+        if (broadcasterPath === '/api/broadcaster/stats' && method === 'GET') {
           const authResult = requireDevAuth(req);
           if (authResult.error) return sendDevError(res, authResult.error);
           const pageId = url.searchParams.get('pageId') || undefined;
+          const campaignId = url.searchParams.get('campaignId') || undefined;
 
           let list = Array.from(devBroadcasterLedger.values());
           if (pageId) list = list.filter((r) => r.page_id === pageId);
 
-          const delivered = list.filter((r) => r.status === 'DELIVERED').length;
-          const ambiguous = list.filter((r) => r.status === 'AMBIGUOUS').length;
-          const failed = list.filter((r) => r.status === 'FAILED').length;
-          const queued = list.filter((r) => r.status === 'QUEUED').length;
+          let delivered = list.filter((r) => r.status === 'DELIVERED').length;
+          let ambiguous = list.filter((r) => r.status === 'AMBIGUOUS').length;
+          let failed = list.filter((r) => r.status === 'FAILED').length;
+          let queued = list.filter((r) => r.status === 'QUEUED').length;
+          let skipped = 0;
+          let remaining = queued;
+
+          const job = campaignId ? devBroadcasterJobs.get(campaignId) : null;
+          if (job) {
+            delivered = job.delivered_count ?? delivered;
+            ambiguous = job.ambiguous_count ?? ambiguous;
+            failed = job.failed_count ?? failed;
+            skipped = job.skipped_count ?? 0;
+            remaining = Math.max(0, (job.total_count || 0) - (job.processed_count || 0));
+            queued = remaining;
+          }
 
           res.statusCode = 200;
           return res.end(
             JSON.stringify({
               success: true,
               stats: {
+                savedCount: delivered,
+                queued,
+                delivered,
+                skipped,
+                failed,
+                remaining,
+                ambiguous,
                 totalDeliveries: list.length,
                 deliveredCount: delivered,
                 ambiguousCount: ambiguous,

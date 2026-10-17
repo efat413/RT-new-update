@@ -110,16 +110,21 @@ export interface MetaTokenValidationResult {
   pageName?: string;
   category?: string;
   permissions?: string[];
+  errorCode?: number;
+  errorSubcode?: number;
+  diagnostic?: string;
   error?: string;
 }
 
 /**
  * Validates a Page Access Token using the official Meta Graph API:
- * GET https://graph.facebook.com/v21.0/me?fields=id,name,category
+ * GET https://graph.facebook.com/v21.0/me?fields=id,name,category,permissions
  * 
  * Verifies:
  * 1. Token is active and recognized by Meta.
- * 2. Token strictly belongs to the intended Page ID (rejects arbitrary or mismatched IDs).
+ * 2. Handles OAuthException errors (Session has expired, Code 190, Subcode 463/467/460).
+ * 3. Token strictly belongs to the intended Page ID (rejects arbitrary or mismatched IDs).
+ * 4. Token has required messaging permissions (pages_messaging).
  */
 export async function validateMetaPageToken(params: {
   token: string;
@@ -138,7 +143,7 @@ export async function validateMetaPageToken(params: {
     return { valid: false, pageId: '', error: 'Target Page ID is required for validation.' };
   }
 
-  const endpoint = `https://graph.facebook.com/v21.0/me?fields=id,name,category&access_token=${encodeURIComponent(cleanToken)}`;
+  const endpoint = `https://graph.facebook.com/v21.0/me?fields=id,name,category,permissions&access_token=${encodeURIComponent(cleanToken)}`;
 
   try {
     const res = await fetchFn(endpoint, {
@@ -151,13 +156,31 @@ export async function validateMetaPageToken(params: {
 
     if (!res.ok) {
       const errJson = await res.json().catch(() => ({}));
-      const errMsg =
-        errJson?.error?.message ||
-        `Meta Graph API returned HTTP ${res.status} (${res.statusText})`;
+      const errObj = errJson?.error || {};
+      const rawMsg = errObj.message || `Meta Graph API returned HTTP ${res.status} (${res.statusText})`;
+      const errorCode = Number(errObj.code) || res.status;
+      const errorSubcode = errObj.error_subcode != null ? Number(errObj.error_subcode) : undefined;
+
+      let diagnostic = rawMsg;
+      if (errorCode === 190) {
+        if (errorSubcode === 463) {
+          diagnostic = 'Session has expired (Code 190, Subcode 463): The Page Access Token has expired. Please generate a new Long-Lived Page Access Token from Meta Developer Portal.';
+        } else if (errorSubcode === 467) {
+          diagnostic = 'Session invalidated (Code 190, Subcode 467): The user logged out or changed their password. Please re-authenticate and generate a new token.';
+        } else if (errorSubcode === 460) {
+          diagnostic = 'Password changed (Code 190, Subcode 460): The access token was invalidated due to a password change.';
+        } else {
+          diagnostic = `Session expired or token revoked (Code 190): ${rawMsg}`;
+        }
+      }
+
       return {
         valid: false,
         pageId: cleanExpectedPageId,
-        error: `Meta Token Validation Failed: ${errMsg}`,
+        errorCode,
+        errorSubcode,
+        diagnostic,
+        error: `Meta Token Validation Failed: ${diagnostic}`,
       };
     }
 
@@ -184,12 +207,32 @@ export async function validateMetaPageToken(params: {
       };
     }
 
+    // Verify messaging permissions if returned in permissions array
+    let permissions = ['pages_messaging', 'pages_read_engagement'];
+    if (Array.isArray(data?.permissions?.data)) {
+      const granted = data.permissions.data
+        .filter((p: any) => p.status === 'granted')
+        .map((p: any) => p.permission);
+      if (granted.length > 0) {
+        permissions = granted;
+        if (!granted.includes('pages_messaging')) {
+          return {
+            valid: false,
+            pageId: resolvedPageId,
+            pageName: resolvedPageName,
+            permissions: granted,
+            error: 'Token missing required "pages_messaging" permission. Please re-generate token with pages_messaging scope.',
+          };
+        }
+      }
+    }
+
     return {
       valid: true,
       pageId: resolvedPageId,
       pageName: resolvedPageName,
       category: resolvedCategory,
-      permissions: ['pages_messaging', 'pages_read_engagement'],
+      permissions,
     };
   } catch (err: any) {
     return {
@@ -211,41 +254,76 @@ export const MAX_BATCH_PAUSE_SEC = 3600;
 
 /**
  * Validates configured delay bounds.
+ * Accepts seconds or milliseconds (values > 100 treated as ms).
  * Enforces finite, non-negative numbers and ensures maxDelay >= minDelay.
  */
 export function validateDelayConfig(
-  minSec: any,
-  maxSec: any,
-  maxAllowedCeiling: number = MAX_SAFE_DELAY_SECONDS
-): { valid: boolean; min: number; max: number; error?: string } {
-  if (minSec === undefined || minSec === null || minSec === '') {
-    minSec = DEFAULT_MIN_DELAY_SEC;
+  minInput: any,
+  maxInput: any,
+  maxAllowedCeilingSec: number = MAX_SAFE_DELAY_SECONDS
+): { valid: boolean; min: number; max: number; minMs: number; maxMs: number; error?: string } {
+  if (minInput === undefined || minInput === null || minInput === '') {
+    minInput = DEFAULT_MIN_DELAY_SEC;
   }
-  if (maxSec === undefined || maxSec === null || maxSec === '') {
-    maxSec = DEFAULT_MAX_DELAY_SEC;
+  if (maxInput === undefined || maxInput === null || maxInput === '') {
+    maxInput = DEFAULT_MAX_DELAY_SEC;
   }
-  const min = Number(minSec);
-  const max = Number(maxSec);
 
-  if (!Number.isFinite(min) || min < 0) {
-    return { valid: false, min: DEFAULT_MIN_DELAY_SEC, max: DEFAULT_MAX_DELAY_SEC, error: 'Min Delay must be a finite non-negative number of seconds.' };
-  }
-  if (!Number.isFinite(max) || max < 0) {
-    return { valid: false, min: DEFAULT_MIN_DELAY_SEC, max: DEFAULT_MAX_DELAY_SEC, error: 'Max Delay must be a finite non-negative number of seconds.' };
-  }
-  if (max < min) {
-    return { valid: false, min, max, error: `Max Delay (${max}s) cannot be less than Min Delay (${min}s).` };
-  }
-  if (max > maxAllowedCeiling) {
+  const rawMin = Number(minInput);
+  const rawMax = Number(maxInput);
+
+  if (!Number.isFinite(rawMin) || rawMin < 0) {
     return {
       valid: false,
-      min,
-      max,
-      error: `Max Delay exceeds the safe ceiling of ${maxAllowedCeiling} seconds.`,
+      min: DEFAULT_MIN_DELAY_SEC,
+      max: DEFAULT_MAX_DELAY_SEC,
+      minMs: DEFAULT_MIN_DELAY_SEC * 1000,
+      maxMs: DEFAULT_MAX_DELAY_SEC * 1000,
+      error: 'Min Delay must be a finite non-negative number.',
+    };
+  }
+  if (!Number.isFinite(rawMax) || rawMax < 0) {
+    return {
+      valid: false,
+      min: DEFAULT_MIN_DELAY_SEC,
+      max: DEFAULT_MAX_DELAY_SEC,
+      minMs: DEFAULT_MIN_DELAY_SEC * 1000,
+      maxMs: DEFAULT_MAX_DELAY_SEC * 1000,
+      error: 'Max Delay must be a finite non-negative number.',
     };
   }
 
-  return { valid: true, min, max };
+  // Detect whether inputs are in seconds or milliseconds
+  // Milliseconds are typically >= 500ms (e.g. 2000ms, 5000ms).
+  // If min is small (e.g. 2s), both are in seconds.
+  const isMs = (rawMin >= 500 && rawMax >= 500) || (rawMin === 0 && rawMax >= 1000);
+  const minSec = isMs ? rawMin / 1000 : rawMin;
+  const maxSec = isMs ? rawMax / 1000 : rawMax;
+  const minMs = Math.round(minSec * 1000);
+  const maxMs = Math.round(maxSec * 1000);
+
+  if (maxSec < minSec) {
+    return {
+      valid: false,
+      min: minSec,
+      max: maxSec,
+      minMs,
+      maxMs,
+      error: `Max Delay (${maxSec}s) cannot be less than Min Delay (${minSec}s).`,
+    };
+  }
+  if (maxSec > maxAllowedCeilingSec) {
+    return {
+      valid: false,
+      min: minSec,
+      max: maxSec,
+      minMs,
+      maxMs,
+      error: `Max Delay (${maxSec}s) exceeds the safe ceiling of ${maxAllowedCeilingSec} seconds.`,
+    };
+  }
+
+  return { valid: true, min: minSec, max: maxSec, minMs, maxMs };
 }
 
 /**

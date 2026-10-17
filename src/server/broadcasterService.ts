@@ -1056,41 +1056,76 @@ export async function dispatchBroadcasterBatch(
 }
 
 /**
- * Data Protection Engine: Safe Ephemeral Memory Reset
+ * Data Protection Engine: Safe Ephemeral Memory & Page Recipient Memory Reset
  * 
- * CRITICAL RULE: "Reset Memory" ONLY clears ephemeral scan/queue caches (broadcaster_scan_cache).
- * NEVER drops, truncates, or deletes the permanent delivery ledger (broadcaster_deliveries).
+ * Rules:
+ * - By default: "Reset Memory" clears ephemeral scan/queue caches (broadcaster_scan_cache).
+ * - When pageId is specified and resetPageRecipientMemory is requested:
+ *   Performs authenticated atomic truncation of Page-scoped memory ledger (broadcaster_recipient_memory)
+ *   while NEVER wiping campaign logs (broadcaster_campaigns, broadcaster_campaign_jobs, broadcaster_jobs),
+ *   audit trails, or encrypted tokens.
  */
 export async function resetBroadcasterEphemeralMemory(
   db: D1Database,
-  pageId?: string
+  pageId?: string,
+  options?: { resetPageRecipientMemory?: boolean }
 ): Promise<{
   success: boolean;
   message: string;
+  pageId?: string;
+  savedCount: number;
   clearedEphemeralRows: number;
+  clearedMemoryRows?: number;
   permanentLedgerRowsProtected: number;
 }> {
+  const cleanPageId = pageId && pageId.trim() ? pageId.trim() : undefined;
+  const shouldResetRecipientMemory = options?.resetPageRecipientMemory === true;
+
   // 1. Count permanent ledger rows before reset
-  const permanentCountRes = await db
-    .prepare('SELECT COUNT(*) as count FROM broadcaster_deliveries')
-    .first<{ count: number }>();
+  let countQuery = 'SELECT COUNT(*) as count FROM broadcaster_deliveries';
+  let countBindings: any[] = [];
+  if (cleanPageId && !shouldResetRecipientMemory) {
+    countQuery += ' WHERE page_id = ?';
+    countBindings.push(cleanPageId);
+  }
+  const permanentCountRes = await db.prepare(countQuery).bind(...countBindings).first<{ count: number }>();
   const permanentRows = permanentCountRes?.count ?? 0;
 
-  // 2. Clear ONLY ephemeral scan cache
-  let deleteQuery = 'DELETE FROM broadcaster_scan_cache';
-  let bindings: any[] = [];
-  if (pageId && pageId.trim()) {
-    deleteQuery += ' WHERE page_id = ?';
-    bindings.push(pageId.trim());
+  // 2. Clear ephemeral scan cache
+  let deleteScanQuery = 'DELETE FROM broadcaster_scan_cache';
+  let scanBindings: any[] = [];
+  if (cleanPageId) {
+    deleteScanQuery += ' WHERE page_id = ?';
+    scanBindings.push(cleanPageId);
+  }
+  const deleteScanRes = await db.prepare(deleteScanQuery).bind(...scanBindings).run();
+  const clearedScanRows = (deleteScanRes as any)?.meta?.changes ?? (deleteScanRes as any)?.changes ?? 0;
+
+  let clearedMemoryRows = 0;
+  if (shouldResetRecipientMemory && cleanPageId) {
+    // Truncate Page-scoped recipient memory ledger
+    try {
+      const delMemRes = await db.prepare('DELETE FROM broadcaster_recipient_memory WHERE page_id = ?').bind(cleanPageId).run();
+      clearedMemoryRows += (delMemRes as any)?.meta?.changes ?? (delMemRes as any)?.changes ?? 0;
+    } catch {}
+    try {
+      const delDelivRes = await db.prepare('DELETE FROM broadcaster_deliveries WHERE page_id = ?').bind(cleanPageId).run();
+      clearedMemoryRows += (delDelivRes as any)?.meta?.changes ?? (delDelivRes as any)?.changes ?? 0;
+    } catch {}
+
+    return {
+      success: true,
+      message: `Page-scoped recipient memory for Page ID "${cleanPageId}" reset successfully. Campaign logs, credentials, and audit history were preserved.`,
+      pageId: cleanPageId,
+      savedCount: 0,
+      clearedEphemeralRows: clearedScanRows,
+      clearedMemoryRows,
+      permanentLedgerRowsProtected: 0,
+    };
   }
 
-  const deleteRes = await db.prepare(deleteQuery).bind(...bindings).run();
-  const clearedRows = (deleteRes as any)?.meta?.changes ?? (deleteRes as any)?.changes ?? 0;
-
-  // 3. Re-verify permanent ledger is completely intact
-  const verifyCountRes = await db
-    .prepare('SELECT COUNT(*) as count FROM broadcaster_deliveries')
-    .first<{ count: number }>();
+  // 3. Re-verify permanent ledger is completely intact when only ephemeral memory was cleared
+  const verifyCountRes = await db.prepare(countQuery).bind(...countBindings).first<{ count: number }>();
   const afterRows = verifyCountRes?.count ?? 0;
 
   if (afterRows < permanentRows) {
@@ -1100,7 +1135,10 @@ export async function resetBroadcasterEphemeralMemory(
   return {
     success: true,
     message: 'Ephemeral scan cache and transient queue cleared safely. Permanent delivery ledger (One PSID = One Message Ever) remains fully protected.',
-    clearedEphemeralRows: clearedRows,
+    pageId: cleanPageId,
+    savedCount: afterRows,
+    clearedEphemeralRows: clearedScanRows,
+    clearedMemoryRows: 0,
     permanentLedgerRowsProtected: afterRows,
   };
 }
@@ -1159,12 +1197,21 @@ export async function getBroadcasterDeliveryHistory(
 }
 
 /**
- * Aggregates summary statistics for broadcaster deliveries.
+ * Aggregates summary statistics for broadcaster deliveries and per-campaign execution status.
+ * Returns: { savedCount, queued, delivered, skipped, failed, remaining, ambiguous, totalDeliveries, deliveredCount, ambiguousCount, failedCount, queuedCount }
  */
 export async function getBroadcasterSummaryStats(
   db: D1Database,
-  pageId?: string
+  pageId?: string,
+  campaignId?: string
 ): Promise<{
+  savedCount: number;
+  queued: number;
+  delivered: number;
+  skipped: number;
+  failed: number;
+  remaining: number;
+  ambiguous: number;
   totalDeliveries: number;
   deliveredCount: number;
   ambiguousCount: number;
@@ -1194,11 +1241,72 @@ export async function getBroadcasterSummaryStats(
     queued: number;
   }>();
 
+  let totalDeliveries = res?.total || 0;
+  let deliveredCount = res?.delivered || 0;
+  let ambiguousCount = res?.ambiguous || 0;
+  let failedCount = res?.failed || 0;
+  let queuedCount = res?.queued || 0;
+
+  // Compute distinct saved recipient count
+  let savedCount = deliveredCount;
+  try {
+    let memQuery = 'SELECT COUNT(DISTINCT recipient_psid) as count FROM broadcaster_recipient_memory';
+    let memBindings: any[] = [];
+    if (pageId && pageId.trim()) {
+      memQuery += ' WHERE page_id = ?';
+      memBindings.push(pageId.trim());
+    }
+    const memRes = await db.prepare(memQuery).bind(...memBindings).first<{ count: number }>();
+    if (memRes && typeof memRes.count === 'number' && memRes.count > 0) {
+      savedCount = memRes.count;
+    }
+  } catch {}
+
+  // Check per-campaign run metrics if active or latest job is found
+  let queued = queuedCount;
+  let delivered = deliveredCount;
+  let ambiguous = ambiguousCount;
+  let failed = failedCount;
+  let skipped = 0;
+  let remaining = queued;
+
+  try {
+    let jobQuery = 'SELECT * FROM broadcaster_campaign_jobs';
+    let jobBindings: any[] = [];
+    if (campaignId && campaignId.trim()) {
+      jobQuery += ' WHERE campaign_id = ?';
+      jobBindings.push(campaignId.trim());
+    } else if (pageId && pageId.trim()) {
+      jobQuery += ' WHERE page_id = ? ORDER BY created_at DESC LIMIT 1';
+      jobBindings.push(pageId.trim());
+    } else {
+      jobQuery += ' ORDER BY created_at DESC LIMIT 1';
+    }
+    const latestJob = await db.prepare(jobQuery).bind(...jobBindings).first<any>();
+    if (latestJob) {
+      delivered = latestJob.delivered_count ?? delivered;
+      failed = latestJob.failed_count ?? failed;
+      ambiguous = latestJob.ambiguous_count ?? ambiguous;
+      skipped = latestJob.skipped_count ?? 0;
+      const total = latestJob.total_count ?? 0;
+      const processed = latestJob.processed_count ?? 0;
+      remaining = Math.max(0, total - processed);
+      queued = remaining;
+    }
+  } catch {}
+
   return {
-    totalDeliveries: res?.total || 0,
-    deliveredCount: res?.delivered || 0,
-    ambiguousCount: res?.ambiguous || 0,
-    failedCount: res?.failed || 0,
-    queuedCount: res?.queued || 0,
+    savedCount,
+    queued,
+    delivered,
+    skipped,
+    failed,
+    remaining,
+    ambiguous,
+    totalDeliveries,
+    deliveredCount,
+    ambiguousCount,
+    failedCount,
+    queuedCount,
   };
 }

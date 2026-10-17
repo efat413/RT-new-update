@@ -66,7 +66,8 @@ export async function handleBroadcasterApiRequest(
   authContext?: BroadcasterAuthContext
 ): Promise<Response> {
   const url = new URL(request.url);
-  const path = url.pathname.replace(/\/+$/, '');
+  const rawPath = url.pathname.replace(/\/+$/, '');
+  const path = rawPath.replace(/^\/api\/admin\/broadcaster/, '/api/broadcaster');
   const method = request.method.toUpperCase();
 
   const db = env.DB as D1Database;
@@ -86,7 +87,7 @@ export async function handleBroadcasterApiRequest(
 
   try {
     // ==============================================================
-    // 1. GET /api/broadcaster/config - Retrieve Configuration & Redacted Token
+    // 1. GET /api/broadcaster/config (and /api/admin/broadcaster/config)
     // ==============================================================
     if (path === '/api/broadcaster/config' && method === 'GET') {
       const pageId = url.searchParams.get('pageId') || '104829105829104';
@@ -105,9 +106,12 @@ export async function handleBroadcasterApiRequest(
             tokenStatus: config?.token_status || (hasEnvToken ? 'active' : 'unconfigured'),
             minDelaySec: config?.min_delay_sec != null ? Number(config.min_delay_sec) : 2,
             maxDelaySec: config?.max_delay_sec != null ? Number(config.max_delay_sec) : 5,
+            minDelayMs: config?.min_delay_ms != null ? Number(config.min_delay_ms) : Math.round((config?.min_delay_sec || 2) * 1000),
+            maxDelayMs: config?.max_delay_ms != null ? Number(config.max_delay_ms) : Math.round((config?.max_delay_sec || 5) * 1000),
             batchSize: config?.batch_size != null ? Number(config.batch_size) : 50,
             batchPauseSec: config?.batch_pause_sec != null ? Number(config.batch_pause_sec) : 30,
             defaultMessageTemplates: config?.default_message_templates || null,
+            antiDuplicateEnabled: config?.anti_duplicate_enabled !== false && config?.anti_duplicate_enabled !== 0,
             verifiedAt: config?.verified_at || null,
             hasServerSecret: Boolean(hasEnvToken || config?.encrypted_access_token),
           },
@@ -118,20 +122,21 @@ export async function handleBroadcasterApiRequest(
     }
 
     // ==============================================================
-    // 2. POST /api/broadcaster/config - Save Encrypted Token, Delays & Batch Settings
+    // 2. POST /api/broadcaster/config (and /api/admin/broadcaster/config)
     // ==============================================================
     if (path === '/api/broadcaster/config' && method === 'POST') {
       const body = await request.json().catch(() => ({}));
-      const pageId = String((body as any)?.pageId || '104829105829104').trim();
+      const pageId = String((body as any)?.pageId || (body as any)?.page_id || '104829105829104').trim();
       const rawToken = (body as any)?.pageAccessToken ? String((body as any).pageAccessToken).trim() : undefined;
-      const minDelaySec = (body as any)?.minDelaySec;
-      const maxDelaySec = (body as any)?.maxDelaySec;
-      const batchSize = (body as any)?.batchSize;
-      const batchPauseSec = (body as any)?.batchPauseSec;
-      const defaultTemplates = (body as any)?.defaultMessageTemplates ? String((body as any).defaultMessageTemplates).trim() : undefined;
+      const minDelayInput = (body as any)?.minDelaySec ?? (body as any)?.min_delay_sec ?? (body as any)?.minDelayMs ?? (body as any)?.min_delay_ms;
+      const maxDelayInput = (body as any)?.maxDelaySec ?? (body as any)?.max_delay_sec ?? (body as any)?.maxDelayMs ?? (body as any)?.max_delay_ms;
+      const batchSize = (body as any)?.batchSize ?? (body as any)?.batch_size;
+      const batchPauseSec = (body as any)?.batchPauseSec ?? (body as any)?.batch_pause_sec;
+      const defaultTemplates = (body as any)?.defaultMessageTemplates ? String((body as any).defaultMessageTemplates).trim() : (body as any)?.default_message_templates;
+      const antiDuplicate = (body as any)?.antiDuplicateEnabled !== undefined ? (body as any).antiDuplicateEnabled : (body as any)?.anti_duplicate_enabled;
 
       // Validate delay inputs
-      const delayValidation = validateDelayConfig(minDelaySec, maxDelaySec);
+      const delayValidation = validateDelayConfig(minDelayInput, maxDelayInput);
       if (!delayValidation.valid) {
         return jsonResponse({ success: false, error: delayValidation.error }, 400, corsHeaders);
       }
@@ -146,7 +151,7 @@ export async function handleBroadcasterApiRequest(
       let tokenPreview: string | undefined;
       let tokenStatus: string | undefined;
 
-      if (rawToken) {
+      if (rawToken && rawToken !== 'unconfigured') {
         // Enforce basic Meta token sanity check
         if (!/^EA[A-Za-z0-9_\-]+$/.test(rawToken) && rawToken !== 'EAAG_MOCK_TOKEN' && !rawToken.startsWith('EAAG_TEST_TOKEN')) {
           return jsonResponse(
@@ -168,9 +173,12 @@ export async function handleBroadcasterApiRequest(
         token_status: tokenStatus,
         min_delay_sec: delayValidation.min,
         max_delay_sec: delayValidation.max,
+        min_delay_ms: delayValidation.minMs,
+        max_delay_ms: delayValidation.maxMs,
         batch_size: batchValidation.batchSize,
         batch_pause_sec: batchValidation.batchPauseSec,
         default_message_templates: defaultTemplates,
+        anti_duplicate_enabled: antiDuplicate,
       });
 
       // Audit Log
@@ -211,11 +219,11 @@ export async function handleBroadcasterApiRequest(
     }
 
     // ==============================================================
-    // 3. POST /api/broadcaster/verify-token - Meta Graph API Token Validation
+    // 3. POST /api/broadcaster/test-token (and /verify-token)
     // ==============================================================
-    if (path === '/api/broadcaster/verify-token' && method === 'POST') {
+    if ((path === '/api/broadcaster/verify-token' || path === '/api/broadcaster/test-token') && method === 'POST') {
       const body = await request.json().catch(() => ({}));
-      const pageId = String((body as any)?.pageId || '').trim();
+      const pageId = String((body as any)?.pageId || (body as any)?.page_id || '').trim();
       let token = (body as any)?.pageAccessToken ? String((body as any).pageAccessToken).trim() : undefined;
 
       if (!pageId) {
@@ -419,7 +427,8 @@ export async function handleBroadcasterApiRequest(
     // ==============================================================
     if (path === '/api/broadcaster/stats' && method === 'GET') {
       const pageId = url.searchParams.get('pageId') || undefined;
-      const stats = await getBroadcasterSummaryStats(db, pageId);
+      const campaignId = url.searchParams.get('campaignId') || undefined;
+      const stats = await getBroadcasterSummaryStats(db, pageId, campaignId);
       return jsonResponse({ success: true, stats }, 200, corsHeaders);
     }
 
@@ -468,19 +477,19 @@ export async function handleBroadcasterApiRequest(
     }
 
     // ==============================================================
-    // 11. POST /api/broadcaster/dispatch - Atomic Batch Dispatch
+    // 11. POST /api/broadcaster/start (and /dispatch) - Atomic Campaign Instantiation & Dispatch
     // ==============================================================
-    if (path === '/api/broadcaster/dispatch' && method === 'POST') {
+    if ((path === '/api/broadcaster/dispatch' || path === '/api/broadcaster/start') && method === 'POST') {
       const body = await request.json().catch(() => ({}));
-      const pageId = String((body as any)?.pageId || '').trim();
-      const campaignId = String((body as any)?.campaignId || 'campaign-default').trim();
-      const messageText = String((body as any)?.messageText || (body as any)?.messageTemplates || '').trim();
+      const pageId = String((body as any)?.pageId || (body as any)?.page_id || '').trim();
+      const campaignId = String((body as any)?.campaignId || (body as any)?.campaign_id || `campaign-${Date.now()}`).trim();
+      const messageText = String((body as any)?.messageText || (body as any)?.messageTemplates || (body as any)?.message_template || '').trim();
       const recipients = Array.isArray((body as any)?.recipients) ? (body as any).recipients : [];
       const pageAccessToken = (body as any)?.pageAccessToken;
-      const minDelaySec = (body as any)?.minDelaySec;
-      const maxDelaySec = (body as any)?.maxDelaySec;
-      const batchSize = (body as any)?.batchSize;
-      const batchPauseSec = (body as any)?.batchPauseSec;
+      const minDelaySec = (body as any)?.minDelaySec ?? (body as any)?.min_delay_sec;
+      const maxDelaySec = (body as any)?.maxDelaySec ?? (body as any)?.max_delay_sec;
+      const batchSize = (body as any)?.batchSize ?? (body as any)?.batch_size;
+      const batchPauseSec = (body as any)?.batchPauseSec ?? (body as any)?.batch_pause_sec;
       const metaApiEndpoint = (body as any)?.metaApiEndpoint;
       const timeoutMs = (body as any)?.timeoutMs;
 
@@ -504,6 +513,15 @@ export async function handleBroadcasterApiRequest(
           corsHeaders
         );
       }
+
+      // Record campaign instantiation in broadcaster_campaigns
+      try {
+        await db.prepare(`
+          INSERT INTO broadcaster_campaigns (id, page_id, campaign_id, status, total_count, created_at, updated_at)
+          VALUES (?, ?, ?, 'RUNNING', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+          ON CONFLICT(campaign_id) DO UPDATE SET status = 'RUNNING', updated_at = CURRENT_TIMESTAMP
+        `).bind(`camp_${campaignId}`, pageId, campaignId, recipients.length).run();
+      } catch {}
 
       const dispatchResult = await dispatchBroadcasterBatch(db, {
         pageId,
@@ -583,24 +601,29 @@ export async function handleBroadcasterApiRequest(
     }
 
     // ==============================================================
-    // 13. POST /api/broadcaster/reset-memory - Safe Ephemeral Memory Reset
+    // 13. POST /api/broadcaster/reset-memory - Safe Ephemeral & Page-Scoped Memory Reset
     // ==============================================================
     if (path === '/api/broadcaster/reset-memory' && method === 'POST') {
       const body = await request.json().catch(() => ({}));
       const pageId = (body as any)?.pageId ? String((body as any).pageId).trim() : undefined;
+      const resetRecipientMemory = (body as any)?.resetRecipientMemory !== false;
 
-      const resetResult = await resetBroadcasterEphemeralMemory(db, pageId);
+      const resetResult = await resetBroadcasterEphemeralMemory(db, pageId, {
+        resetPageRecipientMemory: resetRecipientMemory,
+      });
 
       try {
         await insertAuditLogInD1(db, {
           action: 'SETTINGS_UPDATE',
           targetType: 'settings',
-          targetId: `broadcaster-reset-ephemeral`,
+          targetId: `broadcaster-reset-memory`,
           details: {
-            action: 'reset_ephemeral_memory',
+            action: 'reset_memory',
             pageId,
+            resetRecipientMemory,
             clearedEphemeralRows: resetResult.clearedEphemeralRows,
-            permanentLedgerRowsProtected: resetResult.permanentLedgerRowsProtected,
+            clearedMemoryRows: resetResult.clearedMemoryRows || 0,
+            savedCount: resetResult.savedCount,
           },
           actorId: authContext?.id,
           actorEmail: authContext?.email,

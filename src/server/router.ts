@@ -8232,7 +8232,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
   // FACEBOOK BROADCASTER ENDPOINTS
   // Atomic deduplication ("One PSID = One Message Ever")
   // ==========================================
-  if (path.startsWith('/api/broadcaster')) {
+  if (path.startsWith('/api/broadcaster') || path.startsWith('/api/admin/broadcaster')) {
     const { auth, errorResponse } = await requireAuth(request, env);
     if (errorResponse) return errorResponse;
     const canManage = auth!.role === 'super_admin' || hasPermission(auth!, 'settings.manage');
