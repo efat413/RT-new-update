@@ -330,13 +330,18 @@ export const AdminPanelContent: React.FC = () => {
 
   // Active Tab
   const [activeTab, setActiveTab] = useState<
-    'overview' | 'profit' | 'orders' | 'products' | 'categories' | 'slides' | 'couriers' | 'settings' | 'users' | 'pixels' | 'vouchers' | 'debug'
+    'overview' | 'profit' | 'orders' | 'products' | 'categories' | 'slides' | 'couriers' | 'settings' | 'users' | 'pixels' | 'vouchers' | 'debug' | 'broadcaster' | 'one-psid'
   >((adminActiveTab as any) || 'overview');
 
   const handleSelectTab = useCallback((tabId: string) => {
-    const targetTab = tabId === 'customers' || tabId === 'accounts' ? 'users' : tabId;
+    const targetTab = tabId === 'customers' || tabId === 'accounts'
+      ? 'users'
+      : (tabId === 'broadcaster' || tabId === 'one-psid' || tabId === 'fb-broadcaster' ? 'one-psid' : tabId);
     setActiveTab(targetTab as any);
     setAdminActiveTab(targetTab);
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'instant' });
+    }
   }, [setAdminActiveTab]);
 
   const handleManualLogout = useCallback(() => {
@@ -604,7 +609,10 @@ export const AdminPanelContent: React.FC = () => {
   // Sync tab & section when externally requested via openAdminSettingsSection or deep-linking
   useEffect(() => {
     if (adminActiveTab) {
-      setActiveTab(adminActiveTab as any);
+      const target = (adminActiveTab === 'broadcaster' || adminActiveTab === 'one-psid' || adminActiveTab === 'fb-broadcaster')
+        ? 'one-psid'
+        : adminActiveTab;
+      setActiveTab(target as any);
     }
   }, [adminActiveTab]);
 
@@ -7267,7 +7275,7 @@ export const AdminPanelContent: React.FC = () => {
         {/* ============================================================ */}
         {/* TAB 9B: FACEBOOK BROADCASTER (ONE PSID = ONE MESSAGE EVER)   */}
         {/* ============================================================ */}
-        {activeTab === 'broadcaster' && (
+        {(activeTab === 'broadcaster' || activeTab === 'one-psid') && (
           !hasPermission('canManageSettings') ? (
             renderPermissionRestrictedNotice('canManageSettings', 'Facebook Broadcaster')
           ) : (

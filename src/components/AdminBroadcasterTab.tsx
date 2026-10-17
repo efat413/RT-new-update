@@ -32,6 +32,7 @@ import {
   ChevronUp,
   Timer,
   Layers,
+  Plus,
 } from 'lucide-react';
 
 interface TelemetryLogItem {
@@ -78,9 +79,9 @@ interface TokenValidationInfo {
 }
 
 export const AdminBroadcasterTab: React.FC = () => {
-  // Campaign & Target Configuration
-  const [pageId, setPageId] = useState('104829105829104');
-  const [campaignId, setCampaignId] = useState(`camp-${new Date().toISOString().slice(0, 10)}`);
+  // Campaign & Target Configuration (Blank on initial open / new campaign)
+  const [pageId, setPageId] = useState('');
+  const [campaignId, setCampaignId] = useState('');
 
   // Secure Meta Page Token State
   const [pageAccessToken, setPageAccessToken] = useState('');
@@ -116,23 +117,14 @@ export const AdminBroadcasterTab: React.FC = () => {
   const [remainingCount, setRemainingCount] = useState<number>(0);
   const isAutoResumingRef = useRef<boolean>(false);
 
-  // Multi-Template Variations separated by '|'
-  const [messageTemplates, setMessageTemplates] = useState(
-    'স্বাগতম {name}! রঙধনু ট্রেড এ আপনাকে স্বাগতম। আপনার অর্ডার ডেলিভারি ও বিশেষ অফার আপডেট। | ' +
-    'হ্যালো {name}! রঙধনু ট্রেড এর বিশেষ ঈদ কালেকশন ও ডিসকাউন্ট এখন লাইভ। বিস্তারিত জানতে ইনবক্সে মেসেজ করুন।'
-  );
+  // Multi-Template Variations separated by '|' (Completely blank on initial open)
+  const [messageTemplates, setMessageTemplates] = useState('');
   const [selectedPreviewVariation, setSelectedPreviewVariation] = useState<number>(0);
   const [testCustomerName, setTestCustomerName] = useState('আহমেদ');
   const [simulateWithoutName, setSimulateWithoutName] = useState(false);
 
-  // Recipient Audience Input
-  const [rawAudienceInput, setRawAudienceInput] = useState(
-    '89012345678901 {"name": "আহমেদ"}\n' +
-    '89012345678902 {"name": "রাকিব"}\n' +
-    '89012345678903\n' +
-    '89012345678901\n' +
-    '99999999999999 {"is_bot": true}'
-  );
+  // Recipient Audience Input (Completely blank on initial open)
+  const [rawAudienceInput, setRawAudienceInput] = useState('');
 
   // Counters & Ledgers
   const [stats, setStats] = useState<BroadcasterStats>({
@@ -179,20 +171,31 @@ export const AdminBroadcasterTab: React.FC = () => {
     skipped: 0,
   });
 
-  const terminalEndRef = useRef<HTMLDivElement>(null);
+  const terminalContainerRef = useRef<HTMLDivElement>(null);
   const pollIntervalRef = useRef<any>(null);
 
-  // Auto-scroll terminal on new telemetry
+  // Auto-scroll terminal container ONLY (without scrolling window) on new telemetry
   useEffect(() => {
-    terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (telemetryLogs.length > 0 && terminalContainerRef.current) {
+      terminalContainerRef.current.scrollTop = terminalContainerRef.current.scrollHeight;
+    }
   }, [telemetryLogs]);
+
+  // Ensure FB Broadcaster (One PSID) opens cleanly at the top of the page on initial mount
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'instant' });
+    }
+  }, []);
 
   // Load config, stats, and history on mount and pageId change
   useEffect(() => {
     fetchConfig();
     fetchStats();
     fetchHistory();
-    fetchJobStatus();
+    if (campaignId) {
+      fetchJobStatus();
+    }
 
     return () => {
       if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
@@ -278,7 +281,10 @@ export const AdminBroadcasterTab: React.FC = () => {
 
   const fetchConfig = async () => {
     try {
-      const res = await fetch(`/api/broadcaster/config?pageId=${encodeURIComponent(pageId)}`);
+      const url = pageId.trim()
+        ? `/api/broadcaster/config?pageId=${encodeURIComponent(pageId.trim())}`
+        : '/api/broadcaster/config';
+      const res = await fetch(url);
       const data = await res.json();
       if (data.success && data.config) {
         setTokenPreview(data.config.tokenPreview || 'unconfigured');
@@ -295,9 +301,7 @@ export const AdminBroadcasterTab: React.FC = () => {
           setBatchPauseSec(bp);
           setConfiguredBatchPauseSec(bp);
         }
-        if (data.config.defaultMessageTemplates) {
-          setMessageTemplates(data.config.defaultMessageTemplates);
-        }
+        // Requirement Part 1: Do NOT automatically load saved campaign values into a new campaign
         setHasServerSecret(Boolean(data.config.hasServerSecret));
       }
     } catch (err) {
@@ -307,7 +311,10 @@ export const AdminBroadcasterTab: React.FC = () => {
 
   const fetchStats = async () => {
     try {
-      const res = await fetch(`/api/broadcaster/stats?pageId=${encodeURIComponent(pageId)}`);
+      const url = pageId.trim()
+        ? `/api/broadcaster/stats?pageId=${encodeURIComponent(pageId.trim())}`
+        : '/api/broadcaster/stats';
+      const res = await fetch(url);
       const data = await res.json();
       if (data.success && data.stats) {
         setStats(data.stats);
@@ -320,7 +327,9 @@ export const AdminBroadcasterTab: React.FC = () => {
   const fetchHistory = async () => {
     setIsLoading(true);
     try {
-      let url = `/api/broadcaster/history?pageId=${encodeURIComponent(pageId)}&limit=100`;
+      let url = pageId.trim()
+        ? `/api/broadcaster/history?pageId=${encodeURIComponent(pageId.trim())}&limit=100`
+        : '/api/broadcaster/history?limit=100';
       if (statusFilter !== 'ALL') url += `&status=${statusFilter}`;
       const res = await fetch(url);
       const data = await res.json();
@@ -336,10 +345,12 @@ export const AdminBroadcasterTab: React.FC = () => {
   };
 
   const fetchJobStatus = async () => {
+    if (!campaignId.trim()) return;
     try {
-      const res = await fetch(
-        `/api/broadcaster/job-status?campaignId=${encodeURIComponent(campaignId)}&pageId=${encodeURIComponent(pageId)}`
-      );
+      const url = pageId.trim()
+        ? `/api/broadcaster/job-status?campaignId=${encodeURIComponent(campaignId.trim())}&pageId=${encodeURIComponent(pageId.trim())}`
+        : `/api/broadcaster/job-status?campaignId=${encodeURIComponent(campaignId.trim())}`;
+      const res = await fetch(url);
       const data = await res.json();
       if (data.success && data.job) {
         const job = data.job;
@@ -538,15 +549,29 @@ export const AdminBroadcasterTab: React.FC = () => {
     });
   };
 
-  // Template variation helpers
+  // Template variation helpers: show zero variations when template field is empty
   const parsedTemplates = messageTemplates
     .split('|')
     .map((t) => t.trim())
     .filter(Boolean);
 
-  const effectiveTemplates = parsedTemplates.length > 0 ? parsedTemplates : [messageTemplates.trim()];
+  const effectiveTemplates = parsedTemplates;
+
+  const handleNewCampaign = () => {
+    setPageId('');
+    setCampaignId('');
+    setMessageTemplates('');
+    setRawAudienceInput('');
+    setSelectedPreviewVariation(0);
+    setScanSummary(null);
+    setSystemNotice({
+      type: 'info',
+      text: 'New campaign initialized. All campaign fields cleared.',
+    });
+  };
 
   const renderTemplatePreview = (template: string, name: string | null) => {
+    if (!template) return '';
     if (name && name.trim()) {
       return template.replace(/\{name\}/g, name.trim());
     }
@@ -560,10 +585,25 @@ export const AdminBroadcasterTab: React.FC = () => {
   };
 
   const handleScanAndFilter = async () => {
+    if (!pageId.trim()) {
+      setSystemNotice({
+        type: 'error',
+        text: 'Please enter a Facebook Page ID before scanning.',
+      });
+      return;
+    }
+    const recipients = parseAudienceInput();
+    if (recipients.length === 0) {
+      setSystemNotice({
+        type: 'error',
+        text: 'Please enter an Audience PSID list or click "+ Load Test Audience" before scanning.',
+      });
+      return;
+    }
+
     setIsScanning(true);
     setSystemNotice(null);
     try {
-      const recipients = parseAudienceInput();
       const res = await fetch('/api/broadcaster/scan-and-filter', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -598,6 +638,40 @@ export const AdminBroadcasterTab: React.FC = () => {
   };
 
   const handleDispatch = async (simulateTimeout = false, isResume = false) => {
+    // Validate required fields
+    if (!pageId.trim()) {
+      setSystemNotice({
+        type: 'error',
+        text: 'Please enter a Facebook Page ID before dispatching broadcast.',
+      });
+      return;
+    }
+
+    if (!campaignId.trim()) {
+      setSystemNotice({
+        type: 'error',
+        text: 'Please enter a Campaign ID before dispatching broadcast.',
+      });
+      return;
+    }
+
+    if (effectiveTemplates.length === 0) {
+      setSystemNotice({
+        type: 'error',
+        text: 'Please enter at least one message variation before dispatching broadcast.',
+      });
+      return;
+    }
+
+    const recipients = parseAudienceInput();
+    if (recipients.length === 0) {
+      setSystemNotice({
+        type: 'error',
+        text: 'Please enter an Audience PSID list or click "+ Load Test Audience" before dispatching broadcast.',
+      });
+      return;
+    }
+
     // Validate delays
     if (maxDelaySec < minDelaySec) {
       setSystemNotice({
@@ -612,7 +686,6 @@ export const AdminBroadcasterTab: React.FC = () => {
     setSystemNotice(null);
 
     try {
-      const recipients = parseAudienceInput();
       setJobProgress({
         total: recipients.length,
         processed: 0,
@@ -1478,10 +1551,20 @@ export const AdminBroadcasterTab: React.FC = () => {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left Form: Parameters, Message Variations & Ingestion */}
         <div className="lg:col-span-6 space-y-4 bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-xs">
-          <h3 className="text-sm font-bold text-slate-200 flex items-center gap-2 border-b border-slate-800 pb-3">
-            <Zap className="w-4 h-4 text-indigo-400" />
-            Campaign Dispatch & Template Variations
-          </h3>
+          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+            <h3 className="text-sm font-bold text-slate-200 flex items-center gap-2">
+              <Zap className="w-4 h-4 text-indigo-400" />
+              Campaign Dispatch & Template Variations
+            </h3>
+            <button
+              type="button"
+              onClick={handleNewCampaign}
+              className="text-[11px] text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-950/40 border border-indigo-800/40 hover:bg-indigo-900/50 transition cursor-pointer"
+            >
+              <Plus className="w-3 h-3" />
+              New Campaign
+            </button>
+          </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
@@ -1515,7 +1598,7 @@ export const AdminBroadcasterTab: React.FC = () => {
                 Message Variations (Separate templates with <code className="bg-slate-800 text-indigo-300 px-1 rounded">|</code>)
               </label>
               <span className="text-[11px] text-indigo-400 font-medium">
-                {effectiveTemplates.length} Variation{effectiveTemplates.length > 1 ? 's' : ''} detected
+                {effectiveTemplates.length} Variation{effectiveTemplates.length === 1 ? '' : 's'} detected
               </span>
             </div>
 
@@ -1572,8 +1655,12 @@ export const AdminBroadcasterTab: React.FC = () => {
               </div>
             )}
 
-            {/* Rendered Text Preview */}
-            {(() => {
+            {/* Rendered Text Preview: Only generated when template is not empty */}
+            {effectiveTemplates.length === 0 ? (
+              <div className="p-4 rounded-lg bg-slate-900/60 border border-slate-800/80 text-center text-xs text-slate-500 italic">
+                No message entered. Enter a message template above to generate a safe Unicode preview.
+              </div>
+            ) : (() => {
               const activeTemplate = effectiveTemplates[selectedPreviewVariation] || effectiveTemplates[0] || '';
               const renderedPreview = renderTemplatePreview(
                 activeTemplate,
@@ -1682,7 +1769,7 @@ export const AdminBroadcasterTab: React.FC = () => {
             </button>
           </div>
 
-          <div className="flex-1 overflow-y-auto space-y-1.5 pr-1 font-mono text-[11px]">
+          <div ref={terminalContainerRef} className="flex-1 overflow-y-auto space-y-1.5 pr-1 font-mono text-[11px]">
             {telemetryLogs.length === 0 ? (
               <div className="h-full flex items-center justify-center text-slate-500 text-xs italic">
                 Awaiting scan or dispatch telemetry events...
@@ -1729,7 +1816,6 @@ export const AdminBroadcasterTab: React.FC = () => {
                 );
               })
             )}
-            <div ref={terminalEndRef} />
           </div>
         </div>
       </div>

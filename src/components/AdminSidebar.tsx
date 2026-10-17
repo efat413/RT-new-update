@@ -226,7 +226,7 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
       <nav className="space-y-1.5 flex-1" aria-label="Admin Navigation Menu">
         {menuItems.map((item) => {
           const Icon = item.icon;
-          const isActive = activeTab === item.id;
+          const isActive = activeTab === item.id || (item.id === 'broadcaster' && (activeTab === 'broadcaster' || activeTab === 'one-psid'));
           const isPermitted = !item.permission || hasPermission(item.permission);
 
           return (

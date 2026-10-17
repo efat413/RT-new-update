@@ -198,10 +198,17 @@ export const AdminTopOptionsBar: React.FC<AdminTopOptionsBarProps> = ({
 
   const handleSelectOption = (optionId: string) => {
     setActiveTab(optionId);
-    // Smooth scroll the selected element into view
+    // Smooth scroll the selected element horizontally within the options bar only (never scroll the window)
     const target = document.getElementById(`top-nav-opt-${optionId}`);
     if (target && scrollContainerRef.current) {
-      target.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      const container = scrollContainerRef.current;
+      const targetOffset = target.offsetLeft;
+      const targetWidth = target.clientWidth;
+      const containerWidth = container.clientWidth;
+      container.scrollTo({
+        left: targetOffset - (containerWidth / 2) + (targetWidth / 2),
+        behavior: 'smooth',
+      });
     }
   };
 
@@ -236,7 +243,7 @@ export const AdminTopOptionsBar: React.FC<AdminTopOptionsBarProps> = ({
         >
           {optionsList.map((opt) => {
             const Icon = opt.icon;
-            const isActive = activeTab === opt.id;
+            const isActive = activeTab === opt.id || (opt.id === 'broadcaster' && (activeTab === 'broadcaster' || activeTab === 'one-psid'));
             const isPermitted = !opt.permission || hasPermission(opt.permission);
 
             return (

@@ -105,6 +105,9 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     'settings',
     'users',
     'pixels',
+    'broadcaster',
+    'one-psid',
+    'reviews',
     'vouchers',
     'debug',
   ]), []);
@@ -116,14 +119,17 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (pathname.startsWith('/admin/')) {
         const sub = pathname.replace(/^\/admin\//, '').replace(/\/$/, '').toLowerCase();
         if (sub === 'customers' || sub === 'accounts') return 'users';
+        if (sub === 'one-psid' || sub === 'broadcaster' || sub === 'fb-broadcaster') return 'one-psid';
         if (VALID_ADMIN_TABS.has(sub)) return sub;
       }
       const params = new URLSearchParams(window.location.search);
       const qTab = (params.get('tab') || '').toLowerCase();
       if (qTab === 'customers' || qTab === 'accounts') return 'users';
+      if (qTab === 'one-psid' || qTab === 'broadcaster' || qTab === 'fb-broadcaster') return 'one-psid';
       if (VALID_ADMIN_TABS.has(qTab)) return qTab;
 
       const saved = localStorage.getItem('rongdhonu_admin_last_tab');
+      if (saved === 'one-psid' || saved === 'broadcaster' || saved === 'fb-broadcaster') return 'one-psid';
       if (saved && VALID_ADMIN_TABS.has(saved)) return saved;
     } catch {}
     return 'overview';
@@ -142,7 +148,9 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   });
 
   const setAdminActiveTab = useCallback((tab: string) => {
-    const normalized = tab === 'customers' || tab === 'accounts' ? 'users' : tab;
+    const normalized = tab === 'customers' || tab === 'accounts'
+      ? 'users'
+      : (tab === 'broadcaster' || tab === 'one-psid' || tab === 'fb-broadcaster' ? 'one-psid' : tab);
     setAdminActiveTabState(normalized);
     if (typeof window === 'undefined') return;
 
@@ -150,7 +158,7 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       localStorage.setItem('rongdhonu_admin_last_tab', normalized);
       const targetPath = normalized === 'overview'
         ? '/admin'
-        : (normalized === 'users' ? '/admin/customers' : `/admin/${normalized}`);
+        : (normalized === 'users' ? '/admin/customers' : (normalized === 'one-psid' ? '/admin/one-psid' : `/admin/${normalized}`));
       
       if (window.location.pathname !== targetPath) {
         window.history.pushState({ adminTab: normalized }, '', targetPath);
