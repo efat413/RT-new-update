@@ -83,7 +83,7 @@ export async function handleBroadcasterApiRequest(
   await ensureBroadcasterDeliveriesTable(db);
 
   // Safe encryption secret resolution
-  const encryptionSecret = getAuthSecret(env);
+  const encryptionSecret = (env as any)?.BROADCASTER_ENCRYPTION_SECRET || (env as any)?.ADMIN_SECRET || getAuthSecret(env);
 
   try {
     // ==============================================================
@@ -203,11 +203,13 @@ export async function handleBroadcasterApiRequest(
         });
       } catch {}
 
+      const savedConfig = await getBroadcasterConfig(db, pageId);
       return jsonResponse(
         {
           success: true,
           message: 'Broadcaster configuration saved securely.',
-          tokenPreview: tokenPreview || 'unchanged',
+          tokenPreview: savedConfig?.token_preview || tokenPreview || 'unchanged',
+          tokenStatus: savedConfig?.token_status || 'configured',
           minDelaySec: delayValidation.min,
           maxDelaySec: delayValidation.max,
           batchSize: batchValidation.batchSize,
@@ -312,6 +314,7 @@ export async function handleBroadcasterApiRequest(
         job = {
           ...job,
           effectiveStatus: isBatchPaused ? 'BATCH_PAUSED' : job.status,
+          isBatchPaused: Boolean(isBatchPaused),
           batchSize: job.batch_size != null ? Number(job.batch_size) : 50,
           batchPauseSec: job.batch_pause_sec != null ? Number(job.batch_pause_sec) : 30,
           currentBatchDelivered: job.current_batch_delivered != null ? Number(job.current_batch_delivered) : 0,

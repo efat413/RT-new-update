@@ -5347,15 +5347,15 @@ export async function checkAndRecordWebhookFingerprint(
   }
 }
 
-let broadcasterTableCreated = false;
+const initializedBroadcasterDbs = new WeakSet<object>();
 
 /**
  * Migration verification & self-healing helper for Facebook Broadcaster.
  * Ensures broadcaster_deliveries and broadcaster_scan_cache exist with hard UNIQUE(page_id, recipient_psid).
  */
 export async function ensureBroadcasterDeliveriesTable(db: D1Database): Promise<void> {
-  if (broadcasterTableCreated) return;
-  broadcasterTableCreated = true;
+  if (db && initializedBroadcasterDbs.has(db as object)) return;
+  if (db) initializedBroadcasterDbs.add(db as object);
   try {
     await db.prepare(`
       CREATE TABLE IF NOT EXISTS broadcaster_deliveries (
@@ -5584,11 +5584,14 @@ export interface BroadcasterCampaignJobRecord {
 export async function getBroadcasterConfig(db: D1Database, pageId?: string): Promise<BroadcasterConfigRecord | null> {
   await ensureBroadcasterDeliveriesTable(db);
   let query = 'SELECT * FROM broadcaster_config WHERE id = ?';
-  let bindings = ['default'];
+  let bindings: any[] = ['default'];
   if (pageId && pageId.trim()) {
     query = 'SELECT * FROM broadcaster_config WHERE page_id = ? OR id = ? OR id = ? ORDER BY CASE WHEN page_id = ? THEN 1 WHEN id = ? THEN 2 ELSE 3 END LIMIT 1';
     const cleanPId = pageId.trim();
     bindings = [cleanPId, `cfg_${cleanPId}`, 'default', cleanPId, `cfg_${cleanPId}`];
+  } else {
+    query = 'SELECT * FROM broadcaster_config ORDER BY CASE WHEN id = ? THEN 2 ELSE 1 END, updated_at DESC LIMIT 1';
+    bindings = ['default'];
   }
   const config = await db.prepare(query).bind(...bindings).first<BroadcasterConfigRecord>();
   if (!config) return null;
@@ -5610,10 +5613,10 @@ export async function saveBroadcasterConfig(db: D1Database, config: Partial<Broa
   await ensureBroadcasterDeliveriesTable(db);
   const now = new Date().toISOString();
   const pageId = String(config.page_id || '104829105829104').trim();
-  const id = config.id || `cfg_${pageId}`;
 
   // Fetch existing config to strictly prevent blank tokens from wiping existing encrypted tokens
   const existing = await getBroadcasterConfig(db, pageId);
+  const id = config.id || existing?.id || `cfg_${pageId}`;
 
   // Preserve existing encrypted token and token preview if omitted or blank
   const rawEncryptedToken = config.encrypted_access_token ? String(config.encrypted_access_token).trim() : '';
@@ -5637,8 +5640,7 @@ export async function saveBroadcasterConfig(db: D1Database, config: Partial<Broa
       INSERT INTO broadcaster_config (
         id, page_id, encrypted_access_token, token_preview, token_status, min_delay_sec, max_delay_sec, min_delay_ms, max_delay_ms, batch_size, batch_pause_sec, default_message_templates, anti_duplicate_enabled, verified_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        page_id = excluded.page_id,
+      ON CONFLICT(page_id) DO UPDATE SET
         encrypted_access_token = COALESCE(excluded.encrypted_access_token, broadcaster_config.encrypted_access_token),
         token_preview = COALESCE(excluded.token_preview, broadcaster_config.token_preview),
         token_status = excluded.token_status,
