@@ -5399,6 +5399,8 @@ export async function ensureBroadcasterDeliveriesTable(db: D1Database): Promise<
         token_status TEXT DEFAULT 'unconfigured',
         min_delay_sec REAL NOT NULL DEFAULT 2,
         max_delay_sec REAL NOT NULL DEFAULT 5,
+        batch_size INTEGER NOT NULL DEFAULT 50,
+        batch_pause_sec REAL NOT NULL DEFAULT 30,
         default_message_templates TEXT,
         verified_at TEXT,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -5419,6 +5421,11 @@ export async function ensureBroadcasterDeliveriesTable(db: D1Database): Promise<
         skipped_count INTEGER DEFAULT 0,
         min_delay_sec REAL DEFAULT 2,
         max_delay_sec REAL DEFAULT 5,
+        batch_size INTEGER DEFAULT 50,
+        batch_pause_sec REAL DEFAULT 30,
+        current_batch_delivered INTEGER DEFAULT 0,
+        paused_until TEXT,
+        pause_reason TEXT,
         message_template TEXT,
         current_psid TEXT,
         checkpoint_note TEXT,
@@ -5428,6 +5435,29 @@ export async function ensureBroadcasterDeliveriesTable(db: D1Database): Promise<
     `).run();
     await db.prepare('CREATE INDEX IF NOT EXISTS idx_broadcaster_jobs_page_status ON broadcaster_campaign_jobs(page_id, status)').run();
     await db.prepare('CREATE INDEX IF NOT EXISTS idx_broadcaster_jobs_campaign ON broadcaster_campaign_jobs(campaign_id)').run();
+
+    // Self-healing migrations for existing deployments
+    try {
+      await db.prepare('ALTER TABLE broadcaster_config ADD COLUMN batch_size INTEGER NOT NULL DEFAULT 50').run();
+    } catch {}
+    try {
+      await db.prepare('ALTER TABLE broadcaster_config ADD COLUMN batch_pause_sec REAL NOT NULL DEFAULT 30').run();
+    } catch {}
+    try {
+      await db.prepare('ALTER TABLE broadcaster_campaign_jobs ADD COLUMN batch_size INTEGER DEFAULT 50').run();
+    } catch {}
+    try {
+      await db.prepare('ALTER TABLE broadcaster_campaign_jobs ADD COLUMN batch_pause_sec REAL DEFAULT 30').run();
+    } catch {}
+    try {
+      await db.prepare('ALTER TABLE broadcaster_campaign_jobs ADD COLUMN current_batch_delivered INTEGER DEFAULT 0').run();
+    } catch {}
+    try {
+      await db.prepare('ALTER TABLE broadcaster_campaign_jobs ADD COLUMN paused_until TEXT').run();
+    } catch {}
+    try {
+      await db.prepare('ALTER TABLE broadcaster_campaign_jobs ADD COLUMN pause_reason TEXT').run();
+    } catch {}
   } catch (err: any) {
     console.warn('[D1] broadcaster tables self-heal notice:', err?.message || err);
   }
@@ -5441,6 +5471,8 @@ export interface BroadcasterConfigRecord {
   token_status: string;
   min_delay_sec: number;
   max_delay_sec: number;
+  batch_size: number;
+  batch_pause_sec: number;
   default_message_templates?: string | null;
   verified_at?: string | null;
   updated_at: string;
@@ -5459,6 +5491,11 @@ export interface BroadcasterCampaignJobRecord {
   skipped_count: number;
   min_delay_sec: number;
   max_delay_sec: number;
+  batch_size?: number;
+  batch_pause_sec?: number;
+  current_batch_delivered?: number;
+  paused_until?: string | null;
+  pause_reason?: string | null;
   message_template?: string | null;
   current_psid?: string | null;
   checkpoint_note?: string | null;
@@ -5474,7 +5511,15 @@ export async function getBroadcasterConfig(db: D1Database, pageId?: string): Pro
     query = 'SELECT * FROM broadcaster_config WHERE page_id = ? OR id = ? LIMIT 1';
     bindings = [pageId.trim(), 'default'];
   }
-  return db.prepare(query).bind(...bindings).first<BroadcasterConfigRecord>();
+  const config = await db.prepare(query).bind(...bindings).first<BroadcasterConfigRecord>();
+  if (!config) return null;
+  return {
+    ...config,
+    min_delay_sec: config.min_delay_sec != null ? Number(config.min_delay_sec) : 2,
+    max_delay_sec: config.max_delay_sec != null ? Number(config.max_delay_sec) : 5,
+    batch_size: config.batch_size != null ? Number(config.batch_size) : 50,
+    batch_pause_sec: config.batch_pause_sec != null ? Number(config.batch_pause_sec) : 30,
+  };
 }
 
 export async function saveBroadcasterConfig(db: D1Database, config: Partial<BroadcasterConfigRecord>): Promise<void> {
@@ -5484,13 +5529,15 @@ export async function saveBroadcasterConfig(db: D1Database, config: Partial<Broa
   const pageId = config.page_id || '104829105829104';
   const minDelay = config.min_delay_sec != null ? Number(config.min_delay_sec) : 2;
   const maxDelay = config.max_delay_sec != null ? Number(config.max_delay_sec) : 5;
+  const batchSize = config.batch_size != null ? Number(config.batch_size) : 50;
+  const batchPauseSec = config.batch_pause_sec != null ? Number(config.batch_pause_sec) : 30;
   const tokenStatus = config.token_status || 'unconfigured';
 
   await db
     .prepare(`
       INSERT INTO broadcaster_config (
-        id, page_id, encrypted_access_token, token_preview, token_status, min_delay_sec, max_delay_sec, default_message_templates, verified_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, page_id, encrypted_access_token, token_preview, token_status, min_delay_sec, max_delay_sec, batch_size, batch_pause_sec, default_message_templates, verified_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         page_id = excluded.page_id,
         encrypted_access_token = COALESCE(excluded.encrypted_access_token, broadcaster_config.encrypted_access_token),
@@ -5498,6 +5545,8 @@ export async function saveBroadcasterConfig(db: D1Database, config: Partial<Broa
         token_status = excluded.token_status,
         min_delay_sec = excluded.min_delay_sec,
         max_delay_sec = excluded.max_delay_sec,
+        batch_size = excluded.batch_size,
+        batch_pause_sec = excluded.batch_pause_sec,
         default_message_templates = COALESCE(excluded.default_message_templates, broadcaster_config.default_message_templates),
         verified_at = COALESCE(excluded.verified_at, broadcaster_config.verified_at),
         updated_at = excluded.updated_at
@@ -5510,6 +5559,8 @@ export async function saveBroadcasterConfig(db: D1Database, config: Partial<Broa
       tokenStatus,
       minDelay,
       maxDelay,
+      batchSize,
+      batchPauseSec,
       config.default_message_templates || null,
       config.verified_at || null,
       now
@@ -5519,18 +5570,32 @@ export async function saveBroadcasterConfig(db: D1Database, config: Partial<Broa
 
 export async function getBroadcasterCampaignJob(db: D1Database, campaignId: string): Promise<BroadcasterCampaignJobRecord | null> {
   await ensureBroadcasterDeliveriesTable(db);
-  return db
+  const job = await db
     .prepare('SELECT * FROM broadcaster_campaign_jobs WHERE campaign_id = ? OR id = ? LIMIT 1')
     .bind(campaignId, campaignId)
     .first<BroadcasterCampaignJobRecord>();
+  if (!job) return null;
+  return {
+    ...job,
+    batch_size: job.batch_size != null ? Number(job.batch_size) : 50,
+    batch_pause_sec: job.batch_pause_sec != null ? Number(job.batch_pause_sec) : 30,
+    current_batch_delivered: job.current_batch_delivered != null ? Number(job.current_batch_delivered) : 0,
+  };
 }
 
 export async function getActiveRunningBroadcasterJob(db: D1Database, pageId: string): Promise<BroadcasterCampaignJobRecord | null> {
   await ensureBroadcasterDeliveriesTable(db);
-  return db
-    .prepare("SELECT * FROM broadcaster_campaign_jobs WHERE page_id = ? AND status = 'RUNNING' LIMIT 1")
+  const job = await db
+    .prepare("SELECT * FROM broadcaster_campaign_jobs WHERE page_id = ? AND (status = 'RUNNING' OR (status = 'PAUSED' AND pause_reason = 'BATCH_PAUSE')) LIMIT 1")
     .bind(pageId)
     .first<BroadcasterCampaignJobRecord>();
+  if (!job) return null;
+  return {
+    ...job,
+    batch_size: job.batch_size != null ? Number(job.batch_size) : 50,
+    batch_pause_sec: job.batch_pause_sec != null ? Number(job.batch_pause_sec) : 30,
+    current_batch_delivered: job.current_batch_delivered != null ? Number(job.current_batch_delivered) : 0,
+  };
 }
 
 export async function upsertBroadcasterCampaignJob(
@@ -5545,8 +5610,8 @@ export async function upsertBroadcasterCampaignJob(
   await db
     .prepare(`
       INSERT INTO broadcaster_campaign_jobs (
-        id, page_id, campaign_id, status, total_count, processed_count, delivered_count, ambiguous_count, failed_count, skipped_count, min_delay_sec, max_delay_sec, message_template, current_psid, checkpoint_note, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, page_id, campaign_id, status, total_count, processed_count, delivered_count, ambiguous_count, failed_count, skipped_count, min_delay_sec, max_delay_sec, batch_size, batch_pause_sec, current_batch_delivered, paused_until, pause_reason, message_template, current_psid, checkpoint_note, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         status = excluded.status,
         total_count = excluded.total_count,
@@ -5557,6 +5622,11 @@ export async function upsertBroadcasterCampaignJob(
         skipped_count = excluded.skipped_count,
         min_delay_sec = excluded.min_delay_sec,
         max_delay_sec = excluded.max_delay_sec,
+        batch_size = COALESCE(excluded.batch_size, broadcaster_campaign_jobs.batch_size),
+        batch_pause_sec = COALESCE(excluded.batch_pause_sec, broadcaster_campaign_jobs.batch_pause_sec),
+        current_batch_delivered = excluded.current_batch_delivered,
+        paused_until = excluded.paused_until,
+        pause_reason = excluded.pause_reason,
         message_template = COALESCE(excluded.message_template, broadcaster_campaign_jobs.message_template),
         current_psid = excluded.current_psid,
         checkpoint_note = excluded.checkpoint_note,
@@ -5573,8 +5643,13 @@ export async function upsertBroadcasterCampaignJob(
       job.ambiguous_count || 0,
       job.failed_count || 0,
       job.skipped_count || 0,
-      job.min_delay_sec || 2,
-      job.max_delay_sec || 5,
+      job.min_delay_sec != null ? Number(job.min_delay_sec) : 2,
+      job.max_delay_sec != null ? Number(job.max_delay_sec) : 5,
+      job.batch_size != null ? Number(job.batch_size) : 50,
+      job.batch_pause_sec != null ? Number(job.batch_pause_sec) : 30,
+      job.current_batch_delivered != null ? Number(job.current_batch_delivered) : 0,
+      job.paused_until || null,
+      job.pause_reason || null,
       job.message_template || null,
       job.current_psid || null,
       job.checkpoint_note || null,
@@ -5588,7 +5663,12 @@ export async function setBroadcasterJobStatus(
   db: D1Database,
   campaignId: string,
   status: 'IDLE' | 'RUNNING' | 'PAUSED' | 'STOPPED' | 'COMPLETED' | 'FAILED',
-  checkpointNote?: string
+  checkpointNote?: string,
+  options?: {
+    pauseReason?: string | null;
+    pausedUntil?: string | null;
+    currentBatchDelivered?: number;
+  }
 ): Promise<void> {
   await ensureBroadcasterDeliveriesTable(db);
   const now = new Date().toISOString();
@@ -5597,10 +5677,25 @@ export async function setBroadcasterJobStatus(
       UPDATE broadcaster_campaign_jobs
       SET status = ?,
           checkpoint_note = COALESCE(?, checkpoint_note),
+          pause_reason = CASE WHEN ? IS NOT NULL THEN ? ELSE pause_reason END,
+          paused_until = CASE WHEN ? IS NOT NULL THEN ? ELSE paused_until END,
+          current_batch_delivered = CASE WHEN ? IS NOT NULL THEN ? ELSE current_batch_delivered END,
           updated_at = ?
       WHERE campaign_id = ? OR id = ?
     `)
-    .bind(status, checkpointNote || null, now, campaignId, campaignId)
+    .bind(
+      status,
+      checkpointNote || null,
+      options?.pauseReason !== undefined ? 1 : null,
+      options?.pauseReason || null,
+      options?.pausedUntil !== undefined ? 1 : null,
+      options?.pausedUntil || null,
+      options?.currentBatchDelivered !== undefined ? 1 : null,
+      options?.currentBatchDelivered ?? null,
+      now,
+      campaignId,
+      campaignId
+    )
     .run();
 }
 

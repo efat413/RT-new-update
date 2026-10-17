@@ -200,6 +200,15 @@ export async function validateMetaPageToken(params: {
   }
 }
 
+export const DEFAULT_MIN_DELAY_SEC = 2;
+export const DEFAULT_MAX_DELAY_SEC = 5;
+export const DEFAULT_BATCH_SIZE = 50;
+export const DEFAULT_BATCH_PAUSE_SEC = 30;
+export const MIN_BATCH_SIZE = 1;
+export const MAX_BATCH_SIZE = 1000;
+export const MIN_BATCH_PAUSE_SEC = 1;
+export const MAX_BATCH_PAUSE_SEC = 3600;
+
 /**
  * Validates configured delay bounds.
  * Enforces finite, non-negative numbers and ensures maxDelay >= minDelay.
@@ -209,14 +218,20 @@ export function validateDelayConfig(
   maxSec: any,
   maxAllowedCeiling: number = MAX_SAFE_DELAY_SECONDS
 ): { valid: boolean; min: number; max: number; error?: string } {
+  if (minSec === undefined || minSec === null || minSec === '') {
+    minSec = DEFAULT_MIN_DELAY_SEC;
+  }
+  if (maxSec === undefined || maxSec === null || maxSec === '') {
+    maxSec = DEFAULT_MAX_DELAY_SEC;
+  }
   const min = Number(minSec);
   const max = Number(maxSec);
 
   if (!Number.isFinite(min) || min < 0) {
-    return { valid: false, min: 2, max: 5, error: 'Min Delay must be a finite non-negative number of seconds.' };
+    return { valid: false, min: DEFAULT_MIN_DELAY_SEC, max: DEFAULT_MAX_DELAY_SEC, error: 'Min Delay must be a finite non-negative number of seconds.' };
   }
   if (!Number.isFinite(max) || max < 0) {
-    return { valid: false, min: 2, max: 5, error: 'Max Delay must be a finite non-negative number of seconds.' };
+    return { valid: false, min: DEFAULT_MIN_DELAY_SEC, max: DEFAULT_MAX_DELAY_SEC, error: 'Max Delay must be a finite non-negative number of seconds.' };
   }
   if (max < min) {
     return { valid: false, min, max, error: `Max Delay (${max}s) cannot be less than Min Delay (${min}s).` };
@@ -231,6 +246,61 @@ export function validateDelayConfig(
   }
 
   return { valid: true, min, max };
+}
+
+/**
+ * Validates configured Batch Size and Batch Pause Duration.
+ * Enforces integer boundaries, finite non-negative values, and safe operational ceilings.
+ */
+export function validateBatchConfig(
+  batchSizeInput: any,
+  batchPauseSecInput: any
+): { valid: boolean; batchSize: number; batchPauseSec: number; error?: string } {
+  const rawSize = batchSizeInput === undefined || batchSizeInput === null || batchSizeInput === ''
+    ? DEFAULT_BATCH_SIZE
+    : Number(batchSizeInput);
+
+  const rawPause = batchPauseSecInput === undefined || batchPauseSecInput === null || batchPauseSecInput === ''
+    ? DEFAULT_BATCH_PAUSE_SEC
+    : Number(batchPauseSecInput);
+
+  if (!Number.isFinite(rawSize) || !Number.isInteger(rawSize)) {
+    return {
+      valid: false,
+      batchSize: DEFAULT_BATCH_SIZE,
+      batchPauseSec: DEFAULT_BATCH_PAUSE_SEC,
+      error: 'Batch Size must be a valid whole integer.',
+    };
+  }
+
+  if (rawSize < MIN_BATCH_SIZE || rawSize > MAX_BATCH_SIZE) {
+    return {
+      valid: false,
+      batchSize: DEFAULT_BATCH_SIZE,
+      batchPauseSec: DEFAULT_BATCH_PAUSE_SEC,
+      error: `Batch Size must be between ${MIN_BATCH_SIZE} and ${MAX_BATCH_SIZE}.`,
+    };
+  }
+
+  if (!Number.isFinite(rawPause) || !Number.isInteger(rawPause) || rawPause < MIN_BATCH_PAUSE_SEC) {
+    return {
+      valid: false,
+      batchSize: rawSize,
+      batchPauseSec: DEFAULT_BATCH_PAUSE_SEC,
+      error: `Batch Pause Duration must be a positive whole integer of at least ${MIN_BATCH_PAUSE_SEC} second(s).`,
+    };
+  }
+
+  if (rawPause > MAX_BATCH_PAUSE_SEC) {
+    return {
+      valid: false,
+      batchSize: rawSize,
+      batchPauseSec: DEFAULT_BATCH_PAUSE_SEC,
+      error: `Batch Pause Duration exceeds the safe ceiling of ${MAX_BATCH_PAUSE_SEC} seconds (1 hour).`,
+    };
+  }
+
+  return { valid: true, batchSize: rawSize, batchPauseSec: rawPause };
 }
 
 /**

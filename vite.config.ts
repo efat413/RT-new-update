@@ -52,6 +52,7 @@ import {
   sanitizeReviewImageReference,
   MAX_IMAGE_SIZE_BYTES,
 } from './src/server/imageSecurity';
+import { validateDelayConfig, validateBatchConfig } from './src/server/broadcasterSecurity';
 
 process.env.ADMIN_SECRET = process.env.ADMIN_SECRET || 'dev-secret-test-shared-999';
 process.env.COURIER_WEBHOOK_SECRET = process.env.COURIER_WEBHOOK_SECRET || 'dev-courier-webhook-secret-999';
@@ -7083,6 +7084,8 @@ function localApiDevPlugin(): Plugin {
             token_status: 'verified',
             min_delay_sec: 2,
             max_delay_sec: 5,
+            batch_size: 50,
+            batch_pause_sec: 30,
             default_message_templates: 'স্বাগতম {name}! রঙধনু ট্রেড এর বিশেষ আপডেট। | হ্যালো {name}! আপনার ডেলিভারি ও স্পেশাল অফার।',
             verified_at: new Date().toISOString(),
           };
@@ -7096,6 +7099,8 @@ function localApiDevPlugin(): Plugin {
                 tokenStatus: cfg.token_status || 'verified',
                 minDelaySec: cfg.min_delay_sec != null ? Number(cfg.min_delay_sec) : 2,
                 maxDelaySec: cfg.max_delay_sec != null ? Number(cfg.max_delay_sec) : 5,
+                batchSize: cfg.batch_size != null ? Number(cfg.batch_size) : 50,
+                batchPauseSec: cfg.batch_pause_sec != null ? Number(cfg.batch_pause_sec) : 30,
                 defaultMessageTemplates: cfg.default_message_templates || null,
                 verifiedAt: cfg.verified_at || null,
                 hasServerSecret: true,
@@ -7110,25 +7115,22 @@ function localApiDevPlugin(): Plugin {
           return readBody((body) => {
             const pageId = String(body?.pageId || '104829105829104').trim();
             const rawToken = body?.pageAccessToken ? String(body.pageAccessToken).trim() : undefined;
-            const minDelay = body?.minDelaySec != null ? Number(body.minDelaySec) : 2;
-            const maxDelay = body?.maxDelaySec != null ? Number(body.maxDelaySec) : 5;
+            const minDelay = body?.minDelaySec;
+            const maxDelay = body?.maxDelaySec;
+            const batchSize = body?.batchSize;
+            const batchPauseSec = body?.batchPauseSec;
             const defaultTemplates = body?.defaultMessageTemplates ? String(body.defaultMessageTemplates).trim() : undefined;
 
-            if (!Number.isFinite(minDelay) || minDelay < 0) {
+            const delayValidation = validateDelayConfig(minDelay, maxDelay);
+            if (!delayValidation.valid) {
               res.statusCode = 400;
-              return res.end(JSON.stringify({ success: false, error: 'Min Delay must be a finite non-negative number of seconds.' }));
+              return res.end(JSON.stringify({ success: false, error: delayValidation.error }));
             }
-            if (!Number.isFinite(maxDelay) || maxDelay < 0) {
+
+            const batchValidation = validateBatchConfig(batchSize, batchPauseSec);
+            if (!batchValidation.valid) {
               res.statusCode = 400;
-              return res.end(JSON.stringify({ success: false, error: 'Max Delay must be a finite non-negative number of seconds.' }));
-            }
-            if (maxDelay < minDelay) {
-              res.statusCode = 400;
-              return res.end(JSON.stringify({ success: false, error: `Max Delay (${maxDelay}s) cannot be less than Min Delay (${minDelay}s).` }));
-            }
-            if (maxDelay > 60) {
-              res.statusCode = 400;
-              return res.end(JSON.stringify({ success: false, error: 'Max Delay exceeds the safe ceiling of 60 seconds.' }));
+              return res.end(JSON.stringify({ success: false, error: batchValidation.error }));
             }
 
             const current = devBroadcasterConfig.get(pageId) || {};
@@ -7144,8 +7146,10 @@ function localApiDevPlugin(): Plugin {
               page_id: pageId,
               token_preview: tokenPreview,
               token_status: tokenStatus,
-              min_delay_sec: minDelay,
-              max_delay_sec: maxDelay,
+              min_delay_sec: delayValidation.min,
+              max_delay_sec: delayValidation.max,
+              batch_size: batchValidation.batchSize,
+              batch_pause_sec: batchValidation.batchPauseSec,
               default_message_templates: defaultTemplates ?? current.default_message_templates,
             });
 
@@ -7155,8 +7159,10 @@ function localApiDevPlugin(): Plugin {
                 success: true,
                 message: 'Broadcaster configuration saved securely.',
                 tokenPreview,
-                minDelaySec: minDelay,
-                maxDelaySec: maxDelay,
+                minDelaySec: delayValidation.min,
+                maxDelaySec: delayValidation.max,
+                batchSize: batchValidation.batchSize,
+                batchPauseSec: batchValidation.batchPauseSec,
               })
             );
           });
@@ -7202,7 +7208,7 @@ function localApiDevPlugin(): Plugin {
           if (authResult.error) return sendDevError(res, authResult.error);
           const campaignId = url.searchParams.get('campaignId') || undefined;
           const pageId = url.searchParams.get('pageId') || undefined;
-          let job = null;
+          let job: any = null;
           if (campaignId) {
             job = devBroadcasterJobs.get(campaignId) || null;
           } else if (pageId) {
@@ -7213,6 +7219,26 @@ function localApiDevPlugin(): Plugin {
               }
             }
           }
+
+          if (job) {
+            const isBatchPaused = job.status === 'PAUSED' && job.pause_reason === 'BATCH_PAUSE';
+            const nowMs = Date.now();
+            const pauseExpiryMs = job.paused_until ? new Date(job.paused_until).getTime() : 0;
+            const countdownSeconds = isBatchPaused && pauseExpiryMs > nowMs ? Math.max(0, Math.ceil((pauseExpiryMs - nowMs) / 1000)) : 0;
+
+            job = {
+              ...job,
+              effectiveStatus: isBatchPaused ? 'BATCH_PAUSED' : job.status,
+              batchSize: job.batch_size != null ? Number(job.batch_size) : 50,
+              batchPauseSec: job.batch_pause_sec != null ? Number(job.batch_pause_sec) : 30,
+              currentBatchDelivered: job.current_batch_delivered != null ? Number(job.current_batch_delivered) : 0,
+              pausedUntil: job.paused_until || null,
+              pauseReason: job.pause_reason || null,
+              countdownSeconds,
+              remainingCount: Math.max(0, (job.total_count || 0) - (job.processed_count || 0)),
+            };
+          }
+
           res.statusCode = 200;
           return res.end(JSON.stringify({ success: true, job }));
         }
@@ -7228,6 +7254,8 @@ function localApiDevPlugin(): Plugin {
             }
             const job = devBroadcasterJobs.get(campaignId) || { campaign_id: campaignId };
             job.status = 'PAUSED';
+            job.pause_reason = 'MANUAL_PAUSE';
+            job.paused_until = null;
             job.checkpoint_note = 'Paused by admin at safe recipient boundary';
             job.updated_at = new Date().toISOString();
             devBroadcasterJobs.set(campaignId, job);
@@ -7247,6 +7275,8 @@ function localApiDevPlugin(): Plugin {
             }
             const job = devBroadcasterJobs.get(campaignId) || { campaign_id: campaignId };
             job.status = 'RUNNING';
+            job.pause_reason = null;
+            job.paused_until = null;
             job.checkpoint_note = 'Resumed by admin';
             job.updated_at = new Date().toISOString();
             devBroadcasterJobs.set(campaignId, job);
@@ -7266,6 +7296,8 @@ function localApiDevPlugin(): Plugin {
             }
             const job = devBroadcasterJobs.get(campaignId) || { campaign_id: campaignId };
             job.status = 'STOPPED';
+            job.pause_reason = null;
+            job.paused_until = null;
             job.checkpoint_note = 'Terminated by admin';
             job.updated_at = new Date().toISOString();
             devBroadcasterJobs.set(campaignId, job);
@@ -7448,14 +7480,104 @@ function localApiDevPlugin(): Plugin {
               return res.end(JSON.stringify({ success: false, error: 'pageId and messageText are required.' }));
             }
 
+            const currentConfig = devBroadcasterConfig.get(pageId) || {};
+            const batchCheck = validateBatchConfig(
+              body?.batchSize != null ? body.batchSize : (currentConfig.batch_size ?? 50),
+              body?.batchPauseSec != null ? body.batchPauseSec : (currentConfig.batch_pause_sec ?? 30)
+            );
+
+            const existingJob = devBroadcasterJobs.get(campaignId);
+            if (existingJob?.status === 'STOPPED') {
+              res.statusCode = 200;
+              return res.end(
+                JSON.stringify({
+                  success: true,
+                  pageId,
+                  campaignId,
+                  jobStatus: 'STOPPED',
+                  totalProcessed: existingJob.processed_count || 0,
+                  deliveredCount: existingJob.delivered_count || 0,
+                  ambiguousCount: existingJob.ambiguous_count || 0,
+                  failedCount: existingJob.failed_count || 0,
+                  skippedCount: existingJob.skipped_count || 0,
+                  batchSize: batchCheck.batchSize,
+                  batchPauseSec: batchCheck.batchPauseSec,
+                  currentBatchDelivered: 0,
+                  pausedUntil: null,
+                  pauseReason: null,
+                  remainingCount: Math.max(0, (existingJob.total_count || recipients.length) - (existingJob.processed_count || 0)),
+                  checkpointNote: 'Campaign was stopped by administrator.',
+                  items: [],
+                  telemetryLogs: [],
+                })
+              );
+            }
+
+            if (existingJob?.status === 'PAUSED' && existingJob.pause_reason === 'MANUAL_PAUSE') {
+              res.statusCode = 200;
+              return res.end(
+                JSON.stringify({
+                  success: true,
+                  pageId,
+                  campaignId,
+                  jobStatus: 'PAUSED',
+                  totalProcessed: existingJob.processed_count || 0,
+                  deliveredCount: existingJob.delivered_count || 0,
+                  ambiguousCount: existingJob.ambiguous_count || 0,
+                  failedCount: existingJob.failed_count || 0,
+                  skippedCount: existingJob.skipped_count || 0,
+                  batchSize: batchCheck.batchSize,
+                  batchPauseSec: batchCheck.batchPauseSec,
+                  currentBatchDelivered: existingJob.current_batch_delivered || 0,
+                  pausedUntil: null,
+                  pauseReason: 'MANUAL_PAUSE',
+                  remainingCount: Math.max(0, (existingJob.total_count || recipients.length) - (existingJob.processed_count || 0)),
+                  checkpointNote: 'Campaign manually paused by administrator.',
+                  items: [],
+                  telemetryLogs: [],
+                })
+              );
+            }
+
+            if (existingJob?.status === 'PAUSED' && existingJob.pause_reason === 'BATCH_PAUSE' && existingJob.paused_until) {
+              const pauseExpiryMs = new Date(existingJob.paused_until).getTime();
+              if (Date.now() < pauseExpiryMs) {
+                res.statusCode = 200;
+                return res.end(
+                  JSON.stringify({
+                    success: true,
+                    pageId,
+                    campaignId,
+                    jobStatus: 'BATCH_PAUSED',
+                    totalProcessed: existingJob.processed_count || 0,
+                    deliveredCount: existingJob.delivered_count || 0,
+                    ambiguousCount: existingJob.ambiguous_count || 0,
+                    failedCount: existingJob.failed_count || 0,
+                    skippedCount: existingJob.skipped_count || 0,
+                    batchSize: batchCheck.batchSize,
+                    batchPauseSec: batchCheck.batchPauseSec,
+                    currentBatchDelivered: existingJob.current_batch_delivered || 0,
+                    pausedUntil: existingJob.paused_until,
+                    pauseReason: 'BATCH_PAUSE',
+                    remainingCount: Math.max(0, (existingJob.total_count || recipients.length) - (existingJob.processed_count || 0)),
+                    checkpointNote: `Batch pause active until ${existingJob.paused_until}.`,
+                    items: [],
+                    telemetryLogs: [],
+                  })
+                );
+              }
+            }
+
             const items: any[] = [];
             const telemetryLogs: any[] = [];
-            let deliveredCount = 0;
-            let ambiguousCount = 0;
-            let failedCount = 0;
-            let skippedCount = 0;
+            let currentBatchDelivered = (existingJob?.status === 'PAUSED' && existingJob.pause_reason === 'BATCH_PAUSE' && existingJob.paused_until && Date.now() >= new Date(existingJob.paused_until).getTime()) ? 0 : (existingJob?.current_batch_delivered || 0);
+            let deliveredCount = existingJob?.delivered_count || 0;
+            let ambiguousCount = existingJob?.ambiguous_count || 0;
+            let failedCount = existingJob?.failed_count || 0;
+            let skippedCount = existingJob?.skipped_count || 0;
 
-            for (const rec of recipients) {
+            for (let i = 0; i < recipients.length; i++) {
+              const rec = recipients[i];
               const psid = String(rec.psid || '').trim();
               const ledgerKey = `${pageId}:${psid}`;
               const now = new Date().toISOString();
@@ -7551,6 +7673,7 @@ function localApiDevPlugin(): Plugin {
 
               // Successful delivery confirmed
               deliveredCount++;
+              currentBatchDelivered++;
               const mid = `mid.${Date.now()}.${Math.random().toString(36).substring(2, 8)}`;
               record.status = 'DELIVERED';
               record.message_id = mid;
@@ -7575,16 +7698,67 @@ function localApiDevPlugin(): Plugin {
               };
               items.push(itemRes);
               telemetryLogs.push(itemRes.telemetryEvent);
+
+              // Check if batch threshold reached
+              if (currentBatchDelivered >= batchCheck.batchSize && i < recipients.length - 1) {
+                const pausedUntil = new Date(Date.now() + batchCheck.batchPauseSec * 1000).toISOString();
+                const checkpointNote = `Batch threshold reached (${currentBatchDelivered}/${batchCheck.batchSize}). Paused for ${batchCheck.batchPauseSec}s until ${pausedUntil}.`;
+                const batchJob = devBroadcasterJobs.get(campaignId) || { campaign_id: campaignId, page_id: pageId };
+                batchJob.status = 'PAUSED';
+                batchJob.pause_reason = 'BATCH_PAUSE';
+                batchJob.paused_until = pausedUntil;
+                batchJob.batch_size = batchCheck.batchSize;
+                batchJob.batch_pause_sec = batchCheck.batchPauseSec;
+                batchJob.current_batch_delivered = 0;
+                batchJob.total_count = recipients.length;
+                batchJob.processed_count = items.length;
+                batchJob.delivered_count = deliveredCount;
+                batchJob.ambiguous_count = ambiguousCount;
+                batchJob.failed_count = failedCount;
+                batchJob.skipped_count = skippedCount;
+                batchJob.checkpoint_note = checkpointNote;
+                batchJob.updated_at = new Date().toISOString();
+                devBroadcasterJobs.set(campaignId, batchJob);
+
+                res.statusCode = 200;
+                return res.end(
+                  JSON.stringify({
+                    success: true,
+                    pageId,
+                    campaignId,
+                    jobStatus: 'BATCH_PAUSED',
+                    totalProcessed: items.length,
+                    deliveredCount,
+                    ambiguousCount,
+                    failedCount,
+                    skippedCount,
+                    batchSize: batchCheck.batchSize,
+                    batchPauseSec: batchCheck.batchPauseSec,
+                    currentBatchDelivered: 0,
+                    pausedUntil,
+                    pauseReason: 'BATCH_PAUSE',
+                    remainingCount: recipients.length - items.length,
+                    checkpointNote,
+                    items,
+                    telemetryLogs,
+                  })
+                );
+              }
             }
 
             const currentJob = devBroadcasterJobs.get(campaignId) || { campaign_id: campaignId, page_id: pageId };
-            currentJob.status = currentJob.status === 'PAUSED' ? 'PAUSED' : currentJob.status === 'STOPPED' ? 'STOPPED' : 'COMPLETED';
+            currentJob.status = 'COMPLETED';
+            currentJob.pause_reason = null;
+            currentJob.paused_until = null;
             currentJob.total_count = recipients.length;
             currentJob.processed_count = items.length;
             currentJob.delivered_count = deliveredCount;
             currentJob.ambiguous_count = ambiguousCount;
             currentJob.failed_count = failedCount;
             currentJob.skipped_count = skippedCount;
+            currentJob.batch_size = batchCheck.batchSize;
+            currentJob.batch_pause_sec = batchCheck.batchPauseSec;
+            currentJob.current_batch_delivered = currentBatchDelivered;
             currentJob.updated_at = new Date().toISOString();
             devBroadcasterJobs.set(campaignId, currentJob);
 
@@ -7600,6 +7774,12 @@ function localApiDevPlugin(): Plugin {
                 ambiguousCount,
                 failedCount,
                 skippedCount,
+                batchSize: batchCheck.batchSize,
+                batchPauseSec: batchCheck.batchPauseSec,
+                currentBatchDelivered,
+                pausedUntil: null,
+                pauseReason: null,
+                remainingCount: Math.max(0, recipients.length - items.length),
                 items,
                 telemetryLogs,
               })

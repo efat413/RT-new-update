@@ -26,6 +26,7 @@ import {
   redactToken,
   validateMetaPageToken,
   validateDelayConfig,
+  validateBatchConfig,
   parseMessageTemplates,
 } from './broadcasterSecurity';
 import { runConcurrentBroadcasterQueue } from './broadcasterWorker';
@@ -104,6 +105,8 @@ export async function handleBroadcasterApiRequest(
             tokenStatus: config?.token_status || (hasEnvToken ? 'active' : 'unconfigured'),
             minDelaySec: config?.min_delay_sec != null ? Number(config.min_delay_sec) : 2,
             maxDelaySec: config?.max_delay_sec != null ? Number(config.max_delay_sec) : 5,
+            batchSize: config?.batch_size != null ? Number(config.batch_size) : 50,
+            batchPauseSec: config?.batch_pause_sec != null ? Number(config.batch_pause_sec) : 30,
             defaultMessageTemplates: config?.default_message_templates || null,
             verifiedAt: config?.verified_at || null,
             hasServerSecret: Boolean(hasEnvToken || config?.encrypted_access_token),
@@ -115,7 +118,7 @@ export async function handleBroadcasterApiRequest(
     }
 
     // ==============================================================
-    // 2. POST /api/broadcaster/config - Save Encrypted Token & Delays
+    // 2. POST /api/broadcaster/config - Save Encrypted Token, Delays & Batch Settings
     // ==============================================================
     if (path === '/api/broadcaster/config' && method === 'POST') {
       const body = await request.json().catch(() => ({}));
@@ -123,12 +126,20 @@ export async function handleBroadcasterApiRequest(
       const rawToken = (body as any)?.pageAccessToken ? String((body as any).pageAccessToken).trim() : undefined;
       const minDelaySec = (body as any)?.minDelaySec;
       const maxDelaySec = (body as any)?.maxDelaySec;
+      const batchSize = (body as any)?.batchSize;
+      const batchPauseSec = (body as any)?.batchPauseSec;
       const defaultTemplates = (body as any)?.defaultMessageTemplates ? String((body as any).defaultMessageTemplates).trim() : undefined;
 
       // Validate delay inputs
-      const delayValidation = validateDelayConfig(minDelaySec ?? 2, maxDelaySec ?? 5);
+      const delayValidation = validateDelayConfig(minDelaySec, maxDelaySec);
       if (!delayValidation.valid) {
         return jsonResponse({ success: false, error: delayValidation.error }, 400, corsHeaders);
+      }
+
+      // Validate batch inputs
+      const batchValidation = validateBatchConfig(batchSize, batchPauseSec);
+      if (!batchValidation.valid) {
+        return jsonResponse({ success: false, error: batchValidation.error }, 400, corsHeaders);
       }
 
       let encryptedToken: string | undefined;
@@ -157,6 +168,8 @@ export async function handleBroadcasterApiRequest(
         token_status: tokenStatus,
         min_delay_sec: delayValidation.min,
         max_delay_sec: delayValidation.max,
+        batch_size: batchValidation.batchSize,
+        batch_pause_sec: batchValidation.batchPauseSec,
         default_message_templates: defaultTemplates,
       });
 
@@ -172,6 +185,8 @@ export async function handleBroadcasterApiRequest(
             tokenConfigured: Boolean(rawToken),
             minDelaySec: delayValidation.min,
             maxDelaySec: delayValidation.max,
+            batchSize: batchValidation.batchSize,
+            batchPauseSec: batchValidation.batchPauseSec,
           },
           actorId: authContext?.id,
           actorEmail: authContext?.email,
@@ -187,6 +202,8 @@ export async function handleBroadcasterApiRequest(
           tokenPreview: tokenPreview || 'unchanged',
           minDelaySec: delayValidation.min,
           maxDelaySec: delayValidation.max,
+          batchSize: batchValidation.batchSize,
+          batchPauseSec: batchValidation.batchPauseSec,
         },
         200,
         corsHeaders
@@ -271,18 +288,37 @@ export async function handleBroadcasterApiRequest(
       const campaignId = url.searchParams.get('campaignId') || undefined;
       const pageId = url.searchParams.get('pageId') || undefined;
 
-      let job = null;
+      let job: any = null;
       if (campaignId) {
         job = await getBroadcasterCampaignJob(db, campaignId);
       } else if (pageId) {
         job = await getActiveRunningBroadcasterJob(db, pageId);
       }
 
+      if (job) {
+        const isBatchPaused = job.status === 'PAUSED' && job.pause_reason === 'BATCH_PAUSE';
+        const nowMs = Date.now();
+        const pauseExpiryMs = job.paused_until ? new Date(job.paused_until).getTime() : 0;
+        const countdownSeconds = isBatchPaused && pauseExpiryMs > nowMs ? Math.max(0, Math.ceil((pauseExpiryMs - nowMs) / 1000)) : 0;
+
+        job = {
+          ...job,
+          effectiveStatus: isBatchPaused ? 'BATCH_PAUSED' : job.status,
+          batchSize: job.batch_size != null ? Number(job.batch_size) : 50,
+          batchPauseSec: job.batch_pause_sec != null ? Number(job.batch_pause_sec) : 30,
+          currentBatchDelivered: job.current_batch_delivered != null ? Number(job.current_batch_delivered) : 0,
+          pausedUntil: job.paused_until || null,
+          pauseReason: job.pause_reason || null,
+          countdownSeconds,
+          remainingCount: Math.max(0, (job.total_count || 0) - (job.processed_count || 0)),
+        };
+      }
+
       return jsonResponse({ success: true, job }, 200, corsHeaders);
     }
 
     // ==============================================================
-    // 5. POST /api/broadcaster/pause - Pause Campaign at Safe Checkpoint
+    // 5. POST /api/broadcaster/pause - Pause Campaign at Safe Checkpoint (Manual Override)
     // ==============================================================
     if (path === '/api/broadcaster/pause' && method === 'POST') {
       const body = await request.json().catch(() => ({}));
@@ -292,14 +328,18 @@ export async function handleBroadcasterApiRequest(
         return jsonResponse({ success: false, error: 'campaignId is required to pause campaign.' }, 400, corsHeaders);
       }
 
-      await setBroadcasterJobStatus(db, campaignId, 'PAUSED', 'Paused by admin');
+      // Explicit manual pause: clears paused_until countdown and marks pause_reason as MANUAL_PAUSE
+      await setBroadcasterJobStatus(db, campaignId, 'PAUSED', 'Paused by admin', {
+        pauseReason: 'MANUAL_PAUSE',
+        pausedUntil: null,
+      });
 
       try {
         await insertAuditLogInD1(db, {
           action: 'SETTINGS_UPDATE',
           targetType: 'settings',
           targetId: `broadcaster-job-${campaignId}`,
-          details: { action: 'pause_broadcaster_campaign', campaignId },
+          details: { action: 'pause_broadcaster_campaign', campaignId, pauseReason: 'MANUAL_PAUSE' },
           actorId: authContext?.id,
           actorEmail: authContext?.email,
           actorRole: authContext?.role,
@@ -321,7 +361,10 @@ export async function handleBroadcasterApiRequest(
         return jsonResponse({ success: false, error: 'campaignId is required to resume campaign.' }, 400, corsHeaders);
       }
 
-      await setBroadcasterJobStatus(db, campaignId, 'RUNNING', 'Resumed by admin');
+      await setBroadcasterJobStatus(db, campaignId, 'RUNNING', 'Resumed by admin', {
+        pauseReason: null,
+        pausedUntil: null,
+      });
 
       try {
         await insertAuditLogInD1(db, {
@@ -350,7 +393,10 @@ export async function handleBroadcasterApiRequest(
         return jsonResponse({ success: false, error: 'campaignId is required to stop campaign.' }, 400, corsHeaders);
       }
 
-      await setBroadcasterJobStatus(db, campaignId, 'STOPPED', 'Terminated by admin');
+      await setBroadcasterJobStatus(db, campaignId, 'STOPPED', 'Terminated by admin', {
+        pauseReason: null,
+        pausedUntil: null,
+      });
 
       try {
         await insertAuditLogInD1(db, {
@@ -433,6 +479,8 @@ export async function handleBroadcasterApiRequest(
       const pageAccessToken = (body as any)?.pageAccessToken;
       const minDelaySec = (body as any)?.minDelaySec;
       const maxDelaySec = (body as any)?.maxDelaySec;
+      const batchSize = (body as any)?.batchSize;
+      const batchPauseSec = (body as any)?.batchPauseSec;
       const metaApiEndpoint = (body as any)?.metaApiEndpoint;
       const timeoutMs = (body as any)?.timeoutMs;
 
@@ -449,7 +497,7 @@ export async function handleBroadcasterApiRequest(
         return jsonResponse(
           {
             success: false,
-            error: `Another broadcast campaign ("${activeRunningJob.campaign_id}") is currently RUNNING on this Page. Please wait or stop the running campaign first.`,
+            error: `Another broadcast campaign ("${activeRunningJob.campaign_id}") is currently active on this Page. Please wait or stop the running campaign first.`,
             runningCampaignId: activeRunningJob.campaign_id,
           },
           409,
@@ -465,6 +513,8 @@ export async function handleBroadcasterApiRequest(
         pageAccessToken,
         minDelaySec,
         maxDelaySec,
+        batchSize,
+        batchPauseSec,
         metaApiEndpoint,
         timeoutMs,
         encryptionSecret,

@@ -30,6 +30,8 @@ import {
   ExternalLink,
   ChevronDown,
   ChevronUp,
+  Timer,
+  Layers,
 } from 'lucide-react';
 
 interface TelemetryLogItem {
@@ -95,6 +97,24 @@ export const AdminBroadcasterTab: React.FC = () => {
   const [minDelaySec, setMinDelaySec] = useState<number>(2);
   const [maxDelaySec, setMaxDelaySec] = useState<number>(5);
   const [delayError, setDelayError] = useState<string | null>(null);
+
+  // Configurable Batch Settings
+  const [batchSize, setBatchSize] = useState<number>(50);
+  const [batchPauseSec, setBatchPauseSec] = useState<number>(30);
+  const [batchConfigError, setBatchConfigError] = useState<string | null>(null);
+
+  // Server-side Job, Batch & Countdown State
+  const [effectiveStatus, setEffectiveStatus] = useState<
+    'IDLE' | 'RUNNING' | 'PAUSED' | 'BATCH_PAUSED' | 'STOPPED' | 'COMPLETED'
+  >('IDLE');
+  const [currentBatchDelivered, setCurrentBatchDelivered] = useState<number>(0);
+  const [configuredBatchSize, setConfiguredBatchSize] = useState<number>(50);
+  const [configuredBatchPauseSec, setConfiguredBatchPauseSec] = useState<number>(30);
+  const [pausedUntil, setPausedUntil] = useState<string | null>(null);
+  const [pauseReason, setPauseReason] = useState<'MANUAL_PAUSE' | 'BATCH_PAUSE' | null>(null);
+  const [batchCountdown, setBatchCountdown] = useState<number>(0);
+  const [remainingCount, setRemainingCount] = useState<number>(0);
+  const isAutoResumingRef = useRef<boolean>(false);
 
   // Multi-Template Variations separated by '|'
   const [messageTemplates, setMessageTemplates] = useState(
@@ -181,7 +201,7 @@ export const AdminBroadcasterTab: React.FC = () => {
 
   // Poll job status when running or paused
   useEffect(() => {
-    if (jobStatus === 'RUNNING' || jobStatus === 'PAUSED') {
+    if (jobStatus === 'RUNNING' || jobStatus === 'PAUSED' || effectiveStatus === 'BATCH_PAUSED') {
       pollIntervalRef.current = setInterval(() => {
         fetchJobStatus();
       }, 2000);
@@ -194,7 +214,67 @@ export const AdminBroadcasterTab: React.FC = () => {
     return () => {
       if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
     };
-  }, [jobStatus, campaignId]);
+  }, [jobStatus, effectiveStatus, campaignId]);
+
+  // Real server-side Batch Pause Countdown Timer & Automatic Resumption
+  useEffect(() => {
+    if (effectiveStatus !== 'BATCH_PAUSED' || !pausedUntil) {
+      setBatchCountdown(0);
+      return;
+    }
+
+    const checkCountdown = () => {
+      const expiry = new Date(pausedUntil).getTime();
+      const diffMs = expiry - Date.now();
+      const remainingSec = Math.max(0, Math.ceil(diffMs / 1000));
+      setBatchCountdown(remainingSec);
+
+      if (diffMs <= 0 && !isAutoResumingRef.current) {
+        // Pause period ended! Automatically resume continuation
+        triggerAutoResume();
+      }
+    };
+
+    checkCountdown();
+    const timer = setInterval(checkCountdown, 1000);
+    return () => clearInterval(timer);
+  }, [effectiveStatus, pausedUntil, campaignId]);
+
+  const triggerAutoResume = async () => {
+    if (isAutoResumingRef.current) return;
+    isAutoResumingRef.current = true;
+    try {
+      // Re-verify server state first: Ensure campaign was not manually paused or stopped
+      const checkRes = await fetch(
+        `/api/broadcaster/job-status?campaignId=${encodeURIComponent(campaignId)}&pageId=${encodeURIComponent(pageId)}`
+      );
+      const checkData = await checkRes.json();
+      if (checkData.success && checkData.job) {
+        if (
+          checkData.job.status === 'STOPPED' ||
+          (checkData.job.status === 'PAUSED' && checkData.job.pause_reason === 'MANUAL_PAUSE')
+        ) {
+          // Manual pause or stop strictly overrides automatic batch resumption
+          setJobStatus(checkData.job.status);
+          setEffectiveStatus(checkData.job.status);
+          return;
+        }
+      }
+
+      setSystemNotice({
+        type: 'info',
+        text: `Batch pause period completed. Automatically continuing campaign "${campaignId}"...`,
+      });
+
+      await handleDispatch(false, true);
+    } catch (err: any) {
+      console.warn('Auto resume failed:', err);
+    } finally {
+      setTimeout(() => {
+        isAutoResumingRef.current = false;
+      }, 2000);
+    }
+  };
 
   const fetchConfig = async () => {
     try {
@@ -203,8 +283,18 @@ export const AdminBroadcasterTab: React.FC = () => {
       if (data.success && data.config) {
         setTokenPreview(data.config.tokenPreview || 'unconfigured');
         setTokenStatus(data.config.tokenStatus || 'unconfigured');
-        if (data.config.minDelaySec != null) setMinDelaySec(data.config.minDelaySec);
-        if (data.config.maxDelaySec != null) setMaxDelaySec(data.config.maxDelaySec);
+        if (data.config.minDelaySec != null) setMinDelaySec(Number(data.config.minDelaySec));
+        if (data.config.maxDelaySec != null) setMaxDelaySec(Number(data.config.maxDelaySec));
+        if (data.config.batchSize != null) {
+          const bs = Number(data.config.batchSize);
+          setBatchSize(bs);
+          setConfiguredBatchSize(bs);
+        }
+        if (data.config.batchPauseSec != null) {
+          const bp = Number(data.config.batchPauseSec);
+          setBatchPauseSec(bp);
+          setConfiguredBatchPauseSec(bp);
+        }
         if (data.config.defaultMessageTemplates) {
           setMessageTemplates(data.config.defaultMessageTemplates);
         }
@@ -247,22 +337,58 @@ export const AdminBroadcasterTab: React.FC = () => {
 
   const fetchJobStatus = async () => {
     try {
-      const res = await fetch(`/api/broadcaster/job-status?campaignId=${encodeURIComponent(campaignId)}&pageId=${encodeURIComponent(pageId)}`);
+      const res = await fetch(
+        `/api/broadcaster/job-status?campaignId=${encodeURIComponent(campaignId)}&pageId=${encodeURIComponent(pageId)}`
+      );
       const data = await res.json();
       if (data.success && data.job) {
-        setJobStatus(data.job.status || 'IDLE');
+        const job = data.job;
+        const effStatus =
+          job.effectiveStatus ||
+          (job.status === 'PAUSED' && job.pause_reason === 'BATCH_PAUSE' ? 'BATCH_PAUSED' : job.status) ||
+          'IDLE';
+
+        setJobStatus(job.status || 'IDLE');
+        setEffectiveStatus(effStatus as any);
+
+        const currentDeliv = job.current_batch_delivered != null ? Number(job.current_batch_delivered) : 0;
+        setCurrentBatchDelivered(currentDeliv);
+
+        if (job.batch_size != null) setConfiguredBatchSize(Number(job.batch_size));
+        if (job.batch_pause_sec != null) setConfiguredBatchPauseSec(Number(job.batch_pause_sec));
+        setPausedUntil(job.paused_until || null);
+        setPauseReason(job.pause_reason || null);
+
+        const totalRecip = job.total_count || 0;
+        const proc = job.processed_count || 0;
+        const rem = job.remainingCount != null ? Number(job.remainingCount) : Math.max(0, totalRecip - proc);
+        setRemainingCount(rem);
+
+        if (effStatus === 'BATCH_PAUSED' && job.paused_until) {
+          const expiryMs = new Date(job.paused_until).getTime();
+          setBatchCountdown(Math.max(0, Math.ceil((expiryMs - Date.now()) / 1000)));
+        } else {
+          setBatchCountdown(0);
+        }
+
         setJobProgress({
-          total: data.job.total_count || 0,
-          processed: data.job.processed_count || 0,
-          delivered: data.job.delivered_count || 0,
-          ambiguous: data.job.ambiguous_count || 0,
-          failed: data.job.failed_count || 0,
-          skipped: data.job.skipped_count || 0,
-          note: data.job.checkpoint_note || undefined,
+          total: totalRecip,
+          processed: proc,
+          delivered: job.delivered_count || 0,
+          ambiguous: job.ambiguous_count || 0,
+          failed: job.failed_count || 0,
+          skipped: job.skipped_count || 0,
+          note: job.checkpoint_note || undefined,
         });
-        if (data.job.status === 'RUNNING') {
+
+        if (effStatus === 'RUNNING') {
           setIsDispatching(true);
-        } else if (data.job.status === 'COMPLETED' || data.job.status === 'STOPPED') {
+        } else if (
+          effStatus === 'COMPLETED' ||
+          effStatus === 'STOPPED' ||
+          effStatus === 'PAUSED' ||
+          effStatus === 'BATCH_PAUSED'
+        ) {
           setIsDispatching(false);
         }
       }
@@ -271,11 +397,14 @@ export const AdminBroadcasterTab: React.FC = () => {
     }
   };
 
-  // Save Token & Delay Settings
+  // Save Token, Delay Settings & Batch Configurations
   const handleSaveConfig = async () => {
     const min = Number(minDelaySec);
     const max = Number(maxDelaySec);
+    const bSize = parseInt(String(batchSize), 10);
+    const bPause = parseInt(String(batchPauseSec), 10);
 
+    // Validate Delays
     if (!Number.isFinite(min) || min < 0) {
       setDelayError('Min Delay must be a finite non-negative number of seconds.');
       return;
@@ -293,6 +422,18 @@ export const AdminBroadcasterTab: React.FC = () => {
       return;
     }
     setDelayError(null);
+
+    // Validate Batch Settings
+    if (!Number.isInteger(bSize) || bSize < 1 || bSize > 1000) {
+      setBatchConfigError('Batch Size must be an integer between 1 and 1000.');
+      return;
+    }
+    if (!Number.isInteger(bPause) || bPause < 1 || bPause > 3600) {
+      setBatchConfigError('Batch Pause Duration must be an integer between 1 and 3600 seconds.');
+      return;
+    }
+    setBatchConfigError(null);
+
     setIsSavingConfig(true);
 
     try {
@@ -304,6 +445,8 @@ export const AdminBroadcasterTab: React.FC = () => {
           pageAccessToken: pageAccessToken.trim() || undefined,
           minDelaySec: min,
           maxDelaySec: max,
+          batchSize: bSize,
+          batchPauseSec: bPause,
           defaultMessageTemplates: messageTemplates.trim(),
         }),
       });
@@ -311,8 +454,10 @@ export const AdminBroadcasterTab: React.FC = () => {
       if (data.success) {
         setSystemNotice({
           type: 'success',
-          text: 'Facebook Broadcaster configuration and credentials saved securely (AES-256-GCM encrypted).',
+          text: `Configuration saved successfully! (Delay: ${min}s-${max}s, Batch Size: ${bSize}, Batch Pause: ${bPause}s).`,
         });
+        setConfiguredBatchSize(bSize);
+        setConfiguredBatchPauseSec(bPause);
         setPageAccessToken(''); // Purge sensitive raw token from memory immediately
         fetchConfig();
       } else {
@@ -489,6 +634,8 @@ export const AdminBroadcasterTab: React.FC = () => {
           recipients,
           minDelaySec,
           maxDelaySec,
+          batchSize: Number(batchSize),
+          batchPauseSec: Number(batchPauseSec),
           simulateTimeout,
         }),
       });
@@ -500,7 +647,31 @@ export const AdminBroadcasterTab: React.FC = () => {
         }));
         setTelemetryLogs((prev) => [...prev, ...newLogs]);
 
-        setJobStatus(data.jobStatus || 'COMPLETED');
+        const returnedJobStatus = data.jobStatus || 'COMPLETED';
+        const isBatchPaused = returnedJobStatus === 'BATCH_PAUSED';
+
+        setEffectiveStatus(returnedJobStatus);
+        setJobStatus(isBatchPaused ? 'PAUSED' : returnedJobStatus);
+        setCurrentBatchDelivered(data.currentBatchDelivered ?? 0);
+        setPausedUntil(data.pausedUntil || null);
+        setPauseReason(data.pauseReason || null);
+
+        if (data.batchSize != null) setConfiguredBatchSize(data.batchSize);
+        if (data.batchPauseSec != null) setConfiguredBatchPauseSec(data.batchPauseSec);
+
+        const rem =
+          data.remainingCount != null
+            ? Number(data.remainingCount)
+            : Math.max(0, recipients.length - data.totalProcessed);
+        setRemainingCount(rem);
+
+        if (isBatchPaused && data.pausedUntil) {
+          const expiryMs = new Date(data.pausedUntil).getTime();
+          setBatchCountdown(Math.max(0, Math.ceil((expiryMs - Date.now()) / 1000)));
+        } else {
+          setBatchCountdown(0);
+        }
+
         setJobProgress({
           total: recipients.length,
           processed: data.totalProcessed,
@@ -512,8 +683,10 @@ export const AdminBroadcasterTab: React.FC = () => {
         });
 
         setSystemNotice({
-          type: data.jobStatus === 'PAUSED' ? 'warning' : 'success',
-          text: data.jobStatus === 'PAUSED'
+          type: isBatchPaused ? 'warning' : returnedJobStatus === 'PAUSED' ? 'warning' : 'success',
+          text: isBatchPaused
+            ? `Batch Pause Active: Configured threshold reached (${data.batchSize || configuredBatchSize} deliveries). Pausing for ${data.batchPauseSec || configuredBatchPauseSec}s.`
+            : returnedJobStatus === 'PAUSED'
             ? `Campaign Paused: Safe checkpoint reached (${data.totalProcessed}/${recipients.length} processed).`
             : `Dispatch Finished: ${data.deliveredCount} Delivered, ${data.ambiguousCount} Ambiguous (Fail-Safe Locked), ${data.skippedCount} Skipped (Race-Guard / Ledger Lock).`,
         });
@@ -526,6 +699,7 @@ export const AdminBroadcasterTab: React.FC = () => {
           text: `Dispatch Error: ${data.error || 'Failed to dispatch broadcast.'}`,
         });
         setJobStatus('IDLE');
+        setEffectiveStatus('IDLE');
       }
     } catch (err: any) {
       setSystemNotice({
@@ -533,12 +707,13 @@ export const AdminBroadcasterTab: React.FC = () => {
         text: `Dispatch Failure: ${err?.message || 'Network error'}`,
       });
       setJobStatus('IDLE');
+      setEffectiveStatus('IDLE');
     } finally {
       setIsDispatching(false);
     }
   };
 
-  // Real server-side Pause
+  // Real server-side Pause (Manual Admin Override)
   const handlePauseCampaign = async () => {
     try {
       const res = await fetch('/api/broadcaster/pause', {
@@ -549,9 +724,13 @@ export const AdminBroadcasterTab: React.FC = () => {
       const data = await res.json();
       if (data.success) {
         setJobStatus('PAUSED');
+        setEffectiveStatus('PAUSED');
+        setPauseReason('MANUAL_PAUSE');
+        setPausedUntil(null);
+        setBatchCountdown(0);
         setSystemNotice({
           type: 'warning',
-          text: `Campaign "${campaignId}" paused at safe checkpoint. Resuming will continue without repeating recipients.`,
+          text: `Campaign "${campaignId}" manually paused by administrator. Automatic batch continuation is disabled until explicitly resumed.`,
         });
         fetchJobStatus();
       } else {
@@ -573,9 +752,13 @@ export const AdminBroadcasterTab: React.FC = () => {
       const data = await res.json();
       if (data.success) {
         setJobStatus('RUNNING');
+        setEffectiveStatus('RUNNING');
+        setPauseReason(null);
+        setPausedUntil(null);
+        setBatchCountdown(0);
         setSystemNotice({
           type: 'success',
-          text: `Campaign "${campaignId}" resumed. Processing next eligible recipient...`,
+          text: `Campaign "${campaignId}" resumed by administrator. Continuing eligible queue...`,
         });
         handleDispatch(false, true);
       } else {
@@ -588,7 +771,11 @@ export const AdminBroadcasterTab: React.FC = () => {
 
   // Real server-side Stop
   const handleStopCampaign = async () => {
-    if (!window.confirm(`Are you sure you want to STOP campaign "${campaignId}"? Remaining unsent messages in this campaign will be aborted.`)) {
+    if (
+      !window.confirm(
+        `Are you sure you want to STOP campaign "${campaignId}"? Remaining unsent messages in this campaign will be aborted.`
+      )
+    ) {
       return;
     }
     try {
@@ -600,10 +787,14 @@ export const AdminBroadcasterTab: React.FC = () => {
       const data = await res.json();
       if (data.success) {
         setJobStatus('STOPPED');
+        setEffectiveStatus('STOPPED');
+        setPauseReason(null);
+        setPausedUntil(null);
+        setBatchCountdown(0);
         setIsDispatching(false);
         setSystemNotice({
           type: 'info',
-          text: `Campaign "${campaignId}" stopped by admin. Safe checkpoint recorded.`,
+          text: `Campaign "${campaignId}" permanently stopped by admin. Safe checkpoint recorded.`,
         });
         fetchJobStatus();
       } else {
@@ -814,10 +1005,10 @@ export const AdminBroadcasterTab: React.FC = () => {
           </div>
 
           {/* DELAY SETTINGS (Min Delay & Max Delay) */}
-          <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-2">
+          <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-3">
             <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
               <Sliders className="w-3.5 h-3.5 text-indigo-400" />
-              <span>Configurable Server-Side Delay Settings</span>
+              <span>Configurable Server-Side Message Delay Settings</span>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
@@ -865,8 +1056,70 @@ export const AdminBroadcasterTab: React.FC = () => {
             )}
 
             <p className="text-[11px] text-slate-400 leading-normal">
-              A random jitter delay between {minDelaySec}s and {maxDelaySec}s is enforced by the server between every eligible message dispatch.
-              This prevents server concurrency spikes while strictly honoring Meta messaging platform limits.
+              A random jitter delay between {minDelaySec}s and {maxDelaySec}s is applied between eligible messaging operations to protect API quotas.
+            </p>
+          </div>
+
+          {/* BATCH PROCESSING & PAUSE SETTINGS */}
+          <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-3">
+            <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
+              <Layers className="w-3.5 h-3.5 text-indigo-400" />
+              <span>Configurable Batch Processing & Pause Settings</span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">
+                  Batch Size — default: 50 (Range: 1 - 1000)
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="1000"
+                  step="1"
+                  value={batchSize}
+                  onChange={(e) => {
+                    setBatchSize(parseInt(e.target.value, 10) || 0);
+                    setBatchConfigError(null);
+                  }}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                />
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Number of successfully delivered messages before entering a batch-pause period.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">
+                  Batch Pause Duration (seconds) — default: 30
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="3600"
+                  step="1"
+                  value={batchPauseSec}
+                  onChange={(e) => {
+                    setBatchPauseSec(parseInt(e.target.value, 10) || 0);
+                    setBatchConfigError(null);
+                  }}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                />
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Duration to pause new dispatches when batch threshold is reached. Auto-resumes after countdown.
+                </p>
+              </div>
+            </div>
+
+            {batchConfigError && (
+              <div className="text-xs text-rose-400 flex items-center gap-1 mt-1 font-medium">
+                <AlertTriangle className="w-3.5 h-3.5" />
+                {batchConfigError}
+              </div>
+            )}
+
+            <p className="text-[11px] text-slate-400 leading-normal">
+              Failed, skipped, duplicate, or ambiguous recipients do not increment the batch count.
+              When paused, manual pause overrides automatic resumption.
             </p>
           </div>
 
@@ -965,69 +1218,84 @@ export const AdminBroadcasterTab: React.FC = () => {
         </div>
       )}
 
-      {/* REAL SERVER-SIDE CAMPAIGN JOB CONTROLS (Pause, Resume, Stop) */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-sm space-y-3">
+      {/* REAL SERVER-SIDE CAMPAIGN JOB CONTROLS & LIVE EXECUTION CONSOLE */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-sm space-y-4">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
             <span className="p-1.5 rounded-lg bg-slate-800 text-slate-300">
               <Zap className="w-4 h-4 text-indigo-400" />
             </span>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-xs font-bold text-white tracking-wide">
                   Campaign Engine State:
                 </span>
-                {jobStatus === 'RUNNING' && (
+
+                {effectiveStatus === 'RUNNING' && (
                   <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/30 flex items-center gap-1.5 animate-pulse">
                     <span className="w-2 h-2 rounded-full bg-sky-400 animate-ping" />
                     RUNNING
                   </span>
                 )}
-                {jobStatus === 'PAUSED' && (
+
+                {effectiveStatus === 'BATCH_PAUSED' && (
                   <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1.5">
-                    <Pause className="w-3 h-3 text-amber-400" />
-                    PAUSED AT CHECKPOINT
+                    <Timer className="w-3.5 h-3.5 text-amber-400 animate-spin" style={{ animationDuration: '3s' }} />
+                    BATCH PAUSED ({batchCountdown}s remaining)
                   </span>
                 )}
-                {jobStatus === 'STOPPED' && (
+
+                {effectiveStatus === 'PAUSED' && (
+                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1.5">
+                    <Pause className="w-3 h-3 text-amber-400" />
+                    PAUSED MANUALLY
+                  </span>
+                )}
+
+                {effectiveStatus === 'STOPPED' && (
                   <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30 flex items-center gap-1.5">
                     <Square className="w-3 h-3 text-rose-400" />
                     STOPPED
                   </span>
                 )}
-                {jobStatus === 'COMPLETED' && (
+
+                {effectiveStatus === 'COMPLETED' && (
                   <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1.5">
                     <CheckCircle2 className="w-3 h-3 text-emerald-400" />
                     COMPLETED
                   </span>
                 )}
-                {jobStatus === 'IDLE' && (
+
+                {effectiveStatus === 'IDLE' && (
                   <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-slate-800 text-slate-400 border border-slate-700">
                     IDLE / READY
                   </span>
                 )}
               </div>
-              <div className="text-[11px] text-slate-400 mt-0.5">
-                Active Campaign ID: <code className="text-indigo-300 font-mono">{campaignId}</code>
-                {jobProgress.note && <span className="ml-2 text-slate-500 font-sans">• {jobProgress.note}</span>}
+
+              <div className="text-[11px] text-slate-400 mt-1 flex items-center gap-2 flex-wrap">
+                <span>
+                  Active Campaign ID: <code className="text-indigo-300 font-mono">{campaignId}</code>
+                </span>
+                {jobProgress.note && <span className="text-slate-500 font-sans">• {jobProgress.note}</span>}
               </div>
             </div>
           </div>
 
           {/* Job Control Buttons */}
           <div className="flex items-center gap-2">
-            {jobStatus === 'RUNNING' && (
+            {(effectiveStatus === 'RUNNING' || effectiveStatus === 'BATCH_PAUSED') && (
               <button
                 onClick={handlePauseCampaign}
                 className="px-3 py-1.5 text-xs font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30 rounded-xl transition flex items-center gap-1.5"
-                title="Pause dispatch at next safe recipient boundary"
+                title="Pause dispatch at safe recipient boundary (overrides auto-resume)"
               >
                 <Pause className="w-3.5 h-3.5" />
                 Pause
               </button>
             )}
 
-            {jobStatus === 'PAUSED' && (
+            {effectiveStatus === 'PAUSED' && (
               <button
                 onClick={handleResumeCampaign}
                 className="px-3 py-1.5 text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/30 rounded-xl transition flex items-center gap-1.5"
@@ -1038,7 +1306,7 @@ export const AdminBroadcasterTab: React.FC = () => {
               </button>
             )}
 
-            {(jobStatus === 'RUNNING' || jobStatus === 'PAUSED') && (
+            {(effectiveStatus === 'RUNNING' || effectiveStatus === 'PAUSED' || effectiveStatus === 'BATCH_PAUSED') && (
               <button
                 onClick={handleStopCampaign}
                 className="px-3 py-1.5 text-xs font-semibold bg-rose-500/20 text-rose-300 border border-rose-500/30 hover:bg-rose-500/30 rounded-xl transition flex items-center gap-1.5"
@@ -1051,27 +1319,101 @@ export const AdminBroadcasterTab: React.FC = () => {
           </div>
         </div>
 
-        {/* Progress Bar during Campaign Execution */}
-        {jobProgress.total > 0 && (
-          <div className="space-y-1.5 pt-1">
-            <div className="flex items-center justify-between text-[11px] text-slate-400">
-              <span>
-                Progress: {jobProgress.processed} / {jobProgress.total} recipients (
-                {Math.round((jobProgress.processed / jobProgress.total) * 100)}%)
+        {/* ACTIVE BATCH PAUSE COUNTDOWN BANNER (Displayed ONLY when real server-side pause is active) */}
+        {effectiveStatus === 'BATCH_PAUSED' && batchCountdown > 0 && (
+          <div className="bg-amber-950/60 border border-amber-600/50 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-amber-200 text-xs shadow-inner">
+            <div className="flex items-center gap-2.5">
+              <span className="p-1 rounded-md bg-amber-500/20 text-amber-400">
+                <Timer className="w-4 h-4 animate-spin" style={{ animationDuration: '3s' }} />
               </span>
-              <span className="space-x-2 text-[10px]">
-                <span className="text-emerald-400">✓ {jobProgress.delivered} Delivered</span>
-                <span className="text-amber-400">⚠ {jobProgress.ambiguous} Ambiguous</span>
-                <span className="text-rose-400">✕ {jobProgress.failed} Failed</span>
-                <span className="text-slate-400">⏭ {jobProgress.skipped} Skipped</span>
+              <div>
+                <span className="font-semibold text-amber-300">Server-Side Batch Pause Active:</span>{' '}
+                Next batch auto-resumes in{' '}
+                <span className="font-mono font-bold text-amber-200 text-sm bg-amber-900/80 px-2 py-0.5 rounded border border-amber-500/40">
+                  {batchCountdown}s
+                </span>
+              </div>
+            </div>
+            <div className="text-[11px] text-amber-300/80 flex items-center gap-2">
+              <span>Threshold reached ({configuredBatchSize} deliveries)</span>
+              <span>•</span>
+              <span>Pause duration: {configuredBatchPauseSec}s</span>
+            </div>
+          </div>
+        )}
+
+        {/* CONFIGURATION & BATCH STATUS BAR */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
+          <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-2.5 text-xs">
+            <div className="text-slate-400 text-[11px]">Current Batch Progress</div>
+            <div className="text-sm font-bold text-white mt-1 font-mono flex items-center justify-between">
+              <span>{currentBatchDelivered} / {configuredBatchSize}</span>
+              <span className="text-[10px] text-indigo-400 font-sans">
+                {Math.min(100, Math.round((currentBatchDelivered / Math.max(1, configuredBatchSize)) * 100))}%
               </span>
             </div>
-            <div className="w-full bg-slate-950 rounded-full h-2 overflow-hidden border border-slate-800">
+            <div className="w-full bg-slate-900 rounded-full h-1 mt-1.5 overflow-hidden">
+              <div
+                className="bg-indigo-500 h-full transition-all duration-300"
+                style={{
+                  width: `${Math.min(100, Math.round((currentBatchDelivered / Math.max(1, configuredBatchSize)) * 100))}%`,
+                }}
+              />
+            </div>
+          </div>
+
+          <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-2.5 text-xs">
+            <div className="text-slate-400 text-[11px]">Configured Delay Range</div>
+            <div className="text-sm font-bold text-slate-200 mt-1 font-mono">
+              {minDelaySec}s — {maxDelaySec}s
+            </div>
+            <div className="text-[10px] text-slate-500 mt-1">Random jitter delay</div>
+          </div>
+
+          <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-2.5 text-xs">
+            <div className="text-slate-400 text-[11px]">Configured Batch Size</div>
+            <div className="text-sm font-bold text-slate-200 mt-1 font-mono">
+              {configuredBatchSize} <span className="text-xs text-slate-400 font-sans">deliveries</span>
+            </div>
+            <div className="text-[10px] text-slate-500 mt-1">Confirmed DELIVERED only</div>
+          </div>
+
+          <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-2.5 text-xs">
+            <div className="text-slate-400 text-[11px]">Batch Pause Duration</div>
+            <div className="text-sm font-bold text-slate-200 mt-1 font-mono">
+              {configuredBatchPauseSec}s
+            </div>
+            <div className="text-[10px] text-slate-500 mt-1">Auto-resumption interval</div>
+          </div>
+        </div>
+
+        {/* PROGRESS BAR & ACCURATE EXECUTION COUNTS */}
+        {jobProgress.total > 0 && (
+          <div className="space-y-2 pt-1 border-t border-slate-800/80">
+            <div className="flex items-center justify-between text-[11px] text-slate-400 flex-wrap gap-2">
+              <span className="font-medium text-slate-300">
+                Overall Campaign Progress: {jobProgress.processed} / {jobProgress.total} recipients (
+                {Math.round((jobProgress.processed / jobProgress.total) * 100)}%)
+              </span>
+              <div className="flex items-center gap-3 text-[11px] flex-wrap">
+                <span className="text-emerald-400 font-medium">✓ {jobProgress.delivered} Delivered</span>
+                <span className="text-sky-400 font-medium">
+                  ⏳ {Math.max(0, jobProgress.total - jobProgress.processed)} Remaining
+                </span>
+                <span className="text-slate-400 font-medium">⏭ {jobProgress.skipped} Skipped</span>
+                <span className="text-rose-400 font-medium">✕ {jobProgress.failed} Failed</span>
+                <span className="text-amber-400 font-medium">⚠ {jobProgress.ambiguous} Ambiguous</span>
+              </div>
+            </div>
+
+            <div className="w-full bg-slate-950 rounded-full h-2.5 overflow-hidden border border-slate-800">
               <div
                 className={`h-full transition-all duration-300 ${
-                  jobStatus === 'PAUSED'
+                  effectiveStatus === 'BATCH_PAUSED'
+                    ? 'bg-amber-400'
+                    : effectiveStatus === 'PAUSED'
                     ? 'bg-amber-500'
-                    : jobStatus === 'STOPPED'
+                    : effectiveStatus === 'STOPPED'
                     ? 'bg-rose-500'
                     : 'bg-indigo-500'
                 }`}

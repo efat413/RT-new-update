@@ -23,6 +23,8 @@ export interface ConcurrentWorkerConfig {
   workerCount: number;
   minDelaySec?: number;
   maxDelaySec?: number;
+  batchSize?: number;
+  batchPauseSec?: number;
   rateLimitDelayMs?: number;
   timeoutMs?: number;
   metaApiEndpoint?: string;
@@ -96,6 +98,11 @@ export async function runConcurrentBroadcasterQueue(
       // Check pause / stop status
       const checkJob = await getBroadcasterCampaignJob(db, campaignId);
       if (checkJob?.status === 'PAUSED' || checkJob?.status === 'STOPPED') {
+        break;
+      }
+
+      // Check if concurrent batch limit has been reached
+      if (params.config?.batchSize && deliveredCount >= params.config.batchSize) {
         break;
       }
 

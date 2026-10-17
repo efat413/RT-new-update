@@ -18,6 +18,11 @@ import {
   parseMessageTemplates,
   renderMessageForRecipient,
   validateDelayConfig,
+  DEFAULT_MIN_DELAY_SEC,
+  DEFAULT_MAX_DELAY_SEC,
+  validateBatchConfig,
+  DEFAULT_BATCH_SIZE,
+  DEFAULT_BATCH_PAUSE_SEC,
   calculateRandomDelayMs,
   decryptToken,
   validateMetaPageToken,
@@ -104,12 +109,18 @@ export interface DispatchItemResult {
 export interface BatchDispatchResult {
   pageId: string;
   campaignId: string;
-  jobStatus: 'RUNNING' | 'PAUSED' | 'STOPPED' | 'COMPLETED' | 'FAILED';
+  jobStatus: 'RUNNING' | 'PAUSED' | 'BATCH_PAUSED' | 'STOPPED' | 'COMPLETED' | 'FAILED';
   totalProcessed: number;
   deliveredCount: number;
   ambiguousCount: number;
   failedCount: number;
   skippedCount: number;
+  batchSize: number;
+  batchPauseSec: number;
+  currentBatchDelivered: number;
+  pausedUntil?: string | null;
+  pauseReason?: string | null;
+  remainingCount: number;
   checkpointNote?: string;
   items: DispatchItemResult[];
   telemetryLogs: TelemetryEvent[];
@@ -642,6 +653,8 @@ export async function dispatchBroadcasterBatch(
     pageAccessToken?: string;
     minDelaySec?: number;
     maxDelaySec?: number;
+    batchSize?: number;
+    batchPauseSec?: number;
     metaApiEndpoint?: string;
     timeoutMs?: number;
     customFetch?: typeof fetch;
@@ -650,17 +663,26 @@ export async function dispatchBroadcasterBatch(
 ): Promise<BatchDispatchResult> {
   const { pageId, campaignId, metaApiEndpoint, timeoutMs, customFetch } = params;
 
-  // 1. Validate Delay Configuration
-  const delayCheck = validateDelayConfig(
-    params.minDelaySec != null ? params.minDelaySec : 2,
-    params.maxDelaySec != null ? params.maxDelaySec : 5,
-    MAX_SAFE_DELAY_SECONDS
-  );
+  // 1. Fetch saved config from D1 if delay or batch settings not explicitly passed
+  const savedConfig = await getBroadcasterConfig(db, pageId);
+
+  // 2. Validate Delay Configuration
+  const effectiveMinDelay = params.minDelaySec != null ? params.minDelaySec : (savedConfig?.min_delay_sec ?? DEFAULT_MIN_DELAY_SEC);
+  const effectiveMaxDelay = params.maxDelaySec != null ? params.maxDelaySec : (savedConfig?.max_delay_sec ?? DEFAULT_MAX_DELAY_SEC);
+  const delayCheck = validateDelayConfig(effectiveMinDelay, effectiveMaxDelay, MAX_SAFE_DELAY_SECONDS);
   if (!delayCheck.valid) {
     throw new Error(delayCheck.error || 'Invalid delay configuration.');
   }
 
-  // 2. Parse Message Templates
+  // 3. Validate Batch Configuration
+  const effectiveBatchSize = params.batchSize != null ? params.batchSize : (savedConfig?.batch_size ?? DEFAULT_BATCH_SIZE);
+  const effectiveBatchPauseSec = params.batchPauseSec != null ? params.batchPauseSec : (savedConfig?.batch_pause_sec ?? DEFAULT_BATCH_PAUSE_SEC);
+  const batchCheck = validateBatchConfig(effectiveBatchSize, effectiveBatchPauseSec);
+  if (!batchCheck.valid) {
+    throw new Error(batchCheck.error || 'Invalid batch configuration.');
+  }
+
+  // 4. Parse Message Templates
   const rawTemplates = params.messageTemplates || params.messageText || '';
   const templates = Array.isArray(rawTemplates)
     ? rawTemplates.filter(Boolean)
@@ -670,7 +692,83 @@ export async function dispatchBroadcasterBatch(
     throw new Error('Message text or templates are required for broadcast dispatch.');
   }
 
-  // 3. Resolve Page Access Token securely
+  // 5. Inspect existing job state in D1 for recovery & signals
+  const existingJob = await getBroadcasterCampaignJob(db, campaignId);
+
+  // Case A: Job was permanently stopped
+  if (existingJob?.status === 'STOPPED') {
+    return {
+      pageId,
+      campaignId,
+      jobStatus: 'STOPPED',
+      totalProcessed: existingJob.processed_count || 0,
+      deliveredCount: existingJob.delivered_count || 0,
+      ambiguousCount: existingJob.ambiguous_count || 0,
+      failedCount: existingJob.failed_count || 0,
+      skippedCount: existingJob.skipped_count || 0,
+      batchSize: batchCheck.batchSize,
+      batchPauseSec: batchCheck.batchPauseSec,
+      currentBatchDelivered: 0,
+      pausedUntil: null,
+      pauseReason: null,
+      remainingCount: Math.max(0, (existingJob.total_count || params.recipients.length) - (existingJob.processed_count || 0)),
+      checkpointNote: existingJob.checkpoint_note || 'Campaign was stopped by administrator. Cannot dispatch further.',
+      items: [],
+      telemetryLogs: [],
+    };
+  }
+
+  // Case B: Job is manually paused by administrator
+  if (existingJob?.status === 'PAUSED' && existingJob.pause_reason === 'MANUAL_PAUSE') {
+    return {
+      pageId,
+      campaignId,
+      jobStatus: 'PAUSED',
+      totalProcessed: existingJob.processed_count || 0,
+      deliveredCount: existingJob.delivered_count || 0,
+      ambiguousCount: existingJob.ambiguous_count || 0,
+      failedCount: existingJob.failed_count || 0,
+      skippedCount: existingJob.skipped_count || 0,
+      batchSize: batchCheck.batchSize,
+      batchPauseSec: batchCheck.batchPauseSec,
+      currentBatchDelivered: existingJob.current_batch_delivered || 0,
+      pausedUntil: null,
+      pauseReason: 'MANUAL_PAUSE',
+      remainingCount: Math.max(0, (existingJob.total_count || params.recipients.length) - (existingJob.processed_count || 0)),
+      checkpointNote: existingJob.checkpoint_note || 'Campaign manually paused by administrator. Requires manual resume.',
+      items: [],
+      telemetryLogs: [],
+    };
+  }
+
+  // Case C: Batch pause is currently active and paused_until has NOT elapsed
+  if (existingJob?.status === 'PAUSED' && existingJob.pause_reason === 'BATCH_PAUSE' && existingJob.paused_until) {
+    const pauseExpiryMs = new Date(existingJob.paused_until).getTime();
+    if (Date.now() < pauseExpiryMs) {
+      // Still in active batch pause! Reject overlapping worker or request without dispatching
+      return {
+        pageId,
+        campaignId,
+        jobStatus: 'BATCH_PAUSED',
+        totalProcessed: existingJob.processed_count || 0,
+        deliveredCount: existingJob.delivered_count || 0,
+        ambiguousCount: existingJob.ambiguous_count || 0,
+        failedCount: existingJob.failed_count || 0,
+        skippedCount: existingJob.skipped_count || 0,
+        batchSize: batchCheck.batchSize,
+        batchPauseSec: batchCheck.batchPauseSec,
+        currentBatchDelivered: existingJob.current_batch_delivered || 0,
+        pausedUntil: existingJob.paused_until,
+        pauseReason: 'BATCH_PAUSE',
+        remainingCount: Math.max(0, (existingJob.total_count || params.recipients.length) - (existingJob.processed_count || 0)),
+        checkpointNote: existingJob.checkpoint_note || `Batch pause active. Automatic resumption eligible after ${existingJob.paused_until}.`,
+        items: [],
+        telemetryLogs: [],
+      };
+    }
+  }
+
+  // 6. Resolve Page Access Token securely
   const pageAccessToken =
     params.pageAccessToken ||
     (await resolvePageAccessToken(db, pageId, undefined, params.encryptionSecret));
@@ -678,11 +776,20 @@ export async function dispatchBroadcasterBatch(
   const items: DispatchItemResult[] = [];
   const telemetryLogs: TelemetryEvent[] = [];
 
-  let deliveredCount = 0;
-  let ambiguousCount = 0;
-  let failedCount = 0;
-  let skippedCount = 0;
-  let currentJobStatus: 'RUNNING' | 'PAUSED' | 'STOPPED' | 'COMPLETED' = 'RUNNING';
+  // If auto-resuming from an expired batch pause, reset current batch counter to 0
+  const isResumingFromExpiredBatchPause = Boolean(
+    existingJob?.status === 'PAUSED' &&
+    existingJob.pause_reason === 'BATCH_PAUSE' &&
+    existingJob.paused_until &&
+    Date.now() >= new Date(existingJob.paused_until).getTime()
+  );
+
+  let currentBatchDelivered = isResumingFromExpiredBatchPause ? 0 : (existingJob?.current_batch_delivered || 0);
+  let deliveredCount = existingJob?.delivered_count || 0;
+  let ambiguousCount = existingJob?.ambiguous_count || 0;
+  let failedCount = existingJob?.failed_count || 0;
+  let skippedCount = existingJob?.skipped_count || 0;
+  let currentJobStatus: 'RUNNING' | 'PAUSED' | 'BATCH_PAUSED' | 'STOPPED' | 'COMPLETED' = 'RUNNING';
   let checkpointNote: string | undefined;
 
   // Register / update campaign job in D1
@@ -691,15 +798,22 @@ export async function dispatchBroadcasterBatch(
     page_id: pageId,
     status: 'RUNNING',
     total_count: params.recipients.length,
-    processed_count: 0,
-    delivered_count: 0,
-    ambiguous_count: 0,
-    failed_count: 0,
-    skipped_count: 0,
+    processed_count: existingJob?.processed_count || 0,
+    delivered_count: deliveredCount,
+    ambiguous_count: ambiguousCount,
+    failed_count: failedCount,
+    skipped_count: skippedCount,
     min_delay_sec: delayCheck.min,
     max_delay_sec: delayCheck.max,
+    batch_size: batchCheck.batchSize,
+    batch_pause_sec: batchCheck.batchPauseSec,
+    current_batch_delivered: currentBatchDelivered,
+    paused_until: null,
+    pause_reason: null,
     message_template: templates.join(' | '),
-    checkpoint_note: `Campaign started for ${params.recipients.length} recipients`,
+    checkpoint_note: isResumingFromExpiredBatchPause
+      ? `Auto-resumed campaign following batch pause (${params.recipients.length} total recipients)`
+      : `Campaign dispatch running (${params.recipients.length} total recipients)`,
   });
 
   for (let i = 0; i < params.recipients.length; i++) {
@@ -707,9 +821,9 @@ export async function dispatchBroadcasterBatch(
 
     // Check server-side Pause / Stop signals at safe checkpoint
     const checkJob = await getBroadcasterCampaignJob(db, campaignId);
-    if (checkJob?.status === 'PAUSED') {
+    if (checkJob?.status === 'PAUSED' && checkJob.pause_reason === 'MANUAL_PAUSE') {
       currentJobStatus = 'PAUSED';
-      checkpointNote = `Paused: Safe checkpoint reached at recipient ${i + 1}/${params.recipients.length} (PSID: ${recipient.psid})`;
+      checkpointNote = `Paused: Campaign manually paused by administrator at recipient ${i + 1}/${params.recipients.length} (PSID: ${recipient.psid})`;
       telemetryLogs.push({
         recipient_psid: recipient.psid,
         timestamp: new Date().toISOString(),
@@ -782,10 +896,20 @@ export async function dispatchBroadcasterBatch(
     items.push(res);
     telemetryLogs.push(res.telemetryEvent);
 
-    if (res.status === 'DELIVERED') deliveredCount++;
-    else if (res.status === 'AMBIGUOUS') ambiguousCount++;
-    else if (res.status === 'FAILED') failedCount++;
-    else if (res.status === 'SKIPPED') skippedCount++;
+    // CRITICAL: Only successfully delivered recipients count toward the batch threshold!
+    // Failed, skipped, duplicate, or ambiguous recipients do NOT increment the batch counter.
+    if (res.status === 'DELIVERED') {
+      deliveredCount++;
+      currentBatchDelivered++;
+    } else if (res.status === 'AMBIGUOUS') {
+      ambiguousCount++;
+    } else if (res.status === 'FAILED') {
+      failedCount++;
+    } else if (res.status === 'SKIPPED') {
+      skippedCount++;
+    }
+
+    const totalProcessedSoFar = items.length + (existingJob?.processed_count && !existingJob.current_batch_delivered ? 0 : 0);
 
     // Update live checkpoint in D1
     await upsertBroadcasterCampaignJob(db, {
@@ -800,9 +924,73 @@ export async function dispatchBroadcasterBatch(
       skipped_count: skippedCount,
       min_delay_sec: delayCheck.min,
       max_delay_sec: delayCheck.max,
+      batch_size: batchCheck.batchSize,
+      batch_pause_sec: batchCheck.batchPauseSec,
+      current_batch_delivered: currentBatchDelivered,
       current_psid: recipient.psid,
-      checkpoint_note: `Processed PSID ${recipient.psid} (${items.length}/${params.recipients.length})`,
+      checkpoint_note: `Processed PSID ${recipient.psid} (Batch progress: ${currentBatchDelivered}/${batchCheck.batchSize}, Total: ${items.length}/${params.recipients.length})`,
     });
+
+    // Check Batch Threshold Boundary:
+    // If successfully delivered count for current batch reaches configured batch size,
+    // and there are still recipients left, enter server-side BATCH_PAUSE.
+    if (currentBatchDelivered >= batchCheck.batchSize && i < params.recipients.length - 1) {
+      currentJobStatus = 'BATCH_PAUSED';
+      const pausedUntil = new Date(Date.now() + batchCheck.batchPauseSec * 1000).toISOString();
+      checkpointNote = `Batch threshold reached (${currentBatchDelivered}/${batchCheck.batchSize} deliveries). Batch paused for ${batchCheck.batchPauseSec}s until ${pausedUntil}.`;
+
+      // Persist batch pause checkpoint to D1
+      await upsertBroadcasterCampaignJob(db, {
+        campaign_id: campaignId,
+        page_id: pageId,
+        status: 'PAUSED',
+        total_count: params.recipients.length,
+        processed_count: items.length,
+        delivered_count: deliveredCount,
+        ambiguous_count: ambiguousCount,
+        failed_count: failedCount,
+        skipped_count: skippedCount,
+        min_delay_sec: delayCheck.min,
+        max_delay_sec: delayCheck.max,
+        batch_size: batchCheck.batchSize,
+        batch_pause_sec: batchCheck.batchPauseSec,
+        current_batch_delivered: 0,
+        paused_until: pausedUntil,
+        pause_reason: 'BATCH_PAUSE',
+        current_psid: recipient.psid,
+        checkpoint_note: checkpointNote,
+      });
+
+      telemetryLogs.push({
+        recipient_psid: recipient.psid,
+        timestamp: new Date().toISOString(),
+        reason: 'Delivered: Confirmed by Meta',
+        status: 'DELIVERED',
+        campaign_id: campaignId,
+        page_id: pageId,
+        details: checkpointNote,
+      });
+
+      return {
+        pageId,
+        campaignId,
+        jobStatus: 'BATCH_PAUSED',
+        totalProcessed: items.length,
+        deliveredCount,
+        ambiguousCount,
+        failedCount,
+        skippedCount,
+        batchSize: batchCheck.batchSize,
+        batchPauseSec: batchCheck.batchPauseSec,
+        currentBatchDelivered: 0,
+        pausedUntil,
+        pauseReason: 'BATCH_PAUSE',
+        remainingCount: params.recipients.length - items.length,
+        checkpointNote,
+        items,
+        telemetryLogs,
+      };
+    }
 
     // Apply configurable random delay with jitter between sends
     if (i < params.recipients.length - 1) {
@@ -825,7 +1013,25 @@ export async function dispatchBroadcasterBatch(
   if (currentJobStatus === 'RUNNING' && items.length === params.recipients.length) {
     currentJobStatus = 'COMPLETED';
     checkpointNote = `Completed: All ${items.length} recipients processed.`;
-    await setBroadcasterJobStatus(db, campaignId, 'COMPLETED', checkpointNote);
+    await upsertBroadcasterCampaignJob(db, {
+      campaign_id: campaignId,
+      page_id: pageId,
+      status: 'COMPLETED',
+      total_count: params.recipients.length,
+      processed_count: items.length,
+      delivered_count: deliveredCount,
+      ambiguous_count: ambiguousCount,
+      failed_count: failedCount,
+      skipped_count: skippedCount,
+      min_delay_sec: delayCheck.min,
+      max_delay_sec: delayCheck.max,
+      batch_size: batchCheck.batchSize,
+      batch_pause_sec: batchCheck.batchPauseSec,
+      current_batch_delivered: currentBatchDelivered,
+      paused_until: null,
+      pause_reason: null,
+      checkpoint_note: checkpointNote,
+    });
   }
 
   return {
@@ -837,6 +1043,12 @@ export async function dispatchBroadcasterBatch(
     ambiguousCount,
     failedCount,
     skippedCount,
+    batchSize: batchCheck.batchSize,
+    batchPauseSec: batchCheck.batchPauseSec,
+    currentBatchDelivered,
+    pausedUntil: null,
+    pauseReason: null,
+    remainingCount: Math.max(0, params.recipients.length - items.length),
     checkpointNote,
     items,
     telemetryLogs,
