@@ -17,6 +17,7 @@ import {
   Bug,
   TrendingUp,
   MessageSquare,
+  Radio,
 } from 'lucide-react';
 
 interface AdminSidebarProps {
@@ -173,6 +174,14 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
       icon: Activity,
       badge: 'Live',
       color: 'teal',
+      permission: 'canManageSettings',
+    },
+    {
+      id: 'broadcaster',
+      label: 'FB Broadcaster',
+      icon: Radio,
+      badge: 'One PSID',
+      color: 'indigo',
       permission: 'canManageSettings',
     },
     {

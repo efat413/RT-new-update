@@ -174,6 +174,7 @@ import {
   BODY_LIMIT_WEBHOOK,
   BODY_LIMIT_MEDIA_UPLOAD,
 } from './bodyLimits';
+import { handleBroadcasterApiRequest } from './broadcasterRouter';
 
 let activeApiRequest: Request | null = null;
 let activeEnv: Env | null = null;
@@ -8225,6 +8226,23 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       console.error('Error deleting expense:', err);
       return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
     }
+  }
+
+  // ==========================================
+  // FACEBOOK BROADCASTER ENDPOINTS
+  // Atomic deduplication ("One PSID = One Message Ever")
+  // ==========================================
+  if (path.startsWith('/api/broadcaster')) {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const canManage = auth!.role === 'super_admin' || hasPermission(auth!, 'settings.manage');
+    if (!canManage) {
+      return jsonResponse(
+        { success: false, error: 'Forbidden: Broadcaster requires settings.manage permission.', requiredPermission: 'settings.manage' },
+        403
+      );
+    }
+    return handleBroadcasterApiRequest(request, env, getCorsHeaders(request, env));
   }
 
     return jsonResponse({ success: false, error: 'Endpoint not found' }, 404);

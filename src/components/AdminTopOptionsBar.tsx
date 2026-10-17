@@ -17,6 +17,7 @@ import {
   CheckCircle2,
   Lock,
   MessageSquare,
+  Radio,
 } from 'lucide-react';
 
 export interface AdminTopOptionsBarProps {
@@ -131,6 +132,14 @@ export const AdminTopOptionsBar: React.FC<AdminTopOptionsBarProps> = ({
       icon: Activity,
       badge: 'Live',
       badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
+      permission: 'canManageSettings',
+    },
+    {
+      id: 'broadcaster',
+      label: 'FB Broadcaster',
+      icon: Radio,
+      badge: 'One PSID',
+      badgeColor: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30',
       permission: 'canManageSettings',
     },
     {

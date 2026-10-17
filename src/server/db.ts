@@ -5346,3 +5346,50 @@ export async function checkAndRecordWebhookFingerprint(
     return { isReplay: false };
   }
 }
+
+let broadcasterTableCreated = false;
+
+/**
+ * Migration verification & self-healing helper for Facebook Broadcaster.
+ * Ensures broadcaster_deliveries and broadcaster_scan_cache exist with hard UNIQUE(page_id, recipient_psid).
+ */
+export async function ensureBroadcasterDeliveriesTable(db: D1Database): Promise<void> {
+  if (broadcasterTableCreated) return;
+  broadcasterTableCreated = true;
+  try {
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS broadcaster_deliveries (
+        id TEXT PRIMARY KEY,
+        page_id TEXT NOT NULL,
+        recipient_psid TEXT NOT NULL,
+        campaign_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('QUEUED', 'DELIVERED', 'FAILED', 'AMBIGUOUS')),
+        message_id TEXT,
+        queued_at TEXT NOT NULL,
+        delivered_at TEXT,
+        error_message TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(page_id, recipient_psid)
+      )
+    `).run();
+    await db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_broadcaster_page_psid ON broadcaster_deliveries(page_id, recipient_psid)').run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_broadcaster_campaign ON broadcaster_deliveries(campaign_id)').run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_broadcaster_status ON broadcaster_deliveries(status)').run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_broadcaster_page_status ON broadcaster_deliveries(page_id, status)').run();
+
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS broadcaster_scan_cache (
+        id TEXT PRIMARY KEY,
+        page_id TEXT NOT NULL,
+        campaign_id TEXT NOT NULL,
+        raw_psid TEXT NOT NULL,
+        scanned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `).run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_broadcaster_scan_cache_page_camp ON broadcaster_scan_cache(page_id, campaign_id)').run();
+  } catch (err: any) {
+    console.warn('[D1] broadcaster_deliveries table self-heal notice:', err?.message || err);
+  }
+}
+

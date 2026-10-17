@@ -488,6 +488,10 @@ function localApiDevPlugin(): Plugin {
   const devMedia = new Map<string, { buffer: Buffer; contentType: string }>();
   const devReviewImages = new Map<string, { buffer: Buffer; mimeType: string; reviewId?: string }>();
   let devExpenses: any[] = [];
+  // Facebook Broadcaster in-memory delivery ledger (One PSID = One Message Ever)
+  // Hard uniqueness enforced via composite key `${pageId}:${recipientPsid}`
+  const devBroadcasterLedger = new Map<string, any>();
+  const devBroadcasterScanCache: any[] = [];
   let devCourierWebhooks: any[] = Array.isArray(devSettings.courierWebhooks) ? devSettings.courierWebhooks : [];
   let devCourierWebhookLogs: any[] = [];
   const devPasswordResetTokens = new Map<string, { id: string; userId: string; tokenHash: string; expiresAt: number; usedAt: number | null; createdAt: number }>();
@@ -7051,6 +7055,351 @@ function localApiDevPlugin(): Plugin {
           devExpenses = devExpenses.filter((e) => e.id !== id);
           res.statusCode = 200;
           return res.end(JSON.stringify({ success: true, message: `Expense "${id}" deleted.` }));
+        }
+
+        // ==========================================
+        // FACEBOOK BROADCASTER DEV HANDLERS
+        // ==========================================
+        if (url.pathname === '/api/broadcaster/stats' && method === 'GET') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          const pageId = url.searchParams.get('pageId') || undefined;
+
+          let list = Array.from(devBroadcasterLedger.values());
+          if (pageId) list = list.filter((r) => r.page_id === pageId);
+
+          const delivered = list.filter((r) => r.status === 'DELIVERED').length;
+          const ambiguous = list.filter((r) => r.status === 'AMBIGUOUS').length;
+          const failed = list.filter((r) => r.status === 'FAILED').length;
+          const queued = list.filter((r) => r.status === 'QUEUED').length;
+
+          res.statusCode = 200;
+          return res.end(
+            JSON.stringify({
+              success: true,
+              stats: {
+                totalDeliveries: list.length,
+                deliveredCount: delivered,
+                ambiguousCount: ambiguous,
+                failedCount: failed,
+                queuedCount: queued,
+              },
+            })
+          );
+        }
+
+        if (url.pathname === '/api/broadcaster/history' && method === 'GET') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          const pageId = url.searchParams.get('pageId') || undefined;
+          const status = url.searchParams.get('status') || 'ALL';
+          const limit = Math.max(1, Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200));
+          const offset = Math.max(0, parseInt(url.searchParams.get('offset') || '0', 10));
+
+          let list = Array.from(devBroadcasterLedger.values());
+          if (pageId) list = list.filter((r) => r.page_id === pageId);
+          if (status !== 'ALL') list = list.filter((r) => r.status === status);
+
+          list.sort((a, b) => new Date(b.queued_at || b.created_at).getTime() - new Date(a.queued_at || a.created_at).getTime());
+          const slice = list.slice(offset, offset + limit);
+
+          res.statusCode = 200;
+          return res.end(JSON.stringify({ success: true, total: list.length, deliveries: slice }));
+        }
+
+        if (url.pathname === '/api/broadcaster/scan-and-filter' && method === 'POST') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+
+          return readBody((body) => {
+            const pageId = String(body?.pageId || '').trim();
+            const campaignId = String(body?.campaignId || 'campaign-default').trim();
+            const recipients = Array.isArray(body?.recipients) ? body.recipients : [];
+
+            if (!pageId) {
+              res.statusCode = 400;
+              return res.end(JSON.stringify({ success: false, error: 'pageId is required for recipient scan.' }));
+            }
+
+            const telemetryLogs: any[] = [];
+            const seenInScan = new Set<string>();
+            const eligible: any[] = [];
+            let skippedBot = 0;
+            let skippedDup = 0;
+            let skippedHist = 0;
+
+            for (const item of recipients) {
+              const rawPsid = item?.psid != null ? String(item.psid).trim().replace(/^["']|["']$/g, '') : '';
+              if (!rawPsid || /\s/.test(rawPsid)) {
+                skippedBot++;
+                telemetryLogs.push({
+                  recipient_psid: rawPsid || 'UNKNOWN',
+                  timestamp: new Date().toISOString(),
+                  reason: 'Skipped: Ineligible / Bot account',
+                  status: 'SKIPPED',
+                  campaign_id: campaignId,
+                  page_id: pageId,
+                  details: 'Invalid PSID format or display name detected',
+                });
+                continue;
+              }
+
+              const isBot = Boolean(
+                item?.is_bot || item?.isBot || item?.account_type === 'bot' || item?.metadata?.is_bot || item?.metadata?.isBot
+              );
+              if (isBot) {
+                skippedBot++;
+                telemetryLogs.push({
+                  recipient_psid: rawPsid,
+                  timestamp: new Date().toISOString(),
+                  reason: 'Skipped: Ineligible / Bot account',
+                  status: 'SKIPPED',
+                  campaign_id: campaignId,
+                  page_id: pageId,
+                  details: 'Metadata flagged as bot account',
+                });
+                continue;
+              }
+
+              if (seenInScan.has(rawPsid)) {
+                skippedDup++;
+                telemetryLogs.push({
+                  recipient_psid: rawPsid,
+                  timestamp: new Date().toISOString(),
+                  reason: 'Skipped: Duplicate in current scan',
+                  status: 'SKIPPED',
+                  campaign_id: campaignId,
+                  page_id: pageId,
+                  details: 'Duplicate PSID encountered in active scan batch',
+                });
+                continue;
+              }
+
+              seenInScan.add(rawPsid);
+
+              const ledgerKey = `${pageId}:${rawPsid}`;
+              const existing = devBroadcasterLedger.get(ledgerKey);
+              if (existing) {
+                skippedHist++;
+                telemetryLogs.push({
+                  recipient_psid: rawPsid,
+                  timestamp: new Date().toISOString(),
+                  reason: 'Skipped: Already messaged (historical)',
+                  status: 'SKIPPED',
+                  campaign_id: campaignId,
+                  page_id: pageId,
+                  details: `Existing record found in D1 (Status: ${existing.status}, Campaign: ${existing.campaign_id})`,
+                });
+              } else {
+                eligible.push({ ...item, psid: rawPsid });
+              }
+            }
+
+            res.statusCode = 200;
+            return res.end(
+              JSON.stringify({
+                success: true,
+                pageId,
+                campaignId,
+                totalInput: recipients.length,
+                eligibleCount: eligible.length,
+                eligibleRecipients: eligible,
+                telemetryLogs,
+                stats: {
+                  scanned: recipients.length,
+                  eligible: eligible.length,
+                  skippedHistorical: skippedHist,
+                  skippedDuplicateInScan: skippedDup,
+                  skippedBot,
+                },
+              })
+            );
+          });
+        }
+
+        if (url.pathname === '/api/broadcaster/dispatch' && method === 'POST') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+
+          return readBody((body) => {
+            const pageId = String(body?.pageId || '').trim();
+            const campaignId = String(body?.campaignId || 'campaign-default').trim();
+            const messageText = String(body?.messageText || '').trim();
+            const recipients = Array.isArray(body?.recipients) ? body.recipients : [];
+            const simulateTimeout = body?.simulateTimeout === true;
+            const simulateError = body?.simulateError === true;
+
+            if (!pageId || !messageText) {
+              res.statusCode = 400;
+              return res.end(JSON.stringify({ success: false, error: 'pageId and messageText are required.' }));
+            }
+
+            const items: any[] = [];
+            const telemetryLogs: any[] = [];
+            let deliveredCount = 0;
+            let ambiguousCount = 0;
+            let failedCount = 0;
+            let skippedCount = 0;
+
+            for (const rec of recipients) {
+              const psid = String(rec.psid || '').trim();
+              const ledgerKey = `${pageId}:${psid}`;
+              const now = new Date().toISOString();
+
+              // Atomic reservation simulation
+              if (devBroadcasterLedger.has(ledgerKey)) {
+                skippedCount++;
+                const itemRes = {
+                  recipient_psid: psid,
+                  status: 'SKIPPED',
+                  reason: 'Skipped: Already messaged (historical)',
+                  telemetryEvent: {
+                    recipient_psid: psid,
+                    timestamp: now,
+                    reason: 'Skipped: Already messaged (historical)',
+                    status: 'SKIPPED',
+                    campaign_id: campaignId,
+                    page_id: pageId,
+                    details: 'Atomic race-guard prevented double delivery (UNIQUE page_id, recipient_psid)',
+                  },
+                };
+                items.push(itemRes);
+                telemetryLogs.push(itemRes.telemetryEvent);
+                continue;
+              }
+
+              // Reserve row as QUEUED
+              const record: any = {
+                id: `deliv_${pageId}_${psid}_${Date.now()}`,
+                page_id: pageId,
+                recipient_psid: psid,
+                campaign_id: campaignId,
+                status: 'QUEUED',
+                queued_at: now,
+                created_at: now,
+                updated_at: now,
+              };
+              devBroadcasterLedger.set(ledgerKey, record);
+
+              // Ambiguity / Timeout fail-safe simulation
+              if (simulateTimeout || rec.simulateTimeout) {
+                ambiguousCount++;
+                record.status = 'AMBIGUOUS';
+                record.error_message = 'Network timeout (7000ms) awaiting Meta API confirmation - fail-safe locked against duplicate send';
+                record.updated_at = new Date().toISOString();
+
+                const itemRes = {
+                  recipient_psid: psid,
+                  status: 'AMBIGUOUS',
+                  reason: 'Failed: Ambiguous network timeout (fail-safe locked)',
+                  error_message: record.error_message,
+                  telemetryEvent: {
+                    recipient_psid: psid,
+                    timestamp: record.updated_at,
+                    reason: 'Failed: Ambiguous network timeout (fail-safe locked)',
+                    status: 'AMBIGUOUS',
+                    campaign_id: campaignId,
+                    page_id: pageId,
+                    details: record.error_message,
+                  },
+                };
+                items.push(itemRes);
+                telemetryLogs.push(itemRes.telemetryEvent);
+                continue;
+              }
+
+              // Explicit upstream failure simulation
+              if (simulateError || rec.simulateError) {
+                failedCount++;
+                record.status = 'FAILED';
+                record.error_message = 'Meta API HTTP 400: (#100) Invalid parameter or recipient blocked';
+                record.updated_at = new Date().toISOString();
+
+                const itemRes = {
+                  recipient_psid: psid,
+                  status: 'FAILED',
+                  reason: 'Failed: Upstream API error',
+                  error_message: record.error_message,
+                  telemetryEvent: {
+                    recipient_psid: psid,
+                    timestamp: record.updated_at,
+                    reason: 'Failed: Upstream API error',
+                    status: 'FAILED',
+                    campaign_id: campaignId,
+                    page_id: pageId,
+                    details: record.error_message,
+                  },
+                };
+                items.push(itemRes);
+                telemetryLogs.push(itemRes.telemetryEvent);
+                continue;
+              }
+
+              // Successful delivery confirmed
+              deliveredCount++;
+              const mid = `mid.${Date.now()}.${Math.random().toString(36).substring(2, 8)}`;
+              record.status = 'DELIVERED';
+              record.message_id = mid;
+              record.delivered_at = new Date().toISOString();
+              record.updated_at = record.delivered_at;
+
+              const itemRes = {
+                recipient_psid: psid,
+                status: 'DELIVERED',
+                reason: 'Delivered: Confirmed by Meta',
+                message_id: mid,
+                telemetryEvent: {
+                  recipient_psid: psid,
+                  timestamp: record.delivered_at,
+                  reason: 'Delivered: Confirmed by Meta',
+                  status: 'DELIVERED',
+                  campaign_id: campaignId,
+                  page_id: pageId,
+                  message_id: mid,
+                  details: `Confirmed by Meta Graph API (HTTP 200, message_id: ${mid})`,
+                },
+              };
+              items.push(itemRes);
+              telemetryLogs.push(itemRes.telemetryEvent);
+            }
+
+            res.statusCode = 200;
+            return res.end(
+              JSON.stringify({
+                success: true,
+                pageId,
+                campaignId,
+                totalProcessed: items.length,
+                deliveredCount,
+                ambiguousCount,
+                failedCount,
+                skippedCount,
+                items,
+                telemetryLogs,
+              })
+            );
+          });
+        }
+
+        if (url.pathname === '/api/broadcaster/reset-memory' && method === 'POST') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+
+          // Clear only ephemeral scan cache. The permanent delivery ledger (devBroadcasterLedger) is never truncated.
+          const clearedCount = devBroadcasterScanCache.length;
+          devBroadcasterScanCache.length = 0;
+          const permanentCount = devBroadcasterLedger.size;
+
+          res.statusCode = 200;
+          return res.end(
+            JSON.stringify({
+              success: true,
+              message:
+                'Ephemeral scan cache and transient queue cleared safely. Permanent delivery ledger (One PSID = One Message Ever) remains fully protected.',
+              clearedEphemeralRows: clearedCount,
+              permanentLedgerRowsProtected: permanentCount,
+            })
+          );
         }
 
         if (url.pathname.startsWith('/api/')) {

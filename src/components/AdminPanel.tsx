@@ -129,6 +129,9 @@ const AdminCouriersTab = React.lazy(() =>
 const AdminMarketingPixelsTab = React.lazy(() =>
   import('./AdminMarketingPixelsTab').then((m) => ({ default: m.AdminMarketingPixelsTab }))
 );
+const AdminBroadcasterTab = React.lazy(() =>
+  import('./AdminBroadcasterTab').then((m) => ({ default: m.AdminBroadcasterTab }))
+);
 const AdminVouchersTab = React.lazy(() =>
   import('./AdminVouchersTab').then((m) => ({ default: m.AdminVouchersTab }))
 );
@@ -7256,6 +7259,21 @@ export const AdminPanelContent: React.FC = () => {
             <ErrorBoundary compact fallbackTitle="Pixels Unavailable" fallbackMessage="Could not load marketing pixels tab.">
               <React.Suspense fallback={<AdminTabFallback />}>
                 <AdminMarketingPixelsTab />
+              </React.Suspense>
+            </ErrorBoundary>
+          )
+        )}
+
+        {/* ============================================================ */}
+        {/* TAB 9B: FACEBOOK BROADCASTER (ONE PSID = ONE MESSAGE EVER)   */}
+        {/* ============================================================ */}
+        {activeTab === 'broadcaster' && (
+          !hasPermission('canManageSettings') ? (
+            renderPermissionRestrictedNotice('canManageSettings', 'Facebook Broadcaster')
+          ) : (
+            <ErrorBoundary compact fallbackTitle="Broadcaster Unavailable" fallbackMessage="Could not load Facebook Broadcaster tab.">
+              <React.Suspense fallback={<AdminTabFallback />}>
+                <AdminBroadcasterTab />
               </React.Suspense>
             </ErrorBoundary>
           )
