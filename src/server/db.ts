@@ -5388,8 +5388,219 @@ export async function ensureBroadcasterDeliveriesTable(db: D1Database): Promise<
       )
     `).run();
     await db.prepare('CREATE INDEX IF NOT EXISTS idx_broadcaster_scan_cache_page_camp ON broadcaster_scan_cache(page_id, campaign_id)').run();
+
+    // 20. Broadcaster Config & Persistent Campaign Jobs
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS broadcaster_config (
+        id TEXT PRIMARY KEY DEFAULT 'default',
+        page_id TEXT NOT NULL,
+        encrypted_access_token TEXT,
+        token_preview TEXT,
+        token_status TEXT DEFAULT 'unconfigured',
+        min_delay_sec REAL NOT NULL DEFAULT 2,
+        max_delay_sec REAL NOT NULL DEFAULT 5,
+        default_message_templates TEXT,
+        verified_at TEXT,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `).run();
+
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS broadcaster_campaign_jobs (
+        id TEXT PRIMARY KEY,
+        page_id TEXT NOT NULL,
+        campaign_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('IDLE', 'RUNNING', 'PAUSED', 'STOPPED', 'COMPLETED', 'FAILED')),
+        total_count INTEGER DEFAULT 0,
+        processed_count INTEGER DEFAULT 0,
+        delivered_count INTEGER DEFAULT 0,
+        ambiguous_count INTEGER DEFAULT 0,
+        failed_count INTEGER DEFAULT 0,
+        skipped_count INTEGER DEFAULT 0,
+        min_delay_sec REAL DEFAULT 2,
+        max_delay_sec REAL DEFAULT 5,
+        message_template TEXT,
+        current_psid TEXT,
+        checkpoint_note TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `).run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_broadcaster_jobs_page_status ON broadcaster_campaign_jobs(page_id, status)').run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_broadcaster_jobs_campaign ON broadcaster_campaign_jobs(campaign_id)').run();
   } catch (err: any) {
-    console.warn('[D1] broadcaster_deliveries table self-heal notice:', err?.message || err);
+    console.warn('[D1] broadcaster tables self-heal notice:', err?.message || err);
   }
+}
+
+export interface BroadcasterConfigRecord {
+  id: string;
+  page_id: string;
+  encrypted_access_token?: string | null;
+  token_preview?: string | null;
+  token_status: string;
+  min_delay_sec: number;
+  max_delay_sec: number;
+  default_message_templates?: string | null;
+  verified_at?: string | null;
+  updated_at: string;
+}
+
+export interface BroadcasterCampaignJobRecord {
+  id: string;
+  page_id: string;
+  campaign_id: string;
+  status: 'IDLE' | 'RUNNING' | 'PAUSED' | 'STOPPED' | 'COMPLETED' | 'FAILED';
+  total_count: number;
+  processed_count: number;
+  delivered_count: number;
+  ambiguous_count: number;
+  failed_count: number;
+  skipped_count: number;
+  min_delay_sec: number;
+  max_delay_sec: number;
+  message_template?: string | null;
+  current_psid?: string | null;
+  checkpoint_note?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function getBroadcasterConfig(db: D1Database, pageId?: string): Promise<BroadcasterConfigRecord | null> {
+  await ensureBroadcasterDeliveriesTable(db);
+  let query = 'SELECT * FROM broadcaster_config WHERE id = ?';
+  let bindings = ['default'];
+  if (pageId && pageId.trim()) {
+    query = 'SELECT * FROM broadcaster_config WHERE page_id = ? OR id = ? LIMIT 1';
+    bindings = [pageId.trim(), 'default'];
+  }
+  return db.prepare(query).bind(...bindings).first<BroadcasterConfigRecord>();
+}
+
+export async function saveBroadcasterConfig(db: D1Database, config: Partial<BroadcasterConfigRecord>): Promise<void> {
+  await ensureBroadcasterDeliveriesTable(db);
+  const now = new Date().toISOString();
+  const id = config.id || 'default';
+  const pageId = config.page_id || '104829105829104';
+  const minDelay = config.min_delay_sec != null ? Number(config.min_delay_sec) : 2;
+  const maxDelay = config.max_delay_sec != null ? Number(config.max_delay_sec) : 5;
+  const tokenStatus = config.token_status || 'unconfigured';
+
+  await db
+    .prepare(`
+      INSERT INTO broadcaster_config (
+        id, page_id, encrypted_access_token, token_preview, token_status, min_delay_sec, max_delay_sec, default_message_templates, verified_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        page_id = excluded.page_id,
+        encrypted_access_token = COALESCE(excluded.encrypted_access_token, broadcaster_config.encrypted_access_token),
+        token_preview = COALESCE(excluded.token_preview, broadcaster_config.token_preview),
+        token_status = excluded.token_status,
+        min_delay_sec = excluded.min_delay_sec,
+        max_delay_sec = excluded.max_delay_sec,
+        default_message_templates = COALESCE(excluded.default_message_templates, broadcaster_config.default_message_templates),
+        verified_at = COALESCE(excluded.verified_at, broadcaster_config.verified_at),
+        updated_at = excluded.updated_at
+    `)
+    .bind(
+      id,
+      pageId,
+      config.encrypted_access_token || null,
+      config.token_preview || null,
+      tokenStatus,
+      minDelay,
+      maxDelay,
+      config.default_message_templates || null,
+      config.verified_at || null,
+      now
+    )
+    .run();
+}
+
+export async function getBroadcasterCampaignJob(db: D1Database, campaignId: string): Promise<BroadcasterCampaignJobRecord | null> {
+  await ensureBroadcasterDeliveriesTable(db);
+  return db
+    .prepare('SELECT * FROM broadcaster_campaign_jobs WHERE campaign_id = ? OR id = ? LIMIT 1')
+    .bind(campaignId, campaignId)
+    .first<BroadcasterCampaignJobRecord>();
+}
+
+export async function getActiveRunningBroadcasterJob(db: D1Database, pageId: string): Promise<BroadcasterCampaignJobRecord | null> {
+  await ensureBroadcasterDeliveriesTable(db);
+  return db
+    .prepare("SELECT * FROM broadcaster_campaign_jobs WHERE page_id = ? AND status = 'RUNNING' LIMIT 1")
+    .bind(pageId)
+    .first<BroadcasterCampaignJobRecord>();
+}
+
+export async function upsertBroadcasterCampaignJob(
+  db: D1Database,
+  job: Partial<BroadcasterCampaignJobRecord> & { campaign_id: string; page_id: string }
+): Promise<void> {
+  await ensureBroadcasterDeliveriesTable(db);
+  const now = new Date().toISOString();
+  const id = job.id || job.campaign_id;
+  const status = job.status || 'RUNNING';
+
+  await db
+    .prepare(`
+      INSERT INTO broadcaster_campaign_jobs (
+        id, page_id, campaign_id, status, total_count, processed_count, delivered_count, ambiguous_count, failed_count, skipped_count, min_delay_sec, max_delay_sec, message_template, current_psid, checkpoint_note, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        status = excluded.status,
+        total_count = excluded.total_count,
+        processed_count = excluded.processed_count,
+        delivered_count = excluded.delivered_count,
+        ambiguous_count = excluded.ambiguous_count,
+        failed_count = excluded.failed_count,
+        skipped_count = excluded.skipped_count,
+        min_delay_sec = excluded.min_delay_sec,
+        max_delay_sec = excluded.max_delay_sec,
+        message_template = COALESCE(excluded.message_template, broadcaster_campaign_jobs.message_template),
+        current_psid = excluded.current_psid,
+        checkpoint_note = excluded.checkpoint_note,
+        updated_at = excluded.updated_at
+    `)
+    .bind(
+      id,
+      job.page_id,
+      job.campaign_id,
+      status,
+      job.total_count || 0,
+      job.processed_count || 0,
+      job.delivered_count || 0,
+      job.ambiguous_count || 0,
+      job.failed_count || 0,
+      job.skipped_count || 0,
+      job.min_delay_sec || 2,
+      job.max_delay_sec || 5,
+      job.message_template || null,
+      job.current_psid || null,
+      job.checkpoint_note || null,
+      job.created_at || now,
+      now
+    )
+    .run();
+}
+
+export async function setBroadcasterJobStatus(
+  db: D1Database,
+  campaignId: string,
+  status: 'IDLE' | 'RUNNING' | 'PAUSED' | 'STOPPED' | 'COMPLETED' | 'FAILED',
+  checkpointNote?: string
+): Promise<void> {
+  await ensureBroadcasterDeliveriesTable(db);
+  const now = new Date().toISOString();
+  await db
+    .prepare(`
+      UPDATE broadcaster_campaign_jobs
+      SET status = ?,
+          checkpoint_note = COALESCE(?, checkpoint_note),
+          updated_at = ?
+      WHERE campaign_id = ? OR id = ?
+    `)
+    .bind(status, checkpointNote || null, now, campaignId, campaignId)
+    .run();
 }
 

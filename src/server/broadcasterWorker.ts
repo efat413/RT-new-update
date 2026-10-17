@@ -1,6 +1,7 @@
 /**
  * Facebook Broadcaster Concurrent Queue Worker
  * Demonstrates and enforces concurrent race protection across parallel workers.
+ * Incorporates server-side delay jitter and checkpoint awareness.
  */
 
 import { D1Database } from './types';
@@ -10,9 +11,18 @@ import {
   RecipientInput,
   TelemetryEvent,
 } from './broadcasterService';
+import {
+  parseMessageTemplates,
+  renderMessageForRecipient,
+  validateDelayConfig,
+  calculateRandomDelayMs,
+} from './broadcasterSecurity';
+import { getBroadcasterCampaignJob } from './db';
 
 export interface ConcurrentWorkerConfig {
   workerCount: number;
+  minDelaySec?: number;
+  maxDelaySec?: number;
   rateLimitDelayMs?: number;
   timeoutMs?: number;
   metaApiEndpoint?: string;
@@ -42,6 +52,7 @@ export interface ConcurrentDispatchResult {
  * Runs parallel queue workers against a list of recipients.
  * Concurrency is actively stressed to demonstrate that simultaneous workers
  * competing for the exact same recipient PSID cannot cause double sends.
+ * Also enforces configured server delays so workers cannot bypass rate controls.
  */
 export async function runConcurrentBroadcasterQueue(
   db: D1Database,
@@ -60,7 +71,16 @@ export async function runConcurrentBroadcasterQueue(
   const customFetch = params.config?.customFetch;
   const metaApiEndpoint = params.config?.metaApiEndpoint;
 
+  const templates = parseMessageTemplates(messageText);
+
+  // Validate delay parameters
+  const delayCheck = validateDelayConfig(
+    params.config?.minDelaySec ?? 0,
+    params.config?.maxDelaySec ?? 0
+  );
+
   const queue = [...params.recipients];
+  let processedIndex = 0;
   const traces: WorkerExecutionTrace[] = [];
   const results: DispatchItemResult[] = [];
   const telemetryLogs: TelemetryEvent[] = [];
@@ -73,8 +93,16 @@ export async function runConcurrentBroadcasterQueue(
   // Worker task runner
   async function workerLoop(workerId: number) {
     while (queue.length > 0) {
+      // Check pause / stop status
+      const checkJob = await getBroadcasterCampaignJob(db, campaignId);
+      if (checkJob?.status === 'PAUSED' || checkJob?.status === 'STOPPED') {
+        break;
+      }
+
       const recipient = queue.shift();
       if (!recipient) break;
+
+      const currentIndex = processedIndex++;
 
       traces.push({
         workerId,
@@ -84,11 +112,19 @@ export async function runConcurrentBroadcasterQueue(
         detail: `Worker ${workerId} attempting atomic reservation for PSID ${recipient.psid}`,
       });
 
+      // Render message template variation with safe {name} substitution
+      const rendered = renderMessageForRecipient({
+        templates,
+        recipientIndex: currentIndex,
+        recipientPsid: recipient.psid,
+        recipientName: recipient.name,
+      });
+
       const itemRes = await dispatchSingleRecipient(db, {
         pageId,
         recipientPsid: recipient.psid,
         campaignId,
-        messageText,
+        messageText: rendered.text,
         pageAccessToken,
         metaApiEndpoint,
         timeoutMs,
@@ -121,7 +157,11 @@ export async function runConcurrentBroadcasterQueue(
       results.push(itemRes);
       telemetryLogs.push(itemRes.telemetryEvent);
 
-      if (params.config?.rateLimitDelayMs) {
+      // Enforce server-side delay per worker
+      if (delayCheck.valid && delayCheck.max > 0) {
+        const delayMs = calculateRandomDelayMs(delayCheck.min, delayCheck.max);
+        await new Promise((r) => setTimeout(r, delayMs));
+      } else if (params.config?.rateLimitDelayMs) {
         await new Promise((r) => setTimeout(r, params.config!.rateLimitDelayMs));
       }
     }

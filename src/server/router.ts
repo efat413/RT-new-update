@@ -8242,7 +8242,13 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         403
       );
     }
-    return handleBroadcasterApiRequest(request, env, getCorsHeaders(request, env));
+    const authContext = {
+      id: auth!.dbUser.id,
+      email: auth!.dbUser.email,
+      role: auth!.role,
+      ipAddress: getClientIp(request),
+    };
+    return handleBroadcasterApiRequest(request, env, getCorsHeaders(request, env), authContext);
   }
 
     return jsonResponse({ success: false, error: 'Endpoint not found' }, 404);

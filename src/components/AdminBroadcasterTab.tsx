@@ -16,6 +16,20 @@ import {
   Users,
   Zap,
   Info,
+  Key,
+  Lock,
+  Pause,
+  Play,
+  Square,
+  Eye,
+  EyeOff,
+  Settings2,
+  Sliders,
+  FileText,
+  Sparkles,
+  ExternalLink,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 
 interface TelemetryLogItem {
@@ -52,14 +66,55 @@ interface BroadcasterStats {
   queuedCount: number;
 }
 
+interface TokenValidationInfo {
+  valid: boolean;
+  pageId?: string;
+  pageName?: string;
+  category?: string;
+  permissions?: string[];
+  error?: string;
+}
+
 export const AdminBroadcasterTab: React.FC = () => {
+  // Campaign & Target Configuration
   const [pageId, setPageId] = useState('104829105829104');
   const [campaignId, setCampaignId] = useState(`camp-${new Date().toISOString().slice(0, 10)}`);
-  const [messageText, setMessageText] = useState('স্বাগতম রঙধনু ট্রেড এ! আপনার অর্ডার ডেলিভারি ও বিশেষ অফার আপডেট।');
+
+  // Secure Meta Page Token State
+  const [pageAccessToken, setPageAccessToken] = useState('');
+  const [showTokenInput, setShowTokenInput] = useState(false);
+  const [tokenPreview, setTokenPreview] = useState('unconfigured');
+  const [tokenStatus, setTokenStatus] = useState<'verified' | 'configured' | 'unconfigured'>('unconfigured');
+  const [hasServerSecret, setHasServerSecret] = useState(false);
+  const [isSavingConfig, setIsSavingConfig] = useState(false);
+  const [isVerifyingToken, setIsVerifyingToken] = useState(false);
+  const [validationResult, setValidationResult] = useState<TokenValidationInfo | null>(null);
+  const [showCredentialsSection, setShowCredentialsSection] = useState(false);
+
+  // Configurable Server Delay Settings (seconds)
+  const [minDelaySec, setMinDelaySec] = useState<number>(2);
+  const [maxDelaySec, setMaxDelaySec] = useState<number>(5);
+  const [delayError, setDelayError] = useState<string | null>(null);
+
+  // Multi-Template Variations separated by '|'
+  const [messageTemplates, setMessageTemplates] = useState(
+    'স্বাগতম {name}! রঙধনু ট্রেড এ আপনাকে স্বাগতম। আপনার অর্ডার ডেলিভারি ও বিশেষ অফার আপডেট। | ' +
+    'হ্যালো {name}! রঙধনু ট্রেড এর বিশেষ ঈদ কালেকশন ও ডিসকাউন্ট এখন লাইভ। বিস্তারিত জানতে ইনবক্সে মেসেজ করুন।'
+  );
+  const [selectedPreviewVariation, setSelectedPreviewVariation] = useState<number>(0);
+  const [testCustomerName, setTestCustomerName] = useState('আহমেদ');
+  const [simulateWithoutName, setSimulateWithoutName] = useState(false);
+
+  // Recipient Audience Input
   const [rawAudienceInput, setRawAudienceInput] = useState(
-    '89012345678901\n89012345678902\n89012345678903\n89012345678901\n99999999999999 {"is_bot": true}'
+    '89012345678901 {"name": "আহমেদ"}\n' +
+    '89012345678902 {"name": "রাকিব"}\n' +
+    '89012345678903\n' +
+    '89012345678901\n' +
+    '99999999999999 {"is_bot": true}'
   );
 
+  // Counters & Ledgers
   const [stats, setStats] = useState<BroadcasterStats>({
     totalDeliveries: 0,
     deliveredCount: 0,
@@ -74,25 +129,91 @@ export const AdminBroadcasterTab: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'DELIVERED' | 'AMBIGUOUS' | 'FAILED' | 'QUEUED'>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
 
+  // Execution States
   const [isLoading, setIsLoading] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [isDispatching, setIsDispatching] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
   const [scanSummary, setScanSummary] = useState<any>(null);
-  const [systemNotice, setSystemNotice] = useState<string | null>(null);
+  const [systemNotice, setSystemNotice] = useState<{
+    type: 'success' | 'error' | 'info' | 'warning';
+    text: string;
+  } | null>(null);
+
+  // Campaign Job State Engine (IDLE, RUNNING, PAUSED, STOPPED, COMPLETED)
+  const [jobStatus, setJobStatus] = useState<'IDLE' | 'RUNNING' | 'PAUSED' | 'STOPPED' | 'COMPLETED'>('IDLE');
+  const [jobProgress, setJobProgress] = useState<{
+    total: number;
+    processed: number;
+    delivered: number;
+    ambiguous: number;
+    failed: number;
+    skipped: number;
+    note?: string;
+  }>({
+    total: 0,
+    processed: 0,
+    delivered: 0,
+    ambiguous: 0,
+    failed: 0,
+    skipped: 0,
+  });
 
   const terminalEndRef = useRef<HTMLDivElement>(null);
+  const pollIntervalRef = useRef<any>(null);
 
   // Auto-scroll terminal on new telemetry
   useEffect(() => {
     terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [telemetryLogs]);
 
-  // Load stats and history on mount and pageId change
+  // Load config, stats, and history on mount and pageId change
   useEffect(() => {
+    fetchConfig();
     fetchStats();
     fetchHistory();
+    fetchJobStatus();
+
+    return () => {
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    };
   }, [pageId, statusFilter]);
+
+  // Poll job status when running or paused
+  useEffect(() => {
+    if (jobStatus === 'RUNNING' || jobStatus === 'PAUSED') {
+      pollIntervalRef.current = setInterval(() => {
+        fetchJobStatus();
+      }, 2000);
+    } else {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+    }
+    return () => {
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    };
+  }, [jobStatus, campaignId]);
+
+  const fetchConfig = async () => {
+    try {
+      const res = await fetch(`/api/broadcaster/config?pageId=${encodeURIComponent(pageId)}`);
+      const data = await res.json();
+      if (data.success && data.config) {
+        setTokenPreview(data.config.tokenPreview || 'unconfigured');
+        setTokenStatus(data.config.tokenStatus || 'unconfigured');
+        if (data.config.minDelaySec != null) setMinDelaySec(data.config.minDelaySec);
+        if (data.config.maxDelaySec != null) setMaxDelaySec(data.config.maxDelaySec);
+        if (data.config.defaultMessageTemplates) {
+          setMessageTemplates(data.config.defaultMessageTemplates);
+        }
+        setHasServerSecret(Boolean(data.config.hasServerSecret));
+      }
+    } catch (err) {
+      console.warn('Failed to fetch broadcaster config:', err);
+    }
+  };
 
   const fetchStats = async () => {
     try {
@@ -124,6 +245,134 @@ export const AdminBroadcasterTab: React.FC = () => {
     }
   };
 
+  const fetchJobStatus = async () => {
+    try {
+      const res = await fetch(`/api/broadcaster/job-status?campaignId=${encodeURIComponent(campaignId)}&pageId=${encodeURIComponent(pageId)}`);
+      const data = await res.json();
+      if (data.success && data.job) {
+        setJobStatus(data.job.status || 'IDLE');
+        setJobProgress({
+          total: data.job.total_count || 0,
+          processed: data.job.processed_count || 0,
+          delivered: data.job.delivered_count || 0,
+          ambiguous: data.job.ambiguous_count || 0,
+          failed: data.job.failed_count || 0,
+          skipped: data.job.skipped_count || 0,
+          note: data.job.checkpoint_note || undefined,
+        });
+        if (data.job.status === 'RUNNING') {
+          setIsDispatching(true);
+        } else if (data.job.status === 'COMPLETED' || data.job.status === 'STOPPED') {
+          setIsDispatching(false);
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to fetch job status:', err);
+    }
+  };
+
+  // Save Token & Delay Settings
+  const handleSaveConfig = async () => {
+    const min = Number(minDelaySec);
+    const max = Number(maxDelaySec);
+
+    if (!Number.isFinite(min) || min < 0) {
+      setDelayError('Min Delay must be a finite non-negative number of seconds.');
+      return;
+    }
+    if (!Number.isFinite(max) || max < 0) {
+      setDelayError('Max Delay must be a finite non-negative number of seconds.');
+      return;
+    }
+    if (max < min) {
+      setDelayError(`Max Delay (${max}s) cannot be less than Min Delay (${min}s).`);
+      return;
+    }
+    if (max > 60) {
+      setDelayError('Max Delay exceeds the safe ceiling of 60 seconds.');
+      return;
+    }
+    setDelayError(null);
+    setIsSavingConfig(true);
+
+    try {
+      const res = await fetch('/api/broadcaster/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pageId,
+          pageAccessToken: pageAccessToken.trim() || undefined,
+          minDelaySec: min,
+          maxDelaySec: max,
+          defaultMessageTemplates: messageTemplates.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSystemNotice({
+          type: 'success',
+          text: 'Facebook Broadcaster configuration and credentials saved securely (AES-256-GCM encrypted).',
+        });
+        setPageAccessToken(''); // Purge sensitive raw token from memory immediately
+        fetchConfig();
+      } else {
+        setSystemNotice({
+          type: 'error',
+          text: data.error || 'Failed to save broadcaster configuration.',
+        });
+      }
+    } catch (err: any) {
+      setSystemNotice({
+        type: 'error',
+        text: `Error saving config: ${err?.message || 'Network error'}`,
+      });
+    } finally {
+      setIsSavingConfig(false);
+    }
+  };
+
+  // Verify Page Token Connection via official Meta Graph API
+  const handleVerifyToken = async () => {
+    setIsVerifyingToken(true);
+    setValidationResult(null);
+    try {
+      const res = await fetch('/api/broadcaster/verify-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pageId,
+          pageAccessToken: pageAccessToken.trim() || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (data.success && data.validation) {
+        setValidationResult(data.validation);
+        setSystemNotice({
+          type: 'success',
+          text: `Meta Graph API Verified! Connected to "${data.validation.pageName}" (Page ID: ${data.validation.pageId}) with valid messaging permissions.`,
+        });
+        fetchConfig();
+      } else {
+        const errMsg = data.error || data.validation?.error || 'Token verification failed.';
+        setValidationResult({ valid: false, error: errMsg });
+        setSystemNotice({
+          type: 'error',
+          text: `Meta Verification Error: ${errMsg}`,
+        });
+      }
+    } catch (err: any) {
+      const errMsg = err?.message || 'Network error connecting to Meta Graph API';
+      setValidationResult({ valid: false, error: errMsg });
+      setSystemNotice({
+        type: 'error',
+        text: `Verification Failure: ${errMsg}`,
+      });
+    } finally {
+      setIsVerifyingToken(false);
+    }
+  };
+
+  // Parse audience textarea
   const parseAudienceInput = () => {
     const lines = rawAudienceInput
       .split('\n')
@@ -131,7 +380,6 @@ export const AdminBroadcasterTab: React.FC = () => {
       .filter(Boolean);
 
     return lines.map((line) => {
-      // Check for inline JSON e.g. "8901234 {"is_bot": true}"
       const jsonMatch = line.match(/^(\S+)\s*(\{.*\})$/);
       if (jsonMatch) {
         try {
@@ -143,6 +391,27 @@ export const AdminBroadcasterTab: React.FC = () => {
       }
       return { psid: line };
     });
+  };
+
+  // Template variation helpers
+  const parsedTemplates = messageTemplates
+    .split('|')
+    .map((t) => t.trim())
+    .filter(Boolean);
+
+  const effectiveTemplates = parsedTemplates.length > 0 ? parsedTemplates : [messageTemplates.trim()];
+
+  const renderTemplatePreview = (template: string, name: string | null) => {
+    if (name && name.trim()) {
+      return template.replace(/\{name\}/g, name.trim());
+    }
+    return template
+      .replace(/\s*\{name\}\s*,/g, ',')
+      .replace(/\s*\{name\}\s*!/g, '!')
+      .replace(/\s*\{name\}\s*\./g, '.')
+      .replace(/\s*\{name\}\s*/g, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
   };
 
   const handleScanAndFilter = async () => {
@@ -163,32 +432,63 @@ export const AdminBroadcasterTab: React.FC = () => {
           id: `scan-${Date.now()}-${idx}`,
         }));
         setTelemetryLogs((prev) => [...prev, ...newLogs]);
-        setSystemNotice(
-          `Pre-filter Complete: ${data.eligibleCount} eligible to queue, ${data.stats.skippedHistorical} historical suppressed, ${data.stats.skippedDuplicateInScan} scan duplicates, ${data.stats.skippedBot} bot accounts.`
-        );
+        setSystemNotice({
+          type: 'info',
+          text: `Pre-filter Complete: ${data.eligibleCount} eligible to queue, ${data.stats.skippedHistorical} historical suppressed, ${data.stats.skippedDuplicateInScan} scan duplicates, ${data.stats.skippedBot} bot accounts.`,
+        });
       } else {
-        setSystemNotice(`Scan Error: ${data.error || 'Failed to scan recipients.'}`);
+        setSystemNotice({
+          type: 'error',
+          text: `Scan Error: ${data.error || 'Failed to scan recipients.'}`,
+        });
       }
     } catch (err: any) {
-      setSystemNotice(`Scan Failure: ${err?.message || 'Network error'}`);
+      setSystemNotice({
+        type: 'error',
+        text: `Scan Failure: ${err?.message || 'Network error'}`,
+      });
     } finally {
       setIsScanning(false);
     }
   };
 
-  const handleDispatch = async (simulateTimeout = false) => {
+  const handleDispatch = async (simulateTimeout = false, isResume = false) => {
+    // Validate delays
+    if (maxDelaySec < minDelaySec) {
+      setSystemNotice({
+        type: 'error',
+        text: `Cannot dispatch: Max Delay (${maxDelaySec}s) is less than Min Delay (${minDelaySec}s).`,
+      });
+      return;
+    }
+
     setIsDispatching(true);
+    setJobStatus('RUNNING');
     setSystemNotice(null);
+
     try {
       const recipients = parseAudienceInput();
+      setJobProgress({
+        total: recipients.length,
+        processed: 0,
+        delivered: 0,
+        ambiguous: 0,
+        failed: 0,
+        skipped: 0,
+        note: isResume ? 'Resuming campaign execution...' : 'Starting campaign dispatch...',
+      });
+
       const res = await fetch('/api/broadcaster/dispatch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           pageId,
           campaignId,
-          messageText,
+          messageText: messageTemplates,
+          messageTemplates: effectiveTemplates,
           recipients,
+          minDelaySec,
+          maxDelaySec,
           simulateTimeout,
         }),
       });
@@ -199,23 +499,129 @@ export const AdminBroadcasterTab: React.FC = () => {
           id: `disp-${Date.now()}-${idx}`,
         }));
         setTelemetryLogs((prev) => [...prev, ...newLogs]);
-        setSystemNotice(
-          `Dispatch Completed: ${data.deliveredCount} Delivered, ${data.ambiguousCount} Ambiguous (Fail-Safe Locked), ${data.skippedCount} Skipped (Race-Guard / Ledger Lock).`
-        );
+
+        setJobStatus(data.jobStatus || 'COMPLETED');
+        setJobProgress({
+          total: recipients.length,
+          processed: data.totalProcessed,
+          delivered: data.deliveredCount,
+          ambiguous: data.ambiguousCount,
+          failed: data.failedCount,
+          skipped: data.skippedCount,
+          note: data.checkpointNote,
+        });
+
+        setSystemNotice({
+          type: data.jobStatus === 'PAUSED' ? 'warning' : 'success',
+          text: data.jobStatus === 'PAUSED'
+            ? `Campaign Paused: Safe checkpoint reached (${data.totalProcessed}/${recipients.length} processed).`
+            : `Dispatch Finished: ${data.deliveredCount} Delivered, ${data.ambiguousCount} Ambiguous (Fail-Safe Locked), ${data.skippedCount} Skipped (Race-Guard / Ledger Lock).`,
+        });
+
         fetchStats();
         fetchHistory();
       } else {
-        setSystemNotice(`Dispatch Error: ${data.error || 'Failed to dispatch broadcast.'}`);
+        setSystemNotice({
+          type: 'error',
+          text: `Dispatch Error: ${data.error || 'Failed to dispatch broadcast.'}`,
+        });
+        setJobStatus('IDLE');
       }
     } catch (err: any) {
-      setSystemNotice(`Dispatch Failure: ${err?.message || 'Network error'}`);
+      setSystemNotice({
+        type: 'error',
+        text: `Dispatch Failure: ${err?.message || 'Network error'}`,
+      });
+      setJobStatus('IDLE');
     } finally {
       setIsDispatching(false);
     }
   };
 
+  // Real server-side Pause
+  const handlePauseCampaign = async () => {
+    try {
+      const res = await fetch('/api/broadcaster/pause', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campaignId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setJobStatus('PAUSED');
+        setSystemNotice({
+          type: 'warning',
+          text: `Campaign "${campaignId}" paused at safe checkpoint. Resuming will continue without repeating recipients.`,
+        });
+        fetchJobStatus();
+      } else {
+        setSystemNotice({ type: 'error', text: data.error || 'Failed to pause campaign.' });
+      }
+    } catch (err: any) {
+      setSystemNotice({ type: 'error', text: `Failed to pause: ${err?.message}` });
+    }
+  };
+
+  // Real server-side Resume
+  const handleResumeCampaign = async () => {
+    try {
+      const res = await fetch('/api/broadcaster/resume', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campaignId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setJobStatus('RUNNING');
+        setSystemNotice({
+          type: 'success',
+          text: `Campaign "${campaignId}" resumed. Processing next eligible recipient...`,
+        });
+        handleDispatch(false, true);
+      } else {
+        setSystemNotice({ type: 'error', text: data.error || 'Failed to resume campaign.' });
+      }
+    } catch (err: any) {
+      setSystemNotice({ type: 'error', text: `Failed to resume: ${err?.message}` });
+    }
+  };
+
+  // Real server-side Stop
+  const handleStopCampaign = async () => {
+    if (!window.confirm(`Are you sure you want to STOP campaign "${campaignId}"? Remaining unsent messages in this campaign will be aborted.`)) {
+      return;
+    }
+    try {
+      const res = await fetch('/api/broadcaster/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campaignId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setJobStatus('STOPPED');
+        setIsDispatching(false);
+        setSystemNotice({
+          type: 'info',
+          text: `Campaign "${campaignId}" stopped by admin. Safe checkpoint recorded.`,
+        });
+        fetchJobStatus();
+      } else {
+        setSystemNotice({ type: 'error', text: data.error || 'Failed to stop campaign.' });
+      }
+    } catch (err: any) {
+      setSystemNotice({ type: 'error', text: `Failed to stop: ${err?.message}` });
+    }
+  };
+
   const handleResetEphemeralMemory = async () => {
-    if (!window.confirm('Reset Ephemeral Scan Memory?\n\nNote: Permanent delivery records (One PSID = One Message Ever) are ALWAYS protected and will NOT be deleted.')) {
+    if (
+      !window.confirm(
+        'Reset Ephemeral Scan Memory?\n\n' +
+        'CRITICAL NOTE: Permanent delivery records ("One PSID = One Message Ever") are strictly protected in the D1 ledger and will NEVER be deleted or modified.\n\n' +
+        'This action ONLY purges temporary scan caches and session queues.'
+      )
+    ) {
       return;
     }
 
@@ -228,14 +634,18 @@ export const AdminBroadcasterTab: React.FC = () => {
       });
       const data = await res.json();
       if (data.success) {
-        setSystemNotice(
-          `Protected Reset Complete: ${data.clearedEphemeralRows} scan items cleared. Permanent delivery ledger intact (${data.permanentLedgerRowsProtected} delivery records locked).`
-        );
+        setSystemNotice({
+          type: 'info',
+          text: `Protected Reset Complete: ${data.clearedEphemeralRows} transient scan rows cleared. Permanent delivery ledger intact (${data.permanentLedgerRowsProtected} delivery records permanently locked).`,
+        });
         fetchStats();
         fetchHistory();
       }
     } catch (err: any) {
-      setSystemNotice(`Reset error: ${err?.message || 'Failed to reset memory'}`);
+      setSystemNotice({
+        type: 'error',
+        text: `Reset error: ${err?.message || 'Failed to reset memory'}`,
+      });
     } finally {
       setIsResetting(false);
     }
@@ -243,13 +653,13 @@ export const AdminBroadcasterTab: React.FC = () => {
 
   const loadSampleAudience = () => {
     const sample = [
-      '89012345678901',
-      '89012345678902',
+      '89012345678901 {"name": "আহমেদ"}',
+      '89012345678902 {"name": "রাকিব"}',
       '89012345678903',
-      '89012345678901', // Scan Duplicate
+      '89012345678901 {"name": "আহমেদ (ডুপ্লিকেট)"}', // Scan Duplicate
       '89012345678904 {"is_bot": true}', // Confirmed Bot
       '89012345678905 {"account_type": "bot"}', // Confirmed Bot
-      '89012345678906',
+      '89012345678906 {"name": "সালমান"}',
     ].join('\n');
     setRawAudienceInput(sample);
   };
@@ -266,11 +676,11 @@ export const AdminBroadcasterTab: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* Top Banner & Security Constitution */}
+      {/* Top Banner & Permanent Hard Deduplication Architecture */}
       <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 border border-indigo-800/40 rounded-2xl p-5 shadow-lg relative overflow-hidden">
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 relative z-10">
           <div className="space-y-1.5">
-            <div className="flex items-center gap-2.5">
+            <div className="flex items-center gap-2.5 flex-wrap">
               <span className="p-2 rounded-xl bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">
                 <Radio className="w-5 h-5 animate-pulse" />
               </span>
@@ -280,14 +690,25 @@ export const AdminBroadcasterTab: React.FC = () => {
               <span className="px-2.5 py-0.5 text-[11px] font-semibold tracking-wider uppercase rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                 One PSID = One Message Ever
               </span>
+              <span className="px-2 py-0.5 text-[10px] font-medium rounded-full bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
+                Permanent Hard Dedup Policy
+              </span>
             </div>
-            <p className="text-xs text-slate-300 max-w-2xl leading-relaxed">
-              Enforces hard database-level uniqueness <code className="bg-slate-800 px-1 py-0.5 rounded text-indigo-300">UNIQUE(page_id, recipient_psid)</code>,
-              atomic concurrency reservation, pre-filtering against permanent D1 history, and ambiguous timeout fail-safe locking.
+            <p className="text-xs text-slate-300 max-w-3xl leading-relaxed">
+              Enforces hard database-level uniqueness <code className="bg-slate-800 px-1 py-0.5 rounded text-indigo-300">UNIQUE(page_id, recipient_psid)</code>.
+              This permanent ledger rule guarantees that no PSID ever receives a second message across any past or future campaign.
+              Atomic upserts prevent race conditions, and ambiguous network timeouts fail safe without auto-retry.
             </p>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-2 shrink-0 flex-wrap">
+            <button
+              onClick={() => setShowCredentialsSection(!showCredentialsSection)}
+              className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold bg-indigo-900/40 text-indigo-300 border border-indigo-700/50 hover:bg-indigo-800/40 rounded-xl transition shadow-xs"
+            >
+              <Key className="w-3.5 h-3.5" />
+              {showCredentialsSection ? 'Hide Credentials' : 'Page Credentials & Delays'}
+            </button>
             <button
               onClick={handleResetEphemeralMemory}
               disabled={isResetting}
@@ -301,28 +722,367 @@ export const AdminBroadcasterTab: React.FC = () => {
               onClick={() => {
                 fetchStats();
                 fetchHistory();
+                fetchJobStatus();
               }}
               className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold bg-slate-800 text-slate-200 border border-slate-700 hover:bg-slate-700 rounded-xl transition"
             >
               <RefreshCw className="w-3.5 h-3.5" />
-              Refresh Ledger
+              Refresh
             </button>
           </div>
         </div>
       </div>
 
+      {/* SECURE FACEBOOK PAGE TOKEN & DELAY CONFIGURATION DRAWER / CARD */}
+      {showCredentialsSection && (
+        <div className="bg-slate-900 border border-indigo-700/40 rounded-2xl p-5 shadow-md space-y-4 animate-in fade-in duration-200">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+            <div className="flex items-center gap-2">
+              <Lock className="w-4 h-4 text-emerald-400" />
+              <h3 className="text-sm font-bold text-white">
+                Facebook Page Access Token & Security Settings
+              </h3>
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
+                AES-256-GCM Encrypted
+              </span>
+            </div>
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-slate-400">Current Token Status:</span>
+              {tokenStatus === 'verified' && (
+                <span className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3" /> VERIFIED
+                </span>
+              )}
+              {tokenStatus === 'configured' && (
+                <span className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-sky-500/20 text-sky-300 border border-sky-500/30 flex items-center gap-1">
+                  <ShieldCheck className="w-3 h-3" /> CONFIGURED
+                </span>
+              )}
+              {tokenStatus === 'unconfigured' && (
+                <span className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                  <AlertTriangle className="w-3 h-3" /> UNCONFIGURED
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
+            {/* Page ID */}
+            <div className="md:col-span-4">
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                Configured Facebook Page ID
+              </label>
+              <input
+                type="text"
+                value={pageId}
+                onChange={(e) => setPageId(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                placeholder="104829105829104"
+              />
+              <p className="text-[11px] text-slate-400 mt-1">
+                The Meta Page ID associated with your store or business.
+              </p>
+            </div>
+
+            {/* Page Access Token Input */}
+            <div className="md:col-span-8">
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                Page Access Token (Encrypted at Rest)
+              </label>
+              <div className="relative">
+                <input
+                  type={showTokenInput ? 'text' : 'password'}
+                  value={pageAccessToken}
+                  onChange={(e) => setPageAccessToken(e.target.value)}
+                  placeholder={hasServerSecret ? `Saved Token Preview: ${tokenPreview} (Enter new token to overwrite)` : 'Paste Meta Page Access Token (starts with EAAG...)'}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-xl pl-3 pr-10 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowTokenInput(!showTokenInput)}
+                  className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-200"
+                  title={showTokenInput ? 'Hide token' : 'Show token'}
+                >
+                  {showTokenInput ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-400 mt-1 flex items-center gap-1">
+                <Lock className="w-3 h-3 text-emerald-400 inline shrink-0" />
+                Never exposed to client bundles, local storage, or logs. Resolved securely on the server via PBKDF2 AES-GCM.
+              </p>
+            </div>
+          </div>
+
+          {/* DELAY SETTINGS (Min Delay & Max Delay) */}
+          <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-2">
+            <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
+              <Sliders className="w-3.5 h-3.5 text-indigo-400" />
+              <span>Configurable Server-Side Delay Settings</span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">
+                  Min Delay (seconds) — default: 2
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  max="60"
+                  step="0.5"
+                  value={minDelaySec}
+                  onChange={(e) => {
+                    setMinDelaySec(parseFloat(e.target.value) || 0);
+                    setDelayError(null);
+                  }}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">
+                  Max Delay (seconds) — default: 5 (Safe Ceiling: 60)
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  max="60"
+                  step="0.5"
+                  value={maxDelaySec}
+                  onChange={(e) => {
+                    setMaxDelaySec(parseFloat(e.target.value) || 0);
+                    setDelayError(null);
+                  }}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                />
+              </div>
+            </div>
+
+            {delayError && (
+              <div className="text-xs text-rose-400 flex items-center gap-1 mt-1 font-medium">
+                <AlertTriangle className="w-3.5 h-3.5" />
+                {delayError}
+              </div>
+            )}
+
+            <p className="text-[11px] text-slate-400 leading-normal">
+              A random jitter delay between {minDelaySec}s and {maxDelaySec}s is enforced by the server between every eligible message dispatch.
+              This prevents server concurrency spikes while strictly honoring Meta messaging platform limits.
+            </p>
+          </div>
+
+          {/* Validation Info Box (if verified) */}
+          {validationResult && (
+            <div
+              className={`p-3 rounded-xl border text-xs ${
+                validationResult.valid
+                  ? 'bg-emerald-950/40 border-emerald-700/50 text-emerald-200'
+                  : 'bg-rose-950/40 border-rose-700/50 text-rose-200'
+              }`}
+            >
+              {validationResult.valid ? (
+                <div className="space-y-1">
+                  <div className="flex items-center gap-1.5 font-bold text-emerald-300">
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
+                    Meta Graph API Connection Validated
+                  </div>
+                  <div>
+                    <strong>Page:</strong> {validationResult.pageName} (ID: {validationResult.pageId})
+                  </div>
+                  {validationResult.category && (
+                    <div>
+                      <strong>Category:</strong> {validationResult.category}
+                    </div>
+                  )}
+                  {validationResult.permissions && (
+                    <div className="flex items-center gap-1 mt-1">
+                      <strong>Permissions:</strong>
+                      {validationResult.permissions.map((p) => (
+                        <span key={p} className="px-1.5 py-0.5 rounded bg-emerald-900/60 border border-emerald-700/50 text-[10px] font-mono">
+                          {p}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="flex items-start gap-2">
+                  <XCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <div>
+                    <div className="font-bold text-rose-300">Validation Failed:</div>
+                    <div className="mt-0.5 text-rose-200">{validationResult.error}</div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Credential Action Buttons */}
+          <div className="flex flex-wrap items-center justify-end gap-2.5 pt-1">
+            <button
+              onClick={handleVerifyToken}
+              disabled={isVerifyingToken || isSavingConfig}
+              className="px-3.5 py-2 text-xs font-semibold bg-slate-800 text-slate-200 border border-slate-700 hover:bg-slate-700 rounded-xl transition flex items-center gap-1.5 shadow-xs"
+            >
+              <ExternalLink className="w-3.5 h-3.5 text-indigo-400" />
+              {isVerifyingToken ? 'Testing Graph API...' : 'Test Connection (Meta Graph API)'}
+            </button>
+
+            <button
+              onClick={handleSaveConfig}
+              disabled={isSavingConfig || isVerifyingToken}
+              className="px-4 py-2 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl transition flex items-center gap-1.5 shadow-md shadow-emerald-600/20"
+            >
+              <Lock className="w-3.5 h-3.5" />
+              {isSavingConfig ? 'Saving...' : 'Save Configuration & Encrypt Token'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* System Notice Toast */}
       {systemNotice && (
-        <div className="bg-indigo-950/80 border border-indigo-700/50 text-indigo-200 text-xs px-4 py-3 rounded-xl flex items-center justify-between shadow-md">
+        <div
+          className={`text-xs px-4 py-3 rounded-xl flex items-center justify-between shadow-md ${
+            systemNotice.type === 'success'
+              ? 'bg-emerald-950/80 border border-emerald-700/50 text-emerald-200'
+              : systemNotice.type === 'error'
+              ? 'bg-rose-950/80 border border-rose-700/50 text-rose-200'
+              : systemNotice.type === 'warning'
+              ? 'bg-amber-950/80 border border-amber-700/50 text-amber-200'
+              : 'bg-indigo-950/80 border border-indigo-700/50 text-indigo-200'
+          }`}
+        >
           <div className="flex items-center gap-2">
-            <Info className="w-4 h-4 text-indigo-400 shrink-0" />
-            <span>{systemNotice}</span>
+            {systemNotice.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />}
+            {systemNotice.type === 'error' && <XCircle className="w-4 h-4 text-rose-400 shrink-0" />}
+            {systemNotice.type === 'warning' && <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />}
+            {systemNotice.type === 'info' && <Info className="w-4 h-4 text-indigo-400 shrink-0" />}
+            <span>{systemNotice.text}</span>
           </div>
-          <button onClick={() => setSystemNotice(null)} className="text-indigo-400 hover:text-white font-bold ml-2">
+          <button onClick={() => setSystemNotice(null)} className="text-slate-400 hover:text-white font-bold ml-2">
             ✕
           </button>
         </div>
       )}
+
+      {/* REAL SERVER-SIDE CAMPAIGN JOB CONTROLS (Pause, Resume, Stop) */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-sm space-y-3">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <span className="p-1.5 rounded-lg bg-slate-800 text-slate-300">
+              <Zap className="w-4 h-4 text-indigo-400" />
+            </span>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-white tracking-wide">
+                  Campaign Engine State:
+                </span>
+                {jobStatus === 'RUNNING' && (
+                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/30 flex items-center gap-1.5 animate-pulse">
+                    <span className="w-2 h-2 rounded-full bg-sky-400 animate-ping" />
+                    RUNNING
+                  </span>
+                )}
+                {jobStatus === 'PAUSED' && (
+                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1.5">
+                    <Pause className="w-3 h-3 text-amber-400" />
+                    PAUSED AT CHECKPOINT
+                  </span>
+                )}
+                {jobStatus === 'STOPPED' && (
+                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30 flex items-center gap-1.5">
+                    <Square className="w-3 h-3 text-rose-400" />
+                    STOPPED
+                  </span>
+                )}
+                {jobStatus === 'COMPLETED' && (
+                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1.5">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                    COMPLETED
+                  </span>
+                )}
+                {jobStatus === 'IDLE' && (
+                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-slate-800 text-slate-400 border border-slate-700">
+                    IDLE / READY
+                  </span>
+                )}
+              </div>
+              <div className="text-[11px] text-slate-400 mt-0.5">
+                Active Campaign ID: <code className="text-indigo-300 font-mono">{campaignId}</code>
+                {jobProgress.note && <span className="ml-2 text-slate-500 font-sans">• {jobProgress.note}</span>}
+              </div>
+            </div>
+          </div>
+
+          {/* Job Control Buttons */}
+          <div className="flex items-center gap-2">
+            {jobStatus === 'RUNNING' && (
+              <button
+                onClick={handlePauseCampaign}
+                className="px-3 py-1.5 text-xs font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30 rounded-xl transition flex items-center gap-1.5"
+                title="Pause dispatch at next safe recipient boundary"
+              >
+                <Pause className="w-3.5 h-3.5" />
+                Pause
+              </button>
+            )}
+
+            {jobStatus === 'PAUSED' && (
+              <button
+                onClick={handleResumeCampaign}
+                className="px-3 py-1.5 text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/30 rounded-xl transition flex items-center gap-1.5"
+                title="Resume dispatch from current checkpoint"
+              >
+                <Play className="w-3.5 h-3.5" />
+                Resume
+              </button>
+            )}
+
+            {(jobStatus === 'RUNNING' || jobStatus === 'PAUSED') && (
+              <button
+                onClick={handleStopCampaign}
+                className="px-3 py-1.5 text-xs font-semibold bg-rose-500/20 text-rose-300 border border-rose-500/30 hover:bg-rose-500/30 rounded-xl transition flex items-center gap-1.5"
+                title="Gracefully abort remaining recipients"
+              >
+                <Square className="w-3.5 h-3.5" />
+                Stop
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Progress Bar during Campaign Execution */}
+        {jobProgress.total > 0 && (
+          <div className="space-y-1.5 pt-1">
+            <div className="flex items-center justify-between text-[11px] text-slate-400">
+              <span>
+                Progress: {jobProgress.processed} / {jobProgress.total} recipients (
+                {Math.round((jobProgress.processed / jobProgress.total) * 100)}%)
+              </span>
+              <span className="space-x-2 text-[10px]">
+                <span className="text-emerald-400">✓ {jobProgress.delivered} Delivered</span>
+                <span className="text-amber-400">⚠ {jobProgress.ambiguous} Ambiguous</span>
+                <span className="text-rose-400">✕ {jobProgress.failed} Failed</span>
+                <span className="text-slate-400">⏭ {jobProgress.skipped} Skipped</span>
+              </span>
+            </div>
+            <div className="w-full bg-slate-950 rounded-full h-2 overflow-hidden border border-slate-800">
+              <div
+                className={`h-full transition-all duration-300 ${
+                  jobStatus === 'PAUSED'
+                    ? 'bg-amber-500'
+                    : jobStatus === 'STOPPED'
+                    ? 'bg-rose-500'
+                    : 'bg-indigo-500'
+                }`}
+                style={{
+                  width: `${Math.min(100, Math.round((jobProgress.processed / jobProgress.total) * 100))}%`,
+                }}
+              />
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Metrics Row */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
@@ -374,11 +1134,11 @@ export const AdminBroadcasterTab: React.FC = () => {
 
       {/* Main Campaign Configuration & Audience Ingestion */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left Form: Parameters & Ingestion */}
+        {/* Left Form: Parameters, Message Variations & Ingestion */}
         <div className="lg:col-span-6 space-y-4 bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-xs">
           <h3 className="text-sm font-bold text-slate-200 flex items-center gap-2 border-b border-slate-800 pb-3">
             <Zap className="w-4 h-4 text-indigo-400" />
-            Campaign Dispatch & Recipient Ingestion
+            Campaign Dispatch & Template Variations
           </h3>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -405,21 +1165,111 @@ export const AdminBroadcasterTab: React.FC = () => {
             </div>
           </div>
 
-          <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">Message Broadcast Content</label>
+          {/* MESSAGE TEMPLATES (Separated by '|') */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-medium text-slate-300 flex items-center gap-1.5">
+                <FileText className="w-3.5 h-3.5 text-indigo-400" />
+                Message Variations (Separate templates with <code className="bg-slate-800 text-indigo-300 px-1 rounded">|</code>)
+              </label>
+              <span className="text-[11px] text-indigo-400 font-medium">
+                {effectiveTemplates.length} Variation{effectiveTemplates.length > 1 ? 's' : ''} detected
+              </span>
+            </div>
+
             <textarea
-              rows={2}
-              value={messageText}
-              onChange={(e) => setMessageText(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
-              placeholder="Type message text..."
+              rows={3}
+              value={messageTemplates}
+              onChange={(e) => setMessageTemplates(e.target.value)}
+              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 font-sans"
+              placeholder="Template 1 text with {name} | Template 2 variation with {name} | ..."
             />
+
+            <div className="text-[11px] text-slate-400 flex items-center justify-between">
+              <span>Supports dynamic <code className="text-amber-300">{"{name}"}</code> substitution (cleanly omitted when recipient name is unavailable).</span>
+            </div>
           </div>
 
+          {/* INTERACTIVE SAFE PREVIEW DRAWER */}
+          <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-3.5 space-y-2.5">
+            <div className="flex items-center justify-between border-b border-slate-800/80 pb-2">
+              <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                Safe Message Preview & Unicode Length Guard
+              </span>
+              <div className="flex items-center gap-2">
+                <label className="text-[11px] text-slate-400 flex items-center gap-1 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={simulateWithoutName}
+                    onChange={(e) => setSimulateWithoutName(e.target.checked)}
+                    className="rounded bg-slate-900 border-slate-700 text-indigo-600 focus:ring-0 w-3.5 h-3.5"
+                  />
+                  Preview without name
+                </label>
+              </div>
+            </div>
+
+            {/* Variation Selection Tabs */}
+            {effectiveTemplates.length > 1 && (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {effectiveTemplates.map((_, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => setSelectedPreviewVariation(idx)}
+                    className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg transition ${
+                      selectedPreviewVariation === idx
+                        ? 'bg-indigo-600 text-white shadow-xs'
+                        : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    Variation #{idx + 1}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Rendered Text Preview */}
+            {(() => {
+              const activeTemplate = effectiveTemplates[selectedPreviewVariation] || effectiveTemplates[0] || '';
+              const renderedPreview = renderTemplatePreview(
+                activeTemplate,
+                simulateWithoutName ? null : testCustomerName
+              );
+              const charCount = Array.from(renderedPreview).length;
+              const isOverLimit = charCount > 2000;
+
+              return (
+                <div className="space-y-1.5">
+                  <div className="p-3 rounded-lg bg-slate-900 border border-slate-800 text-xs text-slate-200 leading-relaxed font-sans whitespace-pre-wrap">
+                    {renderedPreview || <span className="text-slate-500 italic">No message text entered...</span>}
+                  </div>
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-slate-400">
+                      Sample Recipient Name:{' '}
+                      <input
+                        type="text"
+                        value={testCustomerName}
+                        onChange={(e) => setTestCustomerName(e.target.value)}
+                        disabled={simulateWithoutName}
+                        className="bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-[11px] text-white w-20 ml-1 inline"
+                      />
+                    </span>
+                    <span className={`font-mono font-semibold ${isOverLimit ? 'text-rose-400' : 'text-emerald-400'}`}>
+                      {charCount} / 2000 chars (Unicode / Bangla Safe)
+                    </span>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+
+          {/* AUDIENCE INPUT */}
           <div>
             <div className="flex items-center justify-between mb-1">
               <label className="text-xs font-medium text-slate-300">
-                Audience PSID List (One per line, optional inline JSON bot flags)
+                Audience PSID List (One per line, optional inline JSON name/bot flags)
               </label>
               <button
                 type="button"
@@ -430,7 +1280,7 @@ export const AdminBroadcasterTab: React.FC = () => {
               </button>
             </div>
             <textarea
-              rows={5}
+              rows={4}
               value={rawAudienceInput}
               onChange={(e) => setRawAudienceInput(e.target.value)}
               className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
@@ -468,10 +1318,14 @@ export const AdminBroadcasterTab: React.FC = () => {
               Test Timeout Fail-Safe
             </button>
           </div>
+
+          <p className="text-[11px] text-slate-400 text-center pt-1">
+            ⚠️ Restricted strictly to eligible recipients and messaging use cases permitted under Meta Platform Policies.
+          </p>
         </div>
 
         {/* Right Panel: Live Console Telemetry Terminal */}
-        <div className="lg:col-span-6 bg-slate-950 border border-slate-800 rounded-2xl p-4 flex flex-col h-[430px] shadow-inner">
+        <div className="lg:col-span-6 bg-slate-950 border border-slate-800 rounded-2xl p-4 flex flex-col h-[520px] shadow-inner">
           <div className="flex items-center justify-between border-b border-slate-800/80 pb-2.5 mb-2">
             <div className="flex items-center gap-2">
               <Terminal className="w-4 h-4 text-emerald-400" />
@@ -526,7 +1380,7 @@ export const AdminBroadcasterTab: React.FC = () => {
                         {log.details}
                       </div>
                     )}
-                    <div className="text-[9px] text-slate-400 mt-1">
+                    <div className="text-[9px] text-slate-500 mt-1">
                       {log.timestamp} • Campaign: {log.campaign_id}
                     </div>
                   </div>

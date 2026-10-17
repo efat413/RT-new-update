@@ -2,15 +2,35 @@
  * Facebook Broadcaster Service & Atomic Deduplication Engine
  * Core principle: "One PSID = One Message Ever"
  * 
- * Features:
+ * Production Enhancements:
  * 1. Hard uniqueness at database constraint level: UNIQUE(page_id, recipient_psid)
  * 2. Atomic reservation with INSERT ... ON CONFLICT DO NOTHING to prevent concurrent race conditions
  * 3. Ambiguous response & timeout fail-safe: aborts auto-retry on network drop/5xx to guarantee zero duplicate sends
- * 4. Multi-stage pre-filtering with deterministic console telemetry
- * 5. Permanent delivery ledger protection during "Reset Memory"
+ * 4. Multi-template variation engine with '|' delimiter and safe {name} substitution
+ * 5. Server-side randomized delay with jitter (Min Delay, Max Delay) enforced on all paths
+ * 6. Real server-side Pause and Stop controls with persistent D1 campaign job checkpoints
+ * 7. Secure Page Access Token resolution (AES-GCM encrypted in D1 or Cloudflare secret, never exposed raw)
+ * 8. Permanent delivery ledger protection during "Reset Memory"
  */
 
 import { D1Database } from './types';
+import {
+  parseMessageTemplates,
+  renderMessageForRecipient,
+  validateDelayConfig,
+  calculateRandomDelayMs,
+  decryptToken,
+  validateMetaPageToken,
+  MetaTokenValidationResult,
+  MAX_SAFE_DELAY_SECONDS,
+} from './broadcasterSecurity';
+import {
+  getBroadcasterConfig,
+  getBroadcasterCampaignJob,
+  upsertBroadcasterCampaignJob,
+  setBroadcasterJobStatus,
+  BroadcasterCampaignJobRecord,
+} from './db';
 
 export type BroadcasterDeliveryStatus = 'QUEUED' | 'DELIVERED' | 'FAILED' | 'AMBIGUOUS';
 
@@ -84,11 +104,13 @@ export interface DispatchItemResult {
 export interface BatchDispatchResult {
   pageId: string;
   campaignId: string;
+  jobStatus: 'RUNNING' | 'PAUSED' | 'STOPPED' | 'COMPLETED' | 'FAILED';
   totalProcessed: number;
   deliveredCount: number;
   ambiguousCount: number;
   failedCount: number;
   skippedCount: number;
+  checkpointNote?: string;
   items: DispatchItemResult[];
   telemetryLogs: TelemetryEvent[];
 }
@@ -129,7 +151,7 @@ export function isConfirmedBot(recipient: RecipientInput): boolean {
 
 /**
  * Checks historical delivery records for a given page and set of PSIDs.
- * Returns a Set of PSIDs that already exist in D1.
+ * Returns a Map of PSIDs that already exist in D1.
  */
 export async function getHistoricalExistingPsids(
   db: D1Database,
@@ -570,23 +592,89 @@ export async function dispatchSingleRecipient(
 }
 
 /**
+ * Resolves the Page Access Token securely.
+ * Priority:
+ * 1. Explicitly passed in params (e.g. testing)
+ * 2. Cloudflare environment variable FB_PAGE_ACCESS_TOKEN
+ * 3. Decrypted from D1 broadcaster_config table using ADMIN_SECRET
+ */
+export async function resolvePageAccessToken(
+  db: D1Database,
+  pageId: string,
+  explicitToken?: string,
+  envSecret?: string
+): Promise<string | undefined> {
+  if (explicitToken && explicitToken.trim()) {
+    return explicitToken.trim();
+  }
+
+  const config = await getBroadcasterConfig(db, pageId);
+  if (config && config.encrypted_access_token && envSecret) {
+    try {
+      const decrypted = await decryptToken(config.encrypted_access_token, envSecret);
+      if (decrypted && decrypted.trim()) {
+        return decrypted.trim();
+      }
+    } catch (err) {
+      console.warn('[Broadcaster] Failed to decrypt stored Page Access Token:', err);
+    }
+  }
+
+  return undefined;
+}
+
+/**
  * Batch Dispatch Engine
  * Ingests pre-filtered recipients and dispatches each atomically.
+ * Enforces:
+ * - Server-side delay with random jitter between Min Delay and Max Delay
+ * - Template variation rotation ('|') and safe {name} substitution
+ * - Checkpoints: Persists state to D1; detects PAUSED or STOPPED signals
  */
 export async function dispatchBroadcasterBatch(
   db: D1Database,
   params: {
     pageId: string;
     campaignId: string;
-    messageText: string;
+    messageText?: string;
+    messageTemplates?: string | string[];
     recipients: RecipientInput[];
     pageAccessToken?: string;
+    minDelaySec?: number;
+    maxDelaySec?: number;
     metaApiEndpoint?: string;
     timeoutMs?: number;
     customFetch?: typeof fetch;
+    encryptionSecret?: string;
   }
 ): Promise<BatchDispatchResult> {
-  const { pageId, campaignId, messageText, pageAccessToken, metaApiEndpoint, timeoutMs, customFetch } = params;
+  const { pageId, campaignId, metaApiEndpoint, timeoutMs, customFetch } = params;
+
+  // 1. Validate Delay Configuration
+  const delayCheck = validateDelayConfig(
+    params.minDelaySec != null ? params.minDelaySec : 2,
+    params.maxDelaySec != null ? params.maxDelaySec : 5,
+    MAX_SAFE_DELAY_SECONDS
+  );
+  if (!delayCheck.valid) {
+    throw new Error(delayCheck.error || 'Invalid delay configuration.');
+  }
+
+  // 2. Parse Message Templates
+  const rawTemplates = params.messageTemplates || params.messageText || '';
+  const templates = Array.isArray(rawTemplates)
+    ? rawTemplates.filter(Boolean)
+    : parseMessageTemplates(rawTemplates);
+
+  if (templates.length === 0) {
+    throw new Error('Message text or templates are required for broadcast dispatch.');
+  }
+
+  // 3. Resolve Page Access Token securely
+  const pageAccessToken =
+    params.pageAccessToken ||
+    (await resolvePageAccessToken(db, pageId, undefined, params.encryptionSecret));
+
   const items: DispatchItemResult[] = [];
   const telemetryLogs: TelemetryEvent[] = [];
 
@@ -594,13 +682,97 @@ export async function dispatchBroadcasterBatch(
   let ambiguousCount = 0;
   let failedCount = 0;
   let skippedCount = 0;
+  let currentJobStatus: 'RUNNING' | 'PAUSED' | 'STOPPED' | 'COMPLETED' = 'RUNNING';
+  let checkpointNote: string | undefined;
 
-  for (const recipient of params.recipients) {
+  // Register / update campaign job in D1
+  await upsertBroadcasterCampaignJob(db, {
+    campaign_id: campaignId,
+    page_id: pageId,
+    status: 'RUNNING',
+    total_count: params.recipients.length,
+    processed_count: 0,
+    delivered_count: 0,
+    ambiguous_count: 0,
+    failed_count: 0,
+    skipped_count: 0,
+    min_delay_sec: delayCheck.min,
+    max_delay_sec: delayCheck.max,
+    message_template: templates.join(' | '),
+    checkpoint_note: `Campaign started for ${params.recipients.length} recipients`,
+  });
+
+  for (let i = 0; i < params.recipients.length; i++) {
+    const recipient = params.recipients[i];
+
+    // Check server-side Pause / Stop signals at safe checkpoint
+    const checkJob = await getBroadcasterCampaignJob(db, campaignId);
+    if (checkJob?.status === 'PAUSED') {
+      currentJobStatus = 'PAUSED';
+      checkpointNote = `Paused: Safe checkpoint reached at recipient ${i + 1}/${params.recipients.length} (PSID: ${recipient.psid})`;
+      telemetryLogs.push({
+        recipient_psid: recipient.psid,
+        timestamp: new Date().toISOString(),
+        reason: 'Skipped: Ineligible / Bot account',
+        status: 'SKIPPED',
+        campaign_id: campaignId,
+        page_id: pageId,
+        details: checkpointNote,
+      });
+      break;
+    }
+
+    if (checkJob?.status === 'STOPPED') {
+      currentJobStatus = 'STOPPED';
+      checkpointNote = `Stopped: Campaign terminated by admin at recipient ${i + 1}/${params.recipients.length}`;
+      telemetryLogs.push({
+        recipient_psid: recipient.psid,
+        timestamp: new Date().toISOString(),
+        reason: 'Skipped: Ineligible / Bot account',
+        status: 'SKIPPED',
+        campaign_id: campaignId,
+        page_id: pageId,
+        details: checkpointNote,
+      });
+      break;
+    }
+
+    // Render message variation with safe {name} substitution
+    const rendered = renderMessageForRecipient({
+      templates,
+      recipientIndex: i,
+      recipientPsid: recipient.psid,
+      recipientName: recipient.name,
+    });
+
+    if (rendered.error) {
+      failedCount++;
+      const itemRes: DispatchItemResult = {
+        recipient_psid: recipient.psid,
+        status: 'FAILED',
+        reason: 'Failed: Upstream API error',
+        error_message: rendered.error,
+        telemetryEvent: {
+          recipient_psid: recipient.psid,
+          timestamp: new Date().toISOString(),
+          reason: 'Failed: Upstream API error',
+          status: 'FAILED',
+          campaign_id: campaignId,
+          page_id: pageId,
+          details: rendered.error,
+        },
+      };
+      items.push(itemRes);
+      telemetryLogs.push(itemRes.telemetryEvent);
+      continue;
+    }
+
+    // Execute atomic send
     const res = await dispatchSingleRecipient(db, {
       pageId,
       recipientPsid: recipient.psid,
       campaignId,
-      messageText,
+      messageText: rendered.text,
       pageAccessToken,
       metaApiEndpoint,
       timeoutMs,
@@ -614,16 +786,58 @@ export async function dispatchBroadcasterBatch(
     else if (res.status === 'AMBIGUOUS') ambiguousCount++;
     else if (res.status === 'FAILED') failedCount++;
     else if (res.status === 'SKIPPED') skippedCount++;
+
+    // Update live checkpoint in D1
+    await upsertBroadcasterCampaignJob(db, {
+      campaign_id: campaignId,
+      page_id: pageId,
+      status: 'RUNNING',
+      total_count: params.recipients.length,
+      processed_count: items.length,
+      delivered_count: deliveredCount,
+      ambiguous_count: ambiguousCount,
+      failed_count: failedCount,
+      skipped_count: skippedCount,
+      min_delay_sec: delayCheck.min,
+      max_delay_sec: delayCheck.max,
+      current_psid: recipient.psid,
+      checkpoint_note: `Processed PSID ${recipient.psid} (${items.length}/${params.recipients.length})`,
+    });
+
+    // Apply configurable random delay with jitter between sends
+    if (i < params.recipients.length - 1) {
+      const delayMs = calculateRandomDelayMs(delayCheck.min, delayCheck.max);
+      if (delayMs > 0) {
+        // Sleep in 200ms intervals to respond promptly to Pause/Stop signals
+        const startTime = Date.now();
+        while (Date.now() - startTime < delayMs) {
+          const chunk = Math.min(200, delayMs - (Date.now() - startTime));
+          await new Promise((r) => setTimeout(r, chunk));
+          const interimJob = await getBroadcasterCampaignJob(db, campaignId);
+          if (interimJob?.status === 'PAUSED' || interimJob?.status === 'STOPPED') {
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  if (currentJobStatus === 'RUNNING' && items.length === params.recipients.length) {
+    currentJobStatus = 'COMPLETED';
+    checkpointNote = `Completed: All ${items.length} recipients processed.`;
+    await setBroadcasterJobStatus(db, campaignId, 'COMPLETED', checkpointNote);
   }
 
   return {
     pageId,
     campaignId,
+    jobStatus: currentJobStatus,
     totalProcessed: items.length,
     deliveredCount,
     ambiguousCount,
     failedCount,
     skippedCount,
+    checkpointNote,
     items,
     telemetryLogs,
   };

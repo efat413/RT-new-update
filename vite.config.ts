@@ -492,6 +492,19 @@ function localApiDevPlugin(): Plugin {
   // Hard uniqueness enforced via composite key `${pageId}:${recipientPsid}`
   const devBroadcasterLedger = new Map<string, any>();
   const devBroadcasterScanCache: any[] = [];
+  const devBroadcasterConfig = new Map<string, any>();
+  const devBroadcasterJobs = new Map<string, any>();
+
+  // Default seed for configured Facebook Page
+  devBroadcasterConfig.set('104829105829104', {
+    page_id: '104829105829104',
+    token_preview: 'EAAG_M...9014',
+    token_status: 'verified',
+    min_delay_sec: 2,
+    max_delay_sec: 5,
+    default_message_templates: 'স্বাগতম {name}! রঙধনু ট্রেড এর বিশেষ আপডেট। | হ্যালো {name}! আপনার ডেলিভারি ও স্পেশাল অফার।',
+    verified_at: new Date().toISOString(),
+  });
   let devCourierWebhooks: any[] = Array.isArray(devSettings.courierWebhooks) ? devSettings.courierWebhooks : [];
   let devCourierWebhookLogs: any[] = [];
   const devPasswordResetTokens = new Map<string, { id: string; userId: string; tokenHash: string; expiresAt: number; usedAt: number | null; createdAt: number }>();
@@ -7060,6 +7073,207 @@ function localApiDevPlugin(): Plugin {
         // ==========================================
         // FACEBOOK BROADCASTER DEV HANDLERS
         // ==========================================
+        if (url.pathname === '/api/broadcaster/config' && method === 'GET') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          const pageId = url.searchParams.get('pageId') || '104829105829104';
+          const cfg = devBroadcasterConfig.get(pageId) || {
+            page_id: pageId,
+            token_preview: 'EAAG_M...9014',
+            token_status: 'verified',
+            min_delay_sec: 2,
+            max_delay_sec: 5,
+            default_message_templates: 'স্বাগতম {name}! রঙধনু ট্রেড এর বিশেষ আপডেট। | হ্যালো {name}! আপনার ডেলিভারি ও স্পেশাল অফার।',
+            verified_at: new Date().toISOString(),
+          };
+          res.statusCode = 200;
+          return res.end(
+            JSON.stringify({
+              success: true,
+              config: {
+                pageId: cfg.page_id || pageId,
+                tokenPreview: cfg.token_preview || 'unconfigured',
+                tokenStatus: cfg.token_status || 'verified',
+                minDelaySec: cfg.min_delay_sec != null ? Number(cfg.min_delay_sec) : 2,
+                maxDelaySec: cfg.max_delay_sec != null ? Number(cfg.max_delay_sec) : 5,
+                defaultMessageTemplates: cfg.default_message_templates || null,
+                verifiedAt: cfg.verified_at || null,
+                hasServerSecret: true,
+              },
+            })
+          );
+        }
+
+        if (url.pathname === '/api/broadcaster/config' && method === 'POST') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          return readBody((body) => {
+            const pageId = String(body?.pageId || '104829105829104').trim();
+            const rawToken = body?.pageAccessToken ? String(body.pageAccessToken).trim() : undefined;
+            const minDelay = body?.minDelaySec != null ? Number(body.minDelaySec) : 2;
+            const maxDelay = body?.maxDelaySec != null ? Number(body.maxDelaySec) : 5;
+            const defaultTemplates = body?.defaultMessageTemplates ? String(body.defaultMessageTemplates).trim() : undefined;
+
+            if (!Number.isFinite(minDelay) || minDelay < 0) {
+              res.statusCode = 400;
+              return res.end(JSON.stringify({ success: false, error: 'Min Delay must be a finite non-negative number of seconds.' }));
+            }
+            if (!Number.isFinite(maxDelay) || maxDelay < 0) {
+              res.statusCode = 400;
+              return res.end(JSON.stringify({ success: false, error: 'Max Delay must be a finite non-negative number of seconds.' }));
+            }
+            if (maxDelay < minDelay) {
+              res.statusCode = 400;
+              return res.end(JSON.stringify({ success: false, error: `Max Delay (${maxDelay}s) cannot be less than Min Delay (${minDelay}s).` }));
+            }
+            if (maxDelay > 60) {
+              res.statusCode = 400;
+              return res.end(JSON.stringify({ success: false, error: 'Max Delay exceeds the safe ceiling of 60 seconds.' }));
+            }
+
+            const current = devBroadcasterConfig.get(pageId) || {};
+            let tokenPreview = current.token_preview || 'EAAG_M...9014';
+            let tokenStatus = current.token_status || 'verified';
+            if (rawToken) {
+              tokenPreview = rawToken.length <= 10 ? '********' : `${rawToken.slice(0, 7)}...${rawToken.slice(-4)}`;
+              tokenStatus = 'configured';
+            }
+
+            devBroadcasterConfig.set(pageId, {
+              ...current,
+              page_id: pageId,
+              token_preview: tokenPreview,
+              token_status: tokenStatus,
+              min_delay_sec: minDelay,
+              max_delay_sec: maxDelay,
+              default_message_templates: defaultTemplates ?? current.default_message_templates,
+            });
+
+            res.statusCode = 200;
+            return res.end(
+              JSON.stringify({
+                success: true,
+                message: 'Broadcaster configuration saved securely.',
+                tokenPreview,
+                minDelaySec: minDelay,
+                maxDelaySec: maxDelay,
+              })
+            );
+          });
+        }
+
+        if (url.pathname === '/api/broadcaster/verify-token' && method === 'POST') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          return readBody((body) => {
+            const pageId = String(body?.pageId || '').trim();
+            const token = body?.pageAccessToken ? String(body.pageAccessToken).trim() : 'EAAG_CONFIGURED_DEV_TOKEN';
+
+            if (!pageId) {
+              res.statusCode = 400;
+              return res.end(JSON.stringify({ success: false, error: 'pageId is required for token verification.' }));
+            }
+
+            const current = devBroadcasterConfig.get(pageId) || {};
+            devBroadcasterConfig.set(pageId, {
+              ...current,
+              token_status: 'verified',
+              verified_at: new Date().toISOString(),
+            });
+
+            res.statusCode = 200;
+            return res.end(
+              JSON.stringify({
+                success: true,
+                validation: {
+                  valid: true,
+                  pageId,
+                  pageName: 'Rongdhonu Trade Official (Verified)',
+                  category: 'E-commerce & Retail Store',
+                  permissions: ['pages_messaging', 'pages_read_engagement'],
+                },
+              })
+            );
+          });
+        }
+
+        if (url.pathname === '/api/broadcaster/job-status' && method === 'GET') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          const campaignId = url.searchParams.get('campaignId') || undefined;
+          const pageId = url.searchParams.get('pageId') || undefined;
+          let job = null;
+          if (campaignId) {
+            job = devBroadcasterJobs.get(campaignId) || null;
+          } else if (pageId) {
+            for (const j of devBroadcasterJobs.values()) {
+              if (j.page_id === pageId && (j.status === 'RUNNING' || j.status === 'PAUSED')) {
+                job = j;
+                break;
+              }
+            }
+          }
+          res.statusCode = 200;
+          return res.end(JSON.stringify({ success: true, job }));
+        }
+
+        if (url.pathname === '/api/broadcaster/pause' && method === 'POST') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          return readBody((body) => {
+            const campaignId = String(body?.campaignId || '').trim();
+            if (!campaignId) {
+              res.statusCode = 400;
+              return res.end(JSON.stringify({ success: false, error: 'campaignId is required.' }));
+            }
+            const job = devBroadcasterJobs.get(campaignId) || { campaign_id: campaignId };
+            job.status = 'PAUSED';
+            job.checkpoint_note = 'Paused by admin at safe recipient boundary';
+            job.updated_at = new Date().toISOString();
+            devBroadcasterJobs.set(campaignId, job);
+            res.statusCode = 200;
+            return res.end(JSON.stringify({ success: true, message: `Campaign "${campaignId}" paused at safe checkpoint.` }));
+          });
+        }
+
+        if (url.pathname === '/api/broadcaster/resume' && method === 'POST') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          return readBody((body) => {
+            const campaignId = String(body?.campaignId || '').trim();
+            if (!campaignId) {
+              res.statusCode = 400;
+              return res.end(JSON.stringify({ success: false, error: 'campaignId is required.' }));
+            }
+            const job = devBroadcasterJobs.get(campaignId) || { campaign_id: campaignId };
+            job.status = 'RUNNING';
+            job.checkpoint_note = 'Resumed by admin';
+            job.updated_at = new Date().toISOString();
+            devBroadcasterJobs.set(campaignId, job);
+            res.statusCode = 200;
+            return res.end(JSON.stringify({ success: true, message: `Campaign "${campaignId}" resumed.` }));
+          });
+        }
+
+        if (url.pathname === '/api/broadcaster/stop' && method === 'POST') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          return readBody((body) => {
+            const campaignId = String(body?.campaignId || '').trim();
+            if (!campaignId) {
+              res.statusCode = 400;
+              return res.end(JSON.stringify({ success: false, error: 'campaignId is required.' }));
+            }
+            const job = devBroadcasterJobs.get(campaignId) || { campaign_id: campaignId };
+            job.status = 'STOPPED';
+            job.checkpoint_note = 'Terminated by admin';
+            job.updated_at = new Date().toISOString();
+            devBroadcasterJobs.set(campaignId, job);
+            res.statusCode = 200;
+            return res.end(JSON.stringify({ success: true, message: `Campaign "${campaignId}" stopped successfully.` }));
+          });
+        }
+
         if (url.pathname === '/api/broadcaster/stats' && method === 'GET') {
           const authResult = requireDevAuth(req);
           if (authResult.error) return sendDevError(res, authResult.error);
@@ -7363,12 +7577,24 @@ function localApiDevPlugin(): Plugin {
               telemetryLogs.push(itemRes.telemetryEvent);
             }
 
+            const currentJob = devBroadcasterJobs.get(campaignId) || { campaign_id: campaignId, page_id: pageId };
+            currentJob.status = currentJob.status === 'PAUSED' ? 'PAUSED' : currentJob.status === 'STOPPED' ? 'STOPPED' : 'COMPLETED';
+            currentJob.total_count = recipients.length;
+            currentJob.processed_count = items.length;
+            currentJob.delivered_count = deliveredCount;
+            currentJob.ambiguous_count = ambiguousCount;
+            currentJob.failed_count = failedCount;
+            currentJob.skipped_count = skippedCount;
+            currentJob.updated_at = new Date().toISOString();
+            devBroadcasterJobs.set(campaignId, currentJob);
+
             res.statusCode = 200;
             return res.end(
               JSON.stringify({
                 success: true,
                 pageId,
                 campaignId,
+                jobStatus: currentJob.status,
                 totalProcessed: items.length,
                 deliveredCount,
                 ambiguousCount,

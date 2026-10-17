@@ -11,6 +11,18 @@ import {
   BroadcasterDeliveryRecord,
 } from '../src/server/broadcasterService';
 import { runConcurrentBroadcasterQueue } from '../src/server/broadcasterWorker';
+import {
+  encryptToken,
+  decryptToken,
+  redactToken,
+  validateMetaPageToken,
+  validateDelayConfig,
+  calculateRandomDelayMs,
+  parseMessageTemplates,
+  renderMessageForRecipient,
+  MAX_SAFE_DELAY_SECONDS,
+  META_MESSENGER_MAX_CHARS,
+} from '../src/server/broadcasterSecurity';
 import { D1Database } from '../src/server/types';
 
 /**
@@ -528,6 +540,175 @@ describe('Facebook Broadcaster: Atomic Deduplication & One PSID = One Message Ev
       expect(queueResult.traces.length).toBeGreaterThanOrEqual(3);
       expect(queueResult.traces.some((t) => t.action === 'RESERVATION_ATTEMPT')).toBe(true);
       expect(queueResult.traces.some((t) => t.action === 'RESERVATION_LOST_SUPPRESSED')).toBe(true);
+    });
+  });
+
+  describe('8. Secure Token Encryption & Meta Graph API Validation', () => {
+    const testSecret = 'test-admin-secret-rongdhonu-2026-key';
+
+    it('encrypts and decrypts Page Access Token using AES-256-GCM with PBKDF2', async () => {
+      const rawToken = 'EAAG_LIVE_PAGE_ACCESS_TOKEN_SECRET_987654321';
+      const encrypted = await encryptToken(rawToken, testSecret);
+
+      expect(encrypted).not.toBe(rawToken);
+      expect(encrypted.split(':')).toHaveLength(3); // salt:iv:ciphertext
+
+      const decrypted = await decryptToken(encrypted, testSecret);
+      expect(decrypted).toBe(rawToken);
+    });
+
+    it('redacts tokens safely for UI preview without leaking secrets', () => {
+      expect(redactToken('EAAG_LONG_PAGE_ACCESS_TOKEN_12345')).toBe('EAAG_LO...2345');
+      expect(redactToken('1234567890')).toBe('********');
+      expect(redactToken(null)).toBe('unconfigured');
+    });
+
+    it('validates token with Meta Graph API when Page ID matches', async () => {
+      const mockMetaFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          id: pageId,
+          name: 'Rongdhonu Trade Official',
+          category: 'Retail Store',
+        }),
+      });
+
+      const res = await validateMetaPageToken({
+        token: 'EAAG_VALID_TOKEN',
+        expectedPageId: pageId,
+        customFetch: mockMetaFetch as any,
+      });
+
+      expect(res.valid).toBe(true);
+      expect(res.pageId).toBe(pageId);
+      expect(res.pageName).toBe('Rongdhonu Trade Official');
+      expect(res.permissions).toContain('pages_messaging');
+    });
+
+    it('strictly rejects tokens belonging to a mismatched or arbitrary Page ID', async () => {
+      const mockMetaFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          id: '999999999999999', // Mismatched Page ID
+          name: 'Different Impostor Page',
+        }),
+      });
+
+      const res = await validateMetaPageToken({
+        token: 'EAAG_MISMATCHED_TOKEN',
+        expectedPageId: pageId,
+        customFetch: mockMetaFetch as any,
+      });
+
+      expect(res.valid).toBe(false);
+      expect(res.error).toContain('Page ID mismatch');
+    });
+
+    it('handles Meta Graph API error responses gracefully', async () => {
+      const mockMetaFetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 401,
+        statusText: 'Unauthorized',
+        json: async () => ({
+          error: { message: 'Invalid OAuth access token - Cannot parse access token' },
+        }),
+      });
+
+      const res = await validateMetaPageToken({
+        token: 'EAAG_INVALID_TOKEN',
+        expectedPageId: pageId,
+        customFetch: mockMetaFetch as any,
+      });
+
+      expect(res.valid).toBe(false);
+      expect(res.error).toContain('Invalid OAuth access token');
+    });
+  });
+
+  describe('9. Configurable Server-Side Delays', () => {
+    it('accepts valid default delay configurations (2s min, 5s max)', () => {
+      const res = validateDelayConfig(2, 5);
+      expect(res.valid).toBe(true);
+      expect(res.min).toBe(2);
+      expect(res.max).toBe(5);
+    });
+
+    it('rejects Max Delay below Min Delay', () => {
+      const res = validateDelayConfig(5, 2);
+      expect(res.valid).toBe(false);
+      expect(res.error).toContain('cannot be less than Min Delay');
+    });
+
+    it('rejects negative delay values', () => {
+      expect(validateDelayConfig(-1, 5).valid).toBe(false);
+      expect(validateDelayConfig(2, -3).valid).toBe(false);
+    });
+
+    it('enforces safe upper limit ceiling (<= 60s)', () => {
+      const res = validateDelayConfig(2, 120, 60);
+      expect(res.valid).toBe(false);
+      expect(res.error).toContain('exceeds the safe ceiling');
+    });
+
+    it('calculates randomized jitter delay within bounds', () => {
+      for (let i = 0; i < 20; i++) {
+        const delay = calculateRandomDelayMs(2, 5);
+        expect(delay).toBeGreaterThanOrEqual(2000);
+        expect(delay).toBeLessThanOrEqual(5000);
+      }
+    });
+  });
+
+  describe('10. Message Variations & {name} Substitution Engine', () => {
+    it('parses multiple message templates separated by "|"', () => {
+      const raw = 'Template A | Template B |  Template C  ';
+      const templates = parseMessageTemplates(raw);
+      expect(templates).toEqual(['Template A', 'Template B', 'Template C']);
+    });
+
+    it('substitutes {name} correctly when recipient name is available', () => {
+      const rendered = renderMessageForRecipient({
+        templates: ['স্বাগতম {name}! রঙধনু ট্রেড এ আপনাকে স্বাগতম।'],
+        recipientIndex: 0,
+        recipientPsid: 'PSID_001',
+        recipientName: 'আহমেদ',
+      });
+
+      expect(rendered.text).toBe('স্বাগতম আহমেদ! রঙধনু ট্রেড এ আপনাকে স্বাগতম।');
+      expect(rendered.nameSubstituted).toBe(true);
+      expect(rendered.charCount).toBeGreaterThan(10);
+    });
+
+    it('cleanly cleans up {name} and punctuation when recipient name is missing', () => {
+      const rendered = renderMessageForRecipient({
+        templates: ['স্বাগতম {name}! রঙধনু ট্রেড এ আপনাকে স্বাগতম।'],
+        recipientIndex: 0,
+        recipientPsid: 'PSID_002',
+        recipientName: undefined,
+      });
+
+      expect(rendered.text).toBe('স্বাগতম! রঙধনু ট্রেড এ আপনাকে স্বাগতম।');
+      expect(rendered.nameSubstituted).toBe(false);
+      expect(rendered.text).not.toContain('{name}');
+    });
+
+    it('distributes variations across recipients in round-robin fashion', () => {
+      const templates = ['Variation One', 'Variation Two', 'Variation Three'];
+      const r0 = renderMessageForRecipient({ templates, recipientIndex: 0, recipientPsid: '1' });
+      const r1 = renderMessageForRecipient({ templates, recipientIndex: 1, recipientPsid: '2' });
+      const r2 = renderMessageForRecipient({ templates, recipientIndex: 2, recipientPsid: '3' });
+      const r3 = renderMessageForRecipient({ templates, recipientIndex: 3, recipientPsid: '4' });
+
+      expect(r0.text).toBe('Variation One');
+      expect(r1.text).toBe('Variation Two');
+      expect(r2.text).toBe('Variation Three');
+      expect(r3.text).toBe('Variation One');
+    });
+
+    it('calculates Unicode and Bengali character counts accurately', () => {
+      const bengaliText = 'রঙধনু ট্রেড - প্রিমিয়াম কোয়ালিটি পণ্য';
+      const count = Array.from(bengaliText).length;
+      expect(count).toBe(37);
     });
   });
 });
