@@ -13,6 +13,9 @@ import {
   Expense,
   ExpenseType,
   ProfitAnalyticsSummary,
+  FacebookCampaign,
+  FacebookQueueItem,
+  FacebookCampaignStatus,
 } from '../types';
 import {
   D1Database,
@@ -27,6 +30,7 @@ import {
   UserRow,
   ExpenseRow,
   PasswordResetTokenRow,
+  Env,
 } from './types';
 import {
   INITIAL_SETTINGS,
@@ -38,6 +42,8 @@ import {
   generateLegacyPermissionFlags,
 } from './permissions';
 import { sanitizeReviewImageReference } from './imageSecurity';
+import { sendMetaMessengerMessage } from './facebookMessenger';
+
 
 export const REQUIRED_TABLES = [
   'products',
@@ -5334,3 +5340,632 @@ export async function checkAndRecordWebhookFingerprint(
     return { isReplay: false };
   }
 }
+
+// ==========================================
+// 19. FACEBOOK BROADCASTER CAMPAIGN ENGINE (D1)
+// ==========================================
+
+export async function ensureFacebookCampaignSchema(db: D1Database): Promise<void> {
+  if (!db || typeof db.prepare !== 'function') return;
+  try {
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS fb_campaigns (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        audience_type TEXT NOT NULL DEFAULT 'page_contacts',
+        tag TEXT NOT NULL DEFAULT 'NONE',
+        message_template TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'draft',
+        min_delay REAL NOT NULL DEFAULT 2.0,
+        max_delay REAL NOT NULL DEFAULT 3.0,
+        total_queued INTEGER NOT NULL DEFAULT 0,
+        accepted_count INTEGER NOT NULL DEFAULT 0,
+        delivered_count INTEGER NOT NULL DEFAULT 0,
+        skipped_count INTEGER NOT NULL DEFAULT 0,
+        failed_count INTEGER NOT NULL DEFAULT 0,
+        remaining_count INTEGER NOT NULL DEFAULT 0,
+        started_at TEXT,
+        paused_at TEXT,
+        completed_at TEXT,
+        created_by TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `).run();
+
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS fb_campaign_queue (
+        id TEXT PRIMARY KEY,
+        campaign_id TEXT NOT NULL,
+        recipient_id TEXT NOT NULL,
+        recipient_name TEXT NOT NULL,
+        psid TEXT,
+        phone TEXT,
+        is_within_24h INTEGER NOT NULL DEFAULT 1,
+        has_consent INTEGER NOT NULL DEFAULT 1,
+        message_text TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        meta_message_id TEXT,
+        delivered_watermark INTEGER,
+        delivered_at TEXT,
+        skip_reason TEXT,
+        error_message TEXT,
+        delay_used_seconds REAL,
+        processed_at TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `).run();
+
+    await db.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_fb_queue_campaign_rec ON fb_campaign_queue(campaign_id, recipient_id)`).run();
+    await db.prepare(`CREATE INDEX IF NOT EXISTS idx_fb_queue_campaign_status ON fb_campaign_queue(campaign_id, status)`).run();
+    await db.prepare(`CREATE INDEX IF NOT EXISTS idx_fb_queue_meta_msg_id ON fb_campaign_queue(meta_message_id)`).run();
+  } catch (err) {
+    console.warn('[D1 ensureFacebookCampaignSchema notice]:', err);
+  }
+}
+
+export function rowToFacebookCampaign(row: any): FacebookCampaign {
+  return {
+    id: row.id,
+    name: row.name,
+    audienceType: row.audience_type,
+    tag: row.tag,
+    messageTemplate: row.message_template,
+    status: row.status,
+    minDelay: Number(row.min_delay) || 2.0,
+    maxDelay: Number(row.max_delay) || 3.0,
+    totalQueued: Number(row.total_queued) || 0,
+    acceptedCount: Number(row.accepted_count) || 0,
+    deliveredCount: Number(row.delivered_count) || 0,
+    skippedCount: Number(row.skipped_count) || 0,
+    failedCount: Number(row.failed_count) || 0,
+    remainingCount: Number(row.remaining_count) || 0,
+    startedAt: row.started_at || undefined,
+    pausedAt: row.paused_at || undefined,
+    completedAt: row.completed_at || undefined,
+    createdBy: row.created_by || undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function rowToFacebookQueueItem(row: any): FacebookQueueItem {
+  return {
+    id: row.id,
+    campaignId: row.campaign_id,
+    recipientId: row.recipient_id,
+    recipientName: row.recipient_name,
+    psid: row.psid || undefined,
+    phone: row.phone || undefined,
+    isWithin24h: Boolean(row.is_within_24h),
+    hasConsent: Boolean(row.has_consent),
+    messageText: row.message_text,
+    status: row.status,
+    metaMessageId: row.meta_message_id || undefined,
+    deliveredWatermark: row.delivered_watermark != null ? Number(row.delivered_watermark) : undefined,
+    deliveredAt: row.delivered_at || undefined,
+    skipReason: row.skip_reason || undefined,
+    errorMessage: row.error_message || undefined,
+    delayUsedSeconds: row.delay_used_seconds != null ? Number(row.delay_used_seconds) : undefined,
+    processedAt: row.processed_at || undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function createFacebookCampaignInD1(
+  db: D1Database,
+  campaign: {
+    id?: string;
+    name: string;
+    audienceType: string;
+    tag: string;
+    messageTemplate: string;
+    minDelay?: number;
+    maxDelay?: number;
+    createdBy?: string;
+  },
+  recipients: Array<{
+    id: string;
+    name: string;
+    psid?: string;
+    phone?: string;
+    isWithin24Hours?: boolean;
+    hasMarketingConsent?: boolean;
+    orderNumber?: string;
+    personalizedText?: string;
+  }>
+): Promise<{ campaign: FacebookCampaign; queuedCount: number }> {
+  if (!db || typeof db.prepare !== 'function') {
+    const rawMin = Number(campaign.minDelay) || 2.0;
+    const rawMax = Number(campaign.maxDelay) || 3.0;
+    const minDelay = Math.max(0.5, Math.min(rawMin, rawMax));
+    const maxDelay = Math.min(60, Math.max(minDelay, rawMax));
+    const campaignId = campaign.id || `fbc-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+    return {
+      campaign: {
+        id: campaignId,
+        name: campaign.name,
+        audienceType: campaign.audienceType as any,
+        tag: campaign.tag as any,
+        messageTemplate: campaign.messageTemplate,
+        status: 'draft',
+        minDelay,
+        maxDelay,
+        totalQueued: recipients.length,
+        acceptedCount: 0,
+        deliveredCount: 0,
+        skippedCount: 0,
+        failedCount: 0,
+        remainingCount: recipients.length,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+      queuedCount: recipients.length,
+    };
+  }
+  await ensureFacebookCampaignSchema(db);
+
+  const campaignId = campaign.id || `fbc-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+  const rawMin = Number(campaign.minDelay) || 2.0;
+  const rawMax = Number(campaign.maxDelay) || 3.0;
+  const minDelay = Math.max(0.5, Math.min(rawMin, rawMax));
+  const maxDelay = Math.min(60, Math.max(minDelay, rawMax));
+
+  // Deduplicate recipients by ID
+  const seenIds = new Set<string>();
+  const uniqueRecipients = recipients.filter((r) => {
+    if (!r.id || seenIds.has(r.id)) return false;
+    seenIds.add(r.id);
+    return true;
+  });
+
+  // Insert campaign
+  await db.prepare(`
+    INSERT INTO fb_campaigns (
+      id, name, audience_type, tag, message_template, status,
+      min_delay, max_delay, total_queued, accepted_count,
+      delivered_count, skipped_count, failed_count, remaining_count,
+      created_by, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?, 0, 0, 0, 0, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+  `).bind(
+    campaignId,
+    campaign.name || 'Facebook Broadcast Campaign',
+    campaign.audienceType || 'page_contacts',
+    campaign.tag || 'NONE',
+    campaign.messageTemplate || '',
+    minDelay,
+    maxDelay,
+    uniqueRecipients.length,
+    uniqueRecipients.length,
+    campaign.createdBy || 'admin'
+  ).run();
+
+  // Populate queue with deduplication guard
+  let insertedCount = 0;
+  for (const r of uniqueRecipients) {
+    const queueItemId = `fbq-${campaignId}-${r.id}`;
+    const text = r.personalizedText || campaign.messageTemplate || '';
+    try {
+      await db.prepare(`
+        INSERT OR IGNORE INTO fb_campaign_queue (
+          id, campaign_id, recipient_id, recipient_name, psid, phone,
+          is_within_24h, has_consent, message_text, status,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `).bind(
+        queueItemId,
+        campaignId,
+        r.id,
+        r.name || 'Customer',
+        r.psid || null,
+        r.phone || null,
+        r.isWithin24Hours !== false ? 1 : 0,
+        r.hasMarketingConsent !== false ? 1 : 0,
+        text
+      ).run();
+      insertedCount++;
+    } catch (insertErr) {
+      console.warn('[D1 insert queue item warning]:', insertErr);
+    }
+  }
+
+  // Update total_queued and remaining_count if any inserts were ignored
+  if (insertedCount !== uniqueRecipients.length) {
+    await db.prepare(`
+      UPDATE fb_campaigns SET total_queued = ?, remaining_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+    `).bind(insertedCount, insertedCount, campaignId).run();
+  }
+
+  const createdRow = await db.prepare('SELECT * FROM fb_campaigns WHERE id = ?').bind(campaignId).first();
+  return {
+    campaign: rowToFacebookCampaign(createdRow),
+    queuedCount: insertedCount,
+  };
+}
+
+export async function getFacebookCampaignsFromD1(db: D1Database): Promise<FacebookCampaign[]> {
+  if (!db || typeof db.prepare !== 'function') return [];
+  await ensureFacebookCampaignSchema(db);
+  const rows = await db.prepare('SELECT * FROM fb_campaigns ORDER BY created_at DESC LIMIT 50').all();
+  return (rows.results || []).map(rowToFacebookCampaign);
+}
+
+export async function getFacebookCampaignByIdFromD1(
+  db: D1Database,
+  campaignId: string
+): Promise<{ campaign: FacebookCampaign | null; queue: FacebookQueueItem[] }> {
+  if (!db || typeof db.prepare !== 'function') return { campaign: null, queue: [] };
+  await ensureFacebookCampaignSchema(db);
+  const campaignRow = await db.prepare('SELECT * FROM fb_campaigns WHERE id = ?').bind(campaignId).first();
+  if (!campaignRow) {
+    return { campaign: null, queue: [] };
+  }
+
+  const queueRows = await db.prepare(`
+    SELECT * FROM fb_campaign_queue WHERE campaign_id = ? ORDER BY rowid ASC LIMIT 250
+  `).bind(campaignId).all();
+
+  return {
+    campaign: rowToFacebookCampaign(campaignRow),
+    queue: (queueRows.results || []).map(rowToFacebookQueueItem),
+  };
+}
+
+export async function updateFacebookCampaignStatusInD1(
+  db: D1Database,
+  campaignId: string,
+  newStatus: FacebookCampaignStatus
+): Promise<{ success: boolean; status?: FacebookCampaignStatus; error?: string }> {
+  if (!db || typeof db.prepare !== 'function') return { success: true, status: newStatus };
+  await ensureFacebookCampaignSchema(db);
+
+  const existing = await db.prepare('SELECT * FROM fb_campaigns WHERE id = ?').bind(campaignId).first<any>();
+  if (!existing) {
+    return { success: false, error: 'Campaign not found.' };
+  }
+
+  if (newStatus === 'paused') {
+    await db.prepare(`
+      UPDATE fb_campaigns SET status = 'paused', paused_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+    `).bind(campaignId).run();
+    return { success: true, status: 'paused' };
+  }
+
+  if (newStatus === 'running') {
+    await db.prepare(`
+      UPDATE fb_campaigns SET status = 'running', started_at = COALESCE(started_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = ?
+    `).bind(campaignId).run();
+    return { success: true, status: 'running' };
+  }
+
+  if (newStatus === 'cancelled') {
+    // Atomically cancel remaining queue items
+    await db.prepare(`
+      UPDATE fb_campaign_queue SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
+      WHERE campaign_id = ? AND status IN ('pending', 'processing')
+    `).bind(campaignId).run();
+
+    await db.prepare(`
+      UPDATE fb_campaigns SET status = 'cancelled', remaining_count = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+    `).bind(campaignId).run();
+    return { success: true, status: 'cancelled' };
+  }
+
+  if (newStatus === 'completed') {
+    await db.prepare(`
+      UPDATE fb_campaigns SET status = 'completed', remaining_count = 0, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+    `).bind(campaignId).run();
+    return { success: true, status: 'completed' };
+  }
+
+  return { success: false, error: `Invalid status transition to ${newStatus}` };
+}
+
+export async function updateFacebookCampaignDelaysInD1(
+  db: D1Database,
+  campaignId: string,
+  minDelay: number,
+  maxDelay: number
+): Promise<{ success: boolean; minDelay: number; maxDelay: number; error?: string }> {
+  await ensureFacebookCampaignSchema(db);
+
+  const cleanMin = Math.max(0.5, Math.min(Number(minDelay) || 2.0, Number(maxDelay) || 3.0));
+  const cleanMax = Math.min(60, Math.max(cleanMin, Number(maxDelay) || 3.0));
+
+  const result = await db.prepare(`
+    UPDATE fb_campaigns SET min_delay = ?, max_delay = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+  `).bind(cleanMin, cleanMax, campaignId).run();
+
+  if (result.meta?.changes === 0 && !result.success) {
+    return { success: false, minDelay: cleanMin, maxDelay: cleanMax, error: 'Campaign not found.' };
+  }
+
+  return { success: true, minDelay: cleanMin, maxDelay: cleanMax };
+}
+
+export async function processNextCampaignQueueItemInD1(
+  db: D1Database,
+  campaignId: string,
+  env: Env
+): Promise<{
+  success: boolean;
+  item?: FacebookQueueItem;
+  delayUsedSeconds?: number;
+  completed?: boolean;
+  campaignStatus?: FacebookCampaignStatus;
+  remainingCount?: number;
+  error?: string;
+}> {
+  if (!db || typeof db.prepare !== 'function') {
+    return { success: false, error: 'Database binding unavailable.' };
+  }
+  await ensureFacebookCampaignSchema(db);
+
+  const campaign = await db.prepare('SELECT * FROM fb_campaigns WHERE id = ?').bind(campaignId).first<any>();
+  if (!campaign) {
+    return { success: false, error: 'Campaign not found' };
+  }
+
+  if (campaign.status === 'paused' || campaign.status === 'cancelled' || campaign.status === 'completed') {
+    return {
+      success: false,
+      error: `Cannot process campaign in state: ${campaign.status}`,
+      campaignStatus: campaign.status,
+    };
+  }
+
+  // Auto-start campaign if currently draft
+  if (campaign.status === 'draft') {
+    await db.prepare(`
+      UPDATE fb_campaigns SET status = 'running', started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+    `).bind(campaignId).run();
+    campaign.status = 'running';
+  }
+
+  // Atomic queue item claim: Find next pending item and lock it to 'processing'
+  const nextPending = await db.prepare(`
+    SELECT * FROM fb_campaign_queue WHERE campaign_id = ? AND status = 'pending' ORDER BY rowid ASC LIMIT 1
+  `).bind(campaignId).first<any>();
+
+  if (!nextPending) {
+    // Check if any items are still in processing
+    const processingCheck = await db.prepare(`
+      SELECT count(*) as count FROM fb_campaign_queue WHERE campaign_id = ? AND status = 'processing'
+    `).bind(campaignId).first<any>();
+
+    if (!processingCheck || processingCheck.count === 0) {
+      // All items finished! Mark campaign completed
+      await db.prepare(`
+        UPDATE fb_campaigns SET status = 'completed', remaining_count = 0, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+      `).bind(campaignId).run();
+
+      return {
+        success: true,
+        completed: true,
+        campaignStatus: 'completed',
+        remainingCount: 0,
+      };
+    }
+
+    return {
+      success: true,
+      completed: false,
+      campaignStatus: 'running',
+      remainingCount: 0,
+      error: 'Current items in flight',
+    };
+  }
+
+  // Claim atomically
+  const claimResult = await db.prepare(`
+    UPDATE fb_campaign_queue SET status = 'processing', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending'
+  `).bind(nextPending.id).run();
+
+  if (claimResult.meta?.changes === 0) {
+    // Race condition: another worker claimed this item simultaneously
+    return { success: false, error: 'Queue item was claimed concurrently, retry shortly.' };
+  }
+
+  // Calculate fresh random delay within campaign delay range (e.g. 2–3s)
+  const minD = Math.max(0.5, Number(campaign.min_delay) || 2.0);
+  const maxD = Math.max(minD, Number(campaign.max_delay) || 3.0);
+  const freshDelaySeconds = Math.round((minD + Math.random() * (maxD - minD)) * 100) / 100;
+
+  const psid = (nextPending.psid || '').trim();
+  const text = (nextPending.message_text || '').trim();
+  const tag = campaign.tag || 'NONE';
+  const isWithin24 = Boolean(nextPending.is_within_24h);
+
+  // Policy Guard 1: Missing PSID
+  if (!psid) {
+    await db.prepare(`
+      UPDATE fb_campaign_queue
+      SET status = 'skipped', skip_reason = 'Missing Facebook PSID', delay_used_seconds = ?, processed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).bind(freshDelaySeconds, nextPending.id).run();
+
+    await db.prepare(`
+      UPDATE fb_campaigns SET skipped_count = skipped_count + 1, remaining_count = MAX(0, remaining_count - 1), updated_at = CURRENT_TIMESTAMP WHERE id = ?
+    `).bind(campaignId).run();
+
+    const updated = await db.prepare('SELECT * FROM fb_campaign_queue WHERE id = ?').bind(nextPending.id).first();
+    const updatedCampaign = await db.prepare('SELECT remaining_count FROM fb_campaigns WHERE id = ?').bind(campaignId).first<any>();
+
+    return {
+      success: true,
+      item: rowToFacebookQueueItem(updated),
+      delayUsedSeconds: freshDelaySeconds,
+      remainingCount: Number(updatedCampaign?.remaining_count) || 0,
+      campaignStatus: 'running',
+    };
+  }
+
+  // Policy Guard 2: Meta 24-Hour Messaging Policy
+  if (!isWithin24 && tag === 'NONE') {
+    const reason = 'Outside 24-hour messaging window without approved Meta Message Tag';
+    await db.prepare(`
+      UPDATE fb_campaign_queue
+      SET status = 'skipped', skip_reason = ?, delay_used_seconds = ?, processed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).bind(reason, freshDelaySeconds, nextPending.id).run();
+
+    await db.prepare(`
+      UPDATE fb_campaigns SET skipped_count = skipped_count + 1, remaining_count = MAX(0, remaining_count - 1), updated_at = CURRENT_TIMESTAMP WHERE id = ?
+    `).bind(campaignId).run();
+
+    const updated = await db.prepare('SELECT * FROM fb_campaign_queue WHERE id = ?').bind(nextPending.id).first();
+    const updatedCampaign = await db.prepare('SELECT remaining_count FROM fb_campaigns WHERE id = ?').bind(campaignId).first<any>();
+
+    return {
+      success: true,
+      item: rowToFacebookQueueItem(updated),
+      delayUsedSeconds: freshDelaySeconds,
+      remainingCount: Number(updatedCampaign?.remaining_count) || 0,
+      campaignStatus: 'running',
+    };
+  }
+
+  // Policy Guard 3: Text length
+  if (text.length > 2000) {
+    const reason = 'Message length exceeds Meta Send API limit of 2,000 characters';
+    await db.prepare(`
+      UPDATE fb_campaign_queue
+      SET status = 'failed', error_message = ?, delay_used_seconds = ?, processed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).bind(reason, freshDelaySeconds, nextPending.id).run();
+
+    await db.prepare(`
+      UPDATE fb_campaigns SET failed_count = failed_count + 1, remaining_count = MAX(0, remaining_count - 1), updated_at = CURRENT_TIMESTAMP WHERE id = ?
+    `).bind(campaignId).run();
+
+    const updated = await db.prepare('SELECT * FROM fb_campaign_queue WHERE id = ?').bind(nextPending.id).first();
+    const updatedCampaign = await db.prepare('SELECT remaining_count FROM fb_campaigns WHERE id = ?').bind(campaignId).first<any>();
+
+    return {
+      success: true,
+      item: rowToFacebookQueueItem(updated),
+      delayUsedSeconds: freshDelaySeconds,
+      remainingCount: Number(updatedCampaign?.remaining_count) || 0,
+      campaignStatus: 'running',
+    };
+  }
+
+  // Dispatch to Meta Graph API
+  const dispatchRes = await sendMetaMessengerMessage(
+    {
+      recipientPsid: psid,
+      text,
+      tag,
+      isWithin24Hours: isWithin24,
+      recipientName: nextPending.recipient_name,
+    },
+    env
+  );
+
+  if (dispatchRes.success) {
+    // API accepted dispatch
+    await db.prepare(`
+      UPDATE fb_campaign_queue
+      SET status = 'accepted', meta_message_id = ?, delay_used_seconds = ?, processed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).bind(dispatchRes.messageId || null, freshDelaySeconds, nextPending.id).run();
+
+    await db.prepare(`
+      UPDATE fb_campaigns SET accepted_count = accepted_count + 1, remaining_count = MAX(0, remaining_count - 1), updated_at = CURRENT_TIMESTAMP WHERE id = ?
+    `).bind(campaignId).run();
+  } else if (dispatchRes.notConfigured) {
+    // Simulated mode when Worker secrets are not yet configured
+    const simMid = `sim_mid_${crypto.randomUUID().slice(0, 16)}`;
+    await db.prepare(`
+      UPDATE fb_campaign_queue
+      SET status = 'accepted', meta_message_id = ?, delay_used_seconds = ?, processed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).bind(simMid, freshDelaySeconds, nextPending.id).run();
+
+    await db.prepare(`
+      UPDATE fb_campaigns SET accepted_count = accepted_count + 1, remaining_count = MAX(0, remaining_count - 1), updated_at = CURRENT_TIMESTAMP WHERE id = ?
+    `).bind(campaignId).run();
+  } else if (dispatchRes.policyBlocked) {
+    await db.prepare(`
+      UPDATE fb_campaign_queue
+      SET status = 'skipped', skip_reason = ?, delay_used_seconds = ?, processed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).bind(dispatchRes.error || 'Meta policy restriction', freshDelaySeconds, nextPending.id).run();
+
+    await db.prepare(`
+      UPDATE fb_campaigns SET skipped_count = skipped_count + 1, remaining_count = MAX(0, remaining_count - 1), updated_at = CURRENT_TIMESTAMP WHERE id = ?
+    `).bind(campaignId).run();
+  } else {
+    await db.prepare(`
+      UPDATE fb_campaign_queue
+      SET status = 'failed', error_message = ?, delay_used_seconds = ?, processed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).bind(dispatchRes.error || 'Meta dispatch error', freshDelaySeconds, nextPending.id).run();
+
+    await db.prepare(`
+      UPDATE fb_campaigns SET failed_count = failed_count + 1, remaining_count = MAX(0, remaining_count - 1), updated_at = CURRENT_TIMESTAMP WHERE id = ?
+    `).bind(campaignId).run();
+  }
+
+  const updatedItemRow = await db.prepare('SELECT * FROM fb_campaign_queue WHERE id = ?').bind(nextPending.id).first();
+  const updatedCampaignRow = await db.prepare('SELECT * FROM fb_campaigns WHERE id = ?').bind(campaignId).first<any>();
+
+  let isCompleted = false;
+  if (updatedCampaignRow && Number(updatedCampaignRow.remaining_count) <= 0) {
+    const leftover = await db.prepare(`
+      SELECT count(*) as count FROM fb_campaign_queue WHERE campaign_id = ? AND status IN ('pending', 'processing')
+    `).bind(campaignId).first<any>();
+
+    if (!leftover || leftover.count === 0) {
+      await db.prepare(`
+        UPDATE fb_campaigns SET status = 'completed', completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+      `).bind(campaignId).run();
+      isCompleted = true;
+    }
+  }
+
+  return {
+    success: true,
+    item: rowToFacebookQueueItem(updatedItemRow),
+    delayUsedSeconds: freshDelaySeconds,
+    remainingCount: Math.max(0, Number(updatedCampaignRow?.remaining_count) || 0),
+    completed: isCompleted,
+    campaignStatus: isCompleted ? 'completed' : 'running',
+  };
+}
+
+export async function recordMetaDeliveryWatermarkInD1(
+  db: D1Database,
+  metaMessageIds: string[],
+  watermark: number
+): Promise<{ updatedCount: number }> {
+  if (!metaMessageIds || metaMessageIds.length === 0 || !db || typeof db.prepare !== 'function') return { updatedCount: 0 };
+  await ensureFacebookCampaignSchema(db);
+
+  let updatedCount = 0;
+  for (const mid of metaMessageIds) {
+    if (!mid) continue;
+    const existing = await db.prepare(`
+      SELECT id, campaign_id, status FROM fb_campaign_queue WHERE meta_message_id = ?
+    `).bind(mid).first<any>();
+
+    if (existing && existing.status !== 'delivered') {
+      await db.prepare(`
+        UPDATE fb_campaign_queue
+        SET status = 'delivered', delivered_watermark = ?, delivered_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).bind(watermark, existing.id).run();
+
+      await db.prepare(`
+        UPDATE fb_campaigns SET delivered_count = delivered_count + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+      `).bind(existing.campaign_id).run();
+
+      updatedCount++;
+    }
+  }
+
+  return { updatedCount };
+}
+

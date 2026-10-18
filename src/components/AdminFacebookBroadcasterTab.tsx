@@ -38,11 +38,21 @@ import {
   FacebookCampaignStatus,
   BroadcasterMetrics,
   BroadcastLogItem,
+  FacebookCampaign,
+  FacebookQueueItem,
 } from '../types';
 import {
   fetchFacebookStatus,
   testFacebookConnection,
   sendFacebookMessage,
+  createFacebookCampaign,
+  fetchFacebookCampaigns,
+  fetchFacebookCampaignDetails,
+  pauseFacebookCampaign,
+  resumeFacebookCampaign,
+  cancelFacebookCampaign,
+  updateFacebookCampaignDelays,
+  processFacebookCampaignNext,
 } from '../services/facebookApi';
 import { FacebookConfigStatus } from '../server/facebookMessenger';
 
@@ -114,10 +124,15 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
     TEMPLATE_PRESETS[0].variations.join('\n---\n')
   );
 
-  // Dynamic Pacing Controls (Min / Max Random Delay)
-  const [minDelay, setMinDelay] = useState<number>(3.0);
-  const [maxDelay, setMaxDelay] = useState<number>(7.5);
+  // Dynamic Pacing Controls (Min / Max Random Delay - default 2-3 seconds per user requirement)
+  const [minDelay, setMinDelay] = useState<number>(2.0);
+  const [maxDelay, setMaxDelay] = useState<number>(3.0);
   const [skipDuplicates, setSkipDuplicates] = useState<boolean>(true);
+
+  // Persistent Campaign Engine State (Cloudflare D1)
+  const [activeCampaignId, setActiveCampaignId] = useState<string | null>(null);
+  const [savedCampaigns, setSavedCampaigns] = useState<FacebookCampaign[]>([]);
+  const timeoutTimerRef = useRef<any>(null);
 
   // Recipient Selection & Filtering
   const [recipientFilter, setRecipientFilter] = useState<'all' | 'eligible' | 'ineligible'>('all');
@@ -126,6 +141,7 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
   const [showSecretsGuide, setShowSecretsGuide] = useState<boolean>(false);
   const [configStatus, setConfigStatus] = useState<FacebookConfigStatus | null>(null);
   const [isTestingConnection, setIsTestingConnection] = useState<boolean>(false);
+
 
   // Campaign State & Metrics
   const [campaignStatus, setCampaignStatus] = useState<FacebookCampaignStatus>('idle');
@@ -154,7 +170,17 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
     },
   ]);
 
-  // Check backend Meta setup status on mount
+  // Load saved campaigns from Cloudflare D1
+  const loadSavedCampaigns = async () => {
+    try {
+      const res = await fetchFacebookCampaigns();
+      if (res.success && res.campaigns) {
+        setSavedCampaigns(res.campaigns);
+      }
+    } catch {}
+  };
+
+  // Check backend Meta setup status and load saved campaigns on mount
   useEffect(() => {
     fetchFacebookStatus().then((res) => {
       if (res.success && res.status) {
@@ -166,6 +192,7 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
         }
       }
     }).catch(() => {});
+    loadSavedCampaigns();
   }, []);
 
   const handleTestMetaConnection = async () => {
@@ -205,6 +232,50 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
     minDelayRef.current = minDelay;
     maxDelayRef.current = maxDelay;
   }, [minDelay, maxDelay]);
+
+  // Live delay range modification: applies to future sends and persists to D1
+  const handleUpdateMinDelay = (val: number) => {
+    const newMin = Math.max(0.5, Math.min(val, maxDelay));
+    setMinDelay(newMin);
+    minDelayRef.current = newMin;
+
+    if (activeCampaignId) {
+      updateFacebookCampaignDelays(activeCampaignId, newMin, maxDelay)
+        .then((res) => {
+          if (res.success) {
+            addLog(
+              'pacing',
+              `[PACING CONFIG UPDATED] Min delay changed to ${newMin.toFixed(1)}s (Range: ${newMin.toFixed(1)}s–${maxDelay.toFixed(1)}s). Applied to all future sends in D1.`
+            );
+          }
+        })
+        .catch(() => {});
+    } else {
+      addLog('pacing', `[PACING CONFIG] Delay range set to ${newMin.toFixed(1)}s–${maxDelay.toFixed(1)}s.`);
+    }
+  };
+
+  const handleUpdateMaxDelay = (val: number) => {
+    const newMax = Math.max(minDelay, val);
+    setMaxDelay(newMax);
+    maxDelayRef.current = newMax;
+
+    if (activeCampaignId) {
+      updateFacebookCampaignDelays(activeCampaignId, minDelay, newMax)
+        .then((res) => {
+          if (res.success) {
+            addLog(
+              'pacing',
+              `[PACING CONFIG UPDATED] Max delay changed to ${newMax.toFixed(1)}s (Range: ${minDelay.toFixed(1)}s–${newMax.toFixed(1)}s). Applied to all future sends in D1.`
+            );
+          }
+        })
+        .catch(() => {});
+    } else {
+      addLog('pacing', `[PACING CONFIG] Delay range set to ${minDelay.toFixed(1)}s–${newMax.toFixed(1)}s.`);
+    }
+  };
+
 
   // Generate candidate recipients from actual store customers, orders, and recent interactions
   const allCandidates: FacebookRecipient[] = useMemo(() => {
@@ -426,8 +497,8 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
     addLog('info', 'Deselected all recipients.');
   };
 
-  // START CAMPAIGN
-  const handleStartCampaign = () => {
+  // START PERSISTENT CAMPAIGN IN D1
+  const handleStartCampaign = async () => {
     if (parsedVariations.length === 0) {
       showNotification('error', 'Missing Message Template', 'Please enter at least one message variation.');
       return;
@@ -439,197 +510,224 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
       return;
     }
 
-    // Reset controls
     isRunningRef.current = true;
     isPausedRef.current = false;
     isCancelledRef.current = false;
-    currentQueueRef.current = queue;
-    currentIndexRef.current = 0;
 
-    setCampaignStatus('running');
-    setMetrics({
-      queued: queue.length,
-      accepted: 0,
-      delivered: 0, // Truthful! Stays 0 until Meta Webhook delivery watermark receipt
-      skipped: 0,
-      failed: 0,
-      remaining: queue.length,
+    addLog('info', `=== CREATING PERSISTENT CAMPAIGN IN CLOUDFLARE D1 (${queue.length} RECIPIENTS) ===`);
+
+    const recipientList = queue.map((r) => {
+      const variation = parsedVariations[Math.floor(Math.random() * parsedVariations.length)] || '';
+      const personalized = variation
+        .replace(/{name}/g, r.name)
+        .replace(/{order_number}/g, r.orderNumber || 'N/A')
+        .replace(/{phone}/g, settings?.phone || settings?.footer?.supportPhone || '01518739561')
+        .replace(/{discount_code}/g, 'RONGDHONU10')
+        .replace(/{shop_name}/g, settings?.siteName || 'Rongdhonu Trade');
+
+      return {
+        id: r.id,
+        name: r.name,
+        psid: r.psid,
+        phone: r.phone,
+        isWithin24Hours: r.isWithin24Hours,
+        hasMarketingConsent: r.hasMarketingConsent,
+        orderNumber: r.orderNumber,
+        personalizedText: personalized,
+      };
     });
 
-    addLog('info', `=== CAMPAIGN INITIALIZED: ${queue.length} RECIPIENT(S) QUEUED ===`);
-    addLog('info', `Audience: ${audienceType.replace('_', ' ').toUpperCase()} | Meta Tag: ${selectedTag}`);
-    addLog('info', `Pacing Engine: Random delay between ${minDelay.toFixed(1)}s and ${maxDelay.toFixed(1)}s`);
-    addLog('warn', `Meta API Secret Notice: Cloudflare Worker secrets required for real Meta Graph API dispatch.`);
-    addLog('info', `Starting dispatch loop...`);
-
-    executeDispatchStep();
-  };
-
-  // PAUSE CAMPAIGN
-  const handlePauseCampaign = () => {
-    if (campaignStatus !== 'running') return;
-    isPausedRef.current = true;
-    setCampaignStatus('paused');
-    addLog('warn', `[PAUSED] Campaign paused by administrator. Current queue position preserved (Remaining: ${metrics.remaining}).`);
-    showNotification('info', 'Campaign Paused', 'Campaign execution paused. Click Resume to continue.');
-  };
-
-  // RESUME CAMPAIGN
-  const handleResumeCampaign = () => {
-    if (campaignStatus !== 'paused') return;
-    isPausedRef.current = false;
-    setCampaignStatus('running');
-    addLog('success', `[RESUMED] Campaign resumed. Continuing dispatch from recipient #${currentIndexRef.current + 1}...`);
-    showNotification('success', 'Campaign Resumed', 'Continuing broadcast queue execution.');
-    executeDispatchStep();
-  };
-
-  // CANCEL CAMPAIGN
-  const handleCancelCampaign = () => {
-    isCancelledRef.current = true;
-    isRunningRef.current = false;
-    isPausedRef.current = false;
-    setCampaignStatus('cancelled');
-
-    setMetrics((prev) => ({
-      ...prev,
-      remaining: 0,
-    }));
-
-    addLog('error', `[CANCELLED] Campaign cancelled by administrator. Unsent queue items discarded.`);
-    showNotification('warning', 'Campaign Cancelled', 'The broadcast queue has been cancelled.');
-  };
-
-  // DISPATCH ENGINE STEP
-  const executeDispatchStep = () => {
-    if (!isRunningRef.current || isCancelledRef.current) return;
-    if (isPausedRef.current) return;
-
-    const queue = currentQueueRef.current;
-    const index = currentIndexRef.current;
-
-    if (index >= queue.length) {
-      isRunningRef.current = false;
-      setCampaignStatus('completed');
-      addLog('success', `=== CAMPAIGN COMPLETED: All ${queue.length} queue items processed ===`);
-      addLog('delivery', `Verification note: Final DELIVERED count will increment as Meta delivery webhook receipts arrive.`);
-      showNotification('success', 'Campaign Complete', `Processed all ${queue.length} recipients successfully.`);
-      return;
-    }
-
-    const recipient = queue[index];
-
-    // Check Eligibility
-    if (!recipient.psid) {
-      // Skipped: No PSID
-      setMetrics((prev) => ({
-        ...prev,
-        skipped: prev.skipped + 1,
-        remaining: Math.max(0, prev.remaining - 1),
-      }));
-      addLog('warn', `[SKIPPED] ${recipient.name}: No Facebook PSID found. Cannot dispatch Meta Messenger message.`, recipient.name);
-      currentIndexRef.current++;
-      scheduleNextStep();
-      return;
-    }
-
-    if (!recipient.isWithin24Hours && selectedTag === 'NONE') {
-      // Skipped: Outside 24h window
-      setMetrics((prev) => ({
-        ...prev,
-        skipped: prev.skipped + 1,
-        remaining: Math.max(0, prev.remaining - 1),
-      }));
-      addLog('warn', `[SKIPPED] ${recipient.name} (${recipient.psid}): Outside 24h window. Meta policy prohibits untagged messages.`, recipient.name);
-      currentIndexRef.current++;
-      scheduleNextStep();
-      return;
-    }
-
-    // Pick random message variation
-    const variation = parsedVariations[Math.floor(Math.random() * parsedVariations.length)] || '';
-    const personalized = variation
-      .replace(/{name}/g, recipient.name)
-      .replace(/{order_number}/g, recipient.orderNumber || 'N/A')
-      .replace(/{phone}/g, settings?.phone || settings?.footer?.supportPhone || '01518739561')
-      .replace(/{discount_code}/g, 'RONGDHONU10')
-      .replace(/{shop_name}/g, settings?.siteName || 'Rongdhonu Trade');
-
-    // Call secure backend dispatch endpoint
-    sendFacebookMessage({
-      recipientPsid: recipient.psid,
-      text: personalized,
+    const createPayload = {
+      name: `${audienceType === 'page_contacts' ? 'Page Contacts' : 'Store Customers'} Broadcast - ${new Date().toLocaleDateString('en-GB')}`,
+      audienceType,
       tag: selectedTag,
-      isWithin24Hours: recipient.isWithin24Hours,
-      recipientName: recipient.name,
-      orderNumber: recipient.orderNumber,
-    })
-      .then((res) => {
-        if (res.success) {
+      messageTemplate: parsedVariations[0] || '',
+      minDelay: minDelayRef.current,
+      maxDelay: maxDelayRef.current,
+      recipients: recipientList,
+    };
+
+    try {
+      const createRes = await createFacebookCampaign(createPayload);
+      if (!createRes.success || !createRes.campaign) {
+        showNotification('error', 'Campaign Creation Failed', createRes.error || 'Failed to persist campaign in D1');
+        addLog('error', `Failed to create campaign in D1: ${createRes.error}`);
+        isRunningRef.current = false;
+        return;
+      }
+
+      const camp = createRes.campaign;
+      setActiveCampaignId(camp.id);
+      setCampaignStatus('running');
+      setMetrics({
+        queued: camp.totalQueued,
+        accepted: camp.acceptedCount,
+        delivered: camp.deliveredCount,
+        skipped: camp.skippedCount,
+        failed: camp.failedCount,
+        remaining: camp.remainingCount,
+      });
+
+      addLog('success', `[D1 QUEUE READY] Campaign "${camp.name}" persisted (ID: ${camp.id}) with ${camp.totalQueued} items.`);
+      addLog('info', `Pacing Engine: Configurable random delay between ${camp.minDelay.toFixed(1)}s and ${camp.maxDelay.toFixed(1)}s (dynamically adjustable during run).`);
+      addLog('warn', `Notice: Delivered count strictly updates upon verified Meta delivery webhook watermark receipts.`);
+      addLog('info', `Starting execution loop...`);
+
+      loadSavedCampaigns();
+      runCampaignStep(camp.id);
+    } catch (err: any) {
+      isRunningRef.current = false;
+      showNotification('error', 'Campaign Error', err.message || 'Error starting campaign');
+      addLog('error', `Campaign error: ${err.message}`);
+    }
+  };
+
+  // EXECUTION RUNNER STEP (Interacts with persistent queue in D1)
+  const runCampaignStep = async (campaignId: string) => {
+    if (!isRunningRef.current || isCancelledRef.current || isPausedRef.current) return;
+
+    try {
+      const res = await processFacebookCampaignNext(campaignId);
+
+      if (!res.success) {
+        if (res.error?.includes('state') || res.error?.includes('paused') || res.error?.includes('cancelled')) {
+          return;
+        }
+        addLog('warn', `Queue notice: ${res.error || 'Transient queue step issue'}`);
+      }
+
+      if (res.completed) {
+        isRunningRef.current = false;
+        setCampaignStatus('completed');
+        setMetrics((prev) => ({ ...prev, remaining: 0 }));
+        addLog('success', `=== CAMPAIGN COMPLETED: All queue items processed in D1 ===`);
+        addLog('delivery', `Verification note: Final DELIVERED count will increment as Meta delivery webhook receipts arrive.`);
+        showNotification('success', 'Campaign Complete', 'All broadcast queue items have been processed in D1.');
+        loadSavedCampaigns();
+        return;
+      }
+
+      if (res.item) {
+        const item = res.item;
+        const freshDelay = res.delayUsedSeconds ?? 2.5;
+
+        if (item.status === 'accepted') {
           setMetrics((prev) => ({
             ...prev,
             accepted: prev.accepted + 1,
             remaining: Math.max(0, prev.remaining - 1),
           }));
-          addLog('dispatch', `[ACCEPTED] Dispatched to ${recipient.name} [PSID: ${recipient.psid?.slice(0, 10)}...] via Meta Tag: ${selectedTag} (Meta Message ID: ${res.messageId})`);
-          addLog('info', `Message preview: "${personalized.slice(0, 60)}..."`);
-          addLog('delivery', `Delivery note: Delivery watermark pending Meta Webhook receipt.`);
-        } else if (res.policyBlocked) {
+          addLog('dispatch', `[ACCEPTED] Dispatched to ${item.recipientName} [PSID: ${item.psid?.slice(0, 10)}...] via Meta Tag: ${selectedTag} (Meta Message ID: ${item.metaMessageId})`);
+        } else if (item.status === 'skipped') {
           setMetrics((prev) => ({
             ...prev,
             skipped: prev.skipped + 1,
             remaining: Math.max(0, prev.remaining - 1),
           }));
-          addLog('warn', `[POLICY BLOCKED] ${recipient.name}: ${res.error || 'Meta 24-hour window policy restriction'}`, recipient.name);
-        } else if (res.notConfigured) {
-          // Worker secrets not set: local pacing simulation
-          setMetrics((prev) => ({
-            ...prev,
-            accepted: prev.accepted + 1,
-            remaining: Math.max(0, prev.remaining - 1),
-          }));
-          addLog('dispatch', `[ACCEPTED (DEV QUEUE)] Dispatched to ${recipient.name} [PSID: ${recipient.psid?.slice(0, 10)}...] (Worker secret not set; simulated pacing queue)`);
-          addLog('info', `Message preview: "${personalized.slice(0, 60)}..."`);
-          addLog('delivery', `Delivery note: Real dispatch requires setting FB_PAGE_ACCESS_TOKEN in Cloudflare Worker secrets.`);
-        } else {
+          addLog('warn', `[SKIPPED] ${item.recipientName}: ${item.skipReason || 'Meta policy restriction'}`);
+        } else if (item.status === 'failed') {
           setMetrics((prev) => ({
             ...prev,
             failed: prev.failed + 1,
             remaining: Math.max(0, prev.remaining - 1),
           }));
-          addLog('error', `[FAILED] ${recipient.name}: ${res.error || 'Dispatch rejected by Meta Graph API'}`, recipient.name);
+          addLog('error', `[FAILED] ${item.recipientName}: ${item.errorMessage || 'Dispatch error'}`);
         }
 
-        currentIndexRef.current++;
-        scheduleNextStep();
-      })
-      .catch((err: any) => {
-        setMetrics((prev) => ({
-          ...prev,
-          failed: prev.failed + 1,
-          remaining: Math.max(0, prev.remaining - 1),
-        }));
-        addLog('error', `[FAILED] ${recipient.name}: ${err.message || 'Dispatch error'}`, recipient.name);
-        currentIndexRef.current++;
-        scheduleNextStep();
-      });
+        if (res.remainingCount != null) {
+          setMetrics((prev) => ({ ...prev, remaining: res.remainingCount! }));
+        }
+
+        if (!isRunningRef.current || isCancelledRef.current || isPausedRef.current) return;
+
+        addLog('pacing', `[PACING] Selected fresh random delay: ${freshDelay.toFixed(2)}s for next send...`);
+
+        timeoutTimerRef.current = setTimeout(() => {
+          runCampaignStep(campaignId);
+        }, Math.round(freshDelay * 1000));
+      } else {
+        timeoutTimerRef.current = setTimeout(() => {
+          runCampaignStep(campaignId);
+        }, 2000);
+      }
+    } catch (err: any) {
+      addLog('error', `Processing step error: ${err.message}`);
+      timeoutTimerRef.current = setTimeout(() => {
+        runCampaignStep(campaignId);
+      }, 3000);
+    }
   };
 
-  // SCHEDULE NEXT STEP WITH RANDOM DELAY (PACING)
-  const scheduleNextStep = () => {
-    if (!isRunningRef.current || isCancelledRef.current || isPausedRef.current) return;
+  // PAUSE CAMPAIGN
+  const handlePauseCampaign = async () => {
+    if (campaignStatus !== 'running' || !activeCampaignId) return;
+    isPausedRef.current = true;
+    isRunningRef.current = false;
+    if (timeoutTimerRef.current) clearTimeout(timeoutTimerRef.current);
+    setCampaignStatus('paused');
 
-    const min = Math.min(minDelayRef.current, maxDelayRef.current);
-    const max = Math.max(minDelayRef.current, maxDelayRef.current);
-    const delaySeconds = min + Math.random() * (max - min);
-    const delayMs = Math.round(delaySeconds * 1000);
-
-    addLog('pacing', `[PACING] Sleeping for ${delaySeconds.toFixed(1)}s before next dispatch...`);
-
-    setTimeout(() => {
-      executeDispatchStep();
-    }, delayMs);
+    try {
+      await pauseFacebookCampaign(activeCampaignId);
+      addLog('warn', `[PAUSED] Campaign paused in D1 by administrator. Current queue position preserved (Remaining: ${metrics.remaining}).`);
+      showNotification('info', 'Campaign Paused', 'Campaign execution paused. Click Resume to continue.');
+      loadSavedCampaigns();
+    } catch {}
   };
+
+  // RESUME CAMPAIGN
+  const handleResumeCampaign = async () => {
+    if (campaignStatus !== 'paused' || !activeCampaignId) return;
+    isPausedRef.current = false;
+    isRunningRef.current = true;
+    setCampaignStatus('running');
+
+    try {
+      await resumeFacebookCampaign(activeCampaignId);
+      addLog('success', `[RESUMED] Campaign resumed in D1. Continuing dispatch from next pending queue item...`);
+      showNotification('success', 'Campaign Resumed', 'Continuing broadcast queue execution.');
+      loadSavedCampaigns();
+      runCampaignStep(activeCampaignId);
+    } catch {}
+  };
+
+  // CANCEL CAMPAIGN
+  const handleCancelCampaign = async () => {
+    if (!activeCampaignId) return;
+    isCancelledRef.current = true;
+    isRunningRef.current = false;
+    isPausedRef.current = false;
+    if (timeoutTimerRef.current) clearTimeout(timeoutTimerRef.current);
+    setCampaignStatus('cancelled');
+
+    try {
+      await cancelFacebookCampaign(activeCampaignId);
+      setMetrics((prev) => ({ ...prev, remaining: 0 }));
+      addLog('error', `[CANCELLED] Campaign cancelled in D1 by administrator. Remaining pending queue items aborted.`);
+      showNotification('warning', 'Campaign Cancelled', 'The broadcast queue has been cancelled.');
+      loadSavedCampaigns();
+    } catch {}
+  };
+
+  // LOAD / SWITCH SAVED CAMPAIGN
+  const handleSelectSavedCampaign = async (camp: FacebookCampaign) => {
+    setActiveCampaignId(camp.id);
+    setCampaignStatus(camp.status);
+    setMinDelay(camp.minDelay);
+    setMaxDelay(camp.maxDelay);
+    minDelayRef.current = camp.minDelay;
+    maxDelayRef.current = camp.maxDelay;
+    setMetrics({
+      queued: camp.totalQueued,
+      accepted: camp.acceptedCount,
+      delivered: camp.deliveredCount,
+      skipped: camp.skippedCount,
+      failed: camp.failedCount,
+      remaining: camp.remainingCount,
+    });
+    addLog('info', `[LOADED CAMPAIGN] "${camp.name}" (ID: ${camp.id}) | Status: ${camp.status} | Remaining: ${camp.remainingCount}`);
+    showNotification('info', 'Campaign Loaded', `Loaded campaign: ${camp.name}`);
+  };
+
 
   // Export console log as text file
   const handleDownloadLog = () => {
@@ -1061,13 +1159,14 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
                 </div>
                 <input
                   type="range"
-                  min="1"
-                  max="20"
+                  min="0.5"
+                  max="15"
                   step="0.5"
                   value={minDelay}
-                  onChange={(e) => setMinDelay(Number(e.target.value))}
+                  onChange={(e) => handleUpdateMinDelay(Number(e.target.value))}
                   className="w-full accent-blue-600 cursor-pointer"
                 />
+                <span className="text-[10px] text-slate-400">Min pause between eligible sends</span>
               </div>
 
               <div className="space-y-1">
@@ -1077,17 +1176,28 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
                 </div>
                 <input
                   type="range"
-                  min="2"
-                  max="60"
+                  min="1"
+                  max="30"
                   step="0.5"
                   value={maxDelay}
-                  onChange={(e) => setMaxDelay(Number(e.target.value))}
+                  onChange={(e) => handleUpdateMaxDelay(Number(e.target.value))}
                   className="w-full accent-blue-600 cursor-pointer"
                 />
+                <span className="text-[10px] text-slate-400">Max pause between eligible sends</span>
               </div>
             </div>
 
-            <div className="flex items-center justify-between pt-2">
+            <div className="p-3 bg-blue-50/70 border border-blue-200/60 rounded-xl text-xs text-blue-900 flex items-start gap-2">
+              <Sparkles className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+              <div>
+                <strong className="font-bold">Live Dynamic Pacing Engine:</strong>
+                <p className="text-[11px] text-blue-700 mt-0.5">
+                  For each eligible send, a fresh random delay within this range is selected. Authorized administrators can adjust this range live during an active campaign, and the new range persists in D1 and applies immediately to future sends.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between pt-1">
               <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
                 <input
                   type="checkbox"
@@ -1099,6 +1209,7 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
               </label>
               <span className="text-[11px] text-slate-400">Rate Limit Protection</span>
             </div>
+
 
             {/* ACTION CONTROLS BAR (START, PAUSE, RESUME, CANCEL) */}
             <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center gap-3">

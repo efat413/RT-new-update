@@ -80,3 +80,189 @@ export async function sendFacebookMessage(payload: {
     return { success: false, status: 502, error: err.message || 'Network error during dispatch.' };
   }
 }
+
+export async function createFacebookCampaign(payload: {
+  name: string;
+  audienceType: string;
+  tag: string;
+  messageTemplate: string;
+  minDelay?: number;
+  maxDelay?: number;
+  recipients: Array<{
+    id: string;
+    name: string;
+    psid?: string;
+    phone?: string;
+    isWithin24Hours?: boolean;
+    hasMarketingConsent?: boolean;
+    orderNumber?: string;
+    personalizedText?: string;
+  }>;
+}): Promise<{ success: boolean; campaign?: any; queuedCount?: number; error?: string }> {
+  try {
+    const token = getAuthToken();
+    const res = await fetch('/api/admin/facebook/campaigns', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(payload),
+      credentials: 'include',
+    });
+    const data = await res.json().catch(() => ({}));
+    return data;
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Network error creating campaign.' };
+  }
+}
+
+export async function fetchFacebookCampaigns(): Promise<{ success: boolean; campaigns?: any[]; error?: string }> {
+  try {
+    const token = getAuthToken();
+    const res = await fetch('/api/admin/facebook/campaigns', {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      credentials: 'include',
+    });
+    const data = await res.json().catch(() => ({}));
+    return data;
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Network error fetching campaigns.' };
+  }
+}
+
+export async function fetchFacebookCampaignDetails(
+  campaignId: string
+): Promise<{ success: boolean; campaign?: any; queue?: any[]; error?: string }> {
+  try {
+    const token = getAuthToken();
+    const res = await fetch(`/api/admin/facebook/campaigns/${encodeURIComponent(campaignId)}`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      credentials: 'include',
+    });
+    const data = await res.json().catch(() => ({}));
+    return data;
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Network error fetching campaign details.' };
+  }
+}
+
+export async function pauseFacebookCampaign(
+  campaignId: string
+): Promise<{ success: boolean; status?: string; error?: string }> {
+  try {
+    const token = getAuthToken();
+    const res = await fetch(`/api/admin/facebook/campaigns/${encodeURIComponent(campaignId)}/pause`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      credentials: 'include',
+    });
+    const data = await res.json().catch(() => ({}));
+    return data;
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Network error pausing campaign.' };
+  }
+}
+
+export async function resumeFacebookCampaign(
+  campaignId: string
+): Promise<{ success: boolean; status?: string; error?: string }> {
+  try {
+    const token = getAuthToken();
+    const res = await fetch(`/api/admin/facebook/campaigns/${encodeURIComponent(campaignId)}/resume`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      credentials: 'include',
+    });
+    const data = await res.json().catch(() => ({}));
+    return data;
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Network error resuming campaign.' };
+  }
+}
+
+export async function cancelFacebookCampaign(
+  campaignId: string
+): Promise<{ success: boolean; status?: string; error?: string }> {
+  try {
+    const token = getAuthToken();
+    const res = await fetch(`/api/admin/facebook/campaigns/${encodeURIComponent(campaignId)}/cancel`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      credentials: 'include',
+    });
+    const data = await res.json().catch(() => ({}));
+    return data;
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Network error cancelling campaign.' };
+  }
+}
+
+export async function updateFacebookCampaignDelays(
+  campaignId: string,
+  minDelay: number,
+  maxDelay: number
+): Promise<{ success: boolean; minDelay?: number; maxDelay?: number; error?: string }> {
+  try {
+    const token = getAuthToken();
+    const res = await fetch(`/api/admin/facebook/campaigns/${encodeURIComponent(campaignId)}/delays`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ minDelay, maxDelay }),
+      credentials: 'include',
+    });
+    const data = await res.json().catch(() => ({}));
+    return data;
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Network error updating delays.' };
+  }
+}
+
+export async function processFacebookCampaignNext(
+  campaignId: string
+): Promise<{
+  success: boolean;
+  item?: any;
+  delayUsedSeconds?: number;
+  completed?: boolean;
+  campaignStatus?: string;
+  remainingCount?: number;
+  error?: string;
+}> {
+  try {
+    const token = getAuthToken();
+    const res = await fetch(`/api/admin/facebook/campaigns/${encodeURIComponent(campaignId)}/process-next`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      credentials: 'include',
+    });
+    const data = await res.json().catch(() => ({}));
+    return data;
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Network error processing queue item.' };
+  }
+}
+

@@ -94,6 +94,14 @@ import {
   saveReviewImageBlobInD1,
   getReviewImageBlobFromD1,
   deleteReviewImageFromD1,
+  // Facebook Campaign Engine
+  createFacebookCampaignInD1,
+  getFacebookCampaignsFromD1,
+  getFacebookCampaignByIdFromD1,
+  updateFacebookCampaignStatusInD1,
+  updateFacebookCampaignDelaysInD1,
+  processNextCampaignQueueItemInD1,
+  recordMetaDeliveryWatermarkInD1,
 } from './db';
 import {
   Order,
@@ -8272,6 +8280,13 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           targetType: 'facebook_message',
           details: `Processed ${eventResult.events.length} Meta event(s): ${eventResult.events.map((e) => e.type).join(', ')}.`,
         });
+
+        // Update delivered status in D1 campaign queue
+        for (const ev of eventResult.events) {
+          if (ev.type === 'delivery' && ev.mids && ev.mids.length > 0) {
+            await recordMetaDeliveryWatermarkInD1(env.DB, ev.mids, ev.watermark || Date.now());
+          }
+        }
       } catch {}
     }
 
@@ -8370,6 +8385,262 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
     return jsonResponse(result, result.status);
   }
+
+  // 11F. Facebook Broadcaster Campaign Engine & Persistent Queue
+  // Create Campaign (POST /api/admin/facebook/campaigns)
+  if (path === '/api/admin/facebook/campaigns' && method === 'POST') {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const isAuthorized =
+      hasPermission(auth!, 'settings.manage') ||
+      Boolean(auth?.legacyPermissions?.canManageSettings) ||
+      auth?.role === 'admin' ||
+      auth?.role === 'super_admin';
+
+    if (!isAuthorized) {
+      return jsonResponse(
+        { success: false, error: 'Forbidden: Admin privileges required to manage Facebook campaigns.' },
+        403
+      );
+    }
+
+    const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+    if (jsonErr) return jsonErr;
+
+    if (!body || !body.name || !body.recipients || !Array.isArray(body.recipients)) {
+      return jsonResponse({ success: false, error: 'Invalid campaign payload. Name and recipients are required.' }, 400);
+    }
+
+    const result = await createFacebookCampaignInD1(
+      env.DB,
+      {
+        name: String(body.name).trim(),
+        audienceType: body.audienceType || 'page_contacts',
+        tag: body.tag || 'NONE',
+        messageTemplate: body.messageTemplate || '',
+        minDelay: body.minDelay,
+        maxDelay: body.maxDelay,
+        createdBy: auth!.dbUser.email,
+      },
+      body.recipients
+    );
+
+    if (env.DB) {
+      try {
+        await insertAuditLogInD1(env.DB, {
+          actorId: auth!.dbUser.id,
+          actorEmail: auth!.dbUser.email,
+          actorRole: auth!.role,
+          action: 'FACEBOOK_CAMPAIGN_CREATE',
+          targetId: result.campaign.id,
+          targetType: 'facebook_campaign',
+          details: `Created campaign "${result.campaign.name}" with ${result.queuedCount} queued recipients (Delays: ${result.campaign.minDelay}s-${result.campaign.maxDelay}s).`,
+        });
+      } catch {}
+    }
+
+    return jsonResponse({ success: true, campaign: result.campaign, queuedCount: result.queuedCount }, 201);
+  }
+
+  // List Campaigns (GET /api/admin/facebook/campaigns)
+  if (path === '/api/admin/facebook/campaigns' && method === 'GET') {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const isAuthorized =
+      hasPermission(auth!, 'settings.manage') ||
+      Boolean(auth?.legacyPermissions?.canManageSettings) ||
+      auth?.role === 'admin' ||
+      auth?.role === 'super_admin';
+
+    if (!isAuthorized) {
+      return jsonResponse({ success: false, error: 'Forbidden.' }, 403);
+    }
+
+    const campaigns = await getFacebookCampaignsFromD1(env.DB);
+    return jsonResponse({ success: true, campaigns });
+  }
+
+  // Campaign Pause (POST /api/admin/facebook/campaigns/:id/pause)
+  const campPauseMatch = path.match(/^\/api\/admin\/facebook\/campaigns\/([^/]+)\/pause$/);
+  if (campPauseMatch && method === 'POST') {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const isAuthorized =
+      hasPermission(auth!, 'settings.manage') ||
+      Boolean(auth?.legacyPermissions?.canManageSettings) ||
+      auth?.role === 'admin' ||
+      auth?.role === 'super_admin';
+
+    if (!isAuthorized) return jsonResponse({ success: false, error: 'Forbidden.' }, 403);
+
+    const campaignId = decodeURIComponent(campPauseMatch[1]);
+    const res = await updateFacebookCampaignStatusInD1(env.DB, campaignId, 'paused');
+
+    if (res.success && env.DB) {
+      try {
+        await insertAuditLogInD1(env.DB, {
+          actorId: auth!.dbUser.id,
+          actorEmail: auth!.dbUser.email,
+          actorRole: auth!.role,
+          action: 'FACEBOOK_CAMPAIGN_PAUSE',
+          targetId: campaignId,
+          targetType: 'facebook_campaign',
+          details: `Paused Facebook broadcast campaign.`,
+        });
+      } catch {}
+    }
+
+    return jsonResponse(res);
+  }
+
+  // Campaign Resume (POST /api/admin/facebook/campaigns/:id/resume)
+  const campResumeMatch = path.match(/^\/api\/admin\/facebook\/campaigns\/([^/]+)\/resume$/);
+  if (campResumeMatch && method === 'POST') {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const isAuthorized =
+      hasPermission(auth!, 'settings.manage') ||
+      Boolean(auth?.legacyPermissions?.canManageSettings) ||
+      auth?.role === 'admin' ||
+      auth?.role === 'super_admin';
+
+    if (!isAuthorized) return jsonResponse({ success: false, error: 'Forbidden.' }, 403);
+
+    const campaignId = decodeURIComponent(campResumeMatch[1]);
+    const res = await updateFacebookCampaignStatusInD1(env.DB, campaignId, 'running');
+
+    if (res.success && env.DB) {
+      try {
+        await insertAuditLogInD1(env.DB, {
+          actorId: auth!.dbUser.id,
+          actorEmail: auth!.dbUser.email,
+          actorRole: auth!.role,
+          action: 'FACEBOOK_CAMPAIGN_RESUME',
+          targetId: campaignId,
+          targetType: 'facebook_campaign',
+          details: `Resumed Facebook broadcast campaign.`,
+        });
+      } catch {}
+    }
+
+    return jsonResponse(res);
+  }
+
+  // Campaign Cancel (POST /api/admin/facebook/campaigns/:id/cancel)
+  const campCancelMatch = path.match(/^\/api\/admin\/facebook\/campaigns\/([^/]+)\/cancel$/);
+  if (campCancelMatch && method === 'POST') {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const isAuthorized =
+      hasPermission(auth!, 'settings.manage') ||
+      Boolean(auth?.legacyPermissions?.canManageSettings) ||
+      auth?.role === 'admin' ||
+      auth?.role === 'super_admin';
+
+    if (!isAuthorized) return jsonResponse({ success: false, error: 'Forbidden.' }, 403);
+
+    const campaignId = decodeURIComponent(campCancelMatch[1]);
+    const res = await updateFacebookCampaignStatusInD1(env.DB, campaignId, 'cancelled');
+
+    if (res.success && env.DB) {
+      try {
+        await insertAuditLogInD1(env.DB, {
+          actorId: auth!.dbUser.id,
+          actorEmail: auth!.dbUser.email,
+          actorRole: auth!.role,
+          action: 'FACEBOOK_CAMPAIGN_CANCEL',
+          targetId: campaignId,
+          targetType: 'facebook_campaign',
+          details: `Cancelled Facebook broadcast campaign and aborted remaining queue.`,
+        });
+      } catch {}
+    }
+
+    return jsonResponse(res);
+  }
+
+  // Update Delays during active campaign (PATCH or PUT /api/admin/facebook/campaigns/:id/delays)
+  const campDelaysMatch = path.match(/^\/api\/admin\/facebook\/campaigns\/([^/]+)\/delays$/);
+  if (campDelaysMatch && (method === 'PATCH' || method === 'PUT')) {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const isAuthorized =
+      hasPermission(auth!, 'settings.manage') ||
+      Boolean(auth?.legacyPermissions?.canManageSettings) ||
+      auth?.role === 'admin' ||
+      auth?.role === 'super_admin';
+
+    if (!isAuthorized) return jsonResponse({ success: false, error: 'Forbidden.' }, 403);
+
+    const campaignId = decodeURIComponent(campDelaysMatch[1]);
+    const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+    if (jsonErr) return jsonErr;
+
+    const res = await updateFacebookCampaignDelaysInD1(
+      env.DB,
+      campaignId,
+      Number(body?.minDelay) || 2.0,
+      Number(body?.maxDelay) || 3.0
+    );
+
+    if (res.success && env.DB) {
+      try {
+        await insertAuditLogInD1(env.DB, {
+          actorId: auth!.dbUser.id,
+          actorEmail: auth!.dbUser.email,
+          actorRole: auth!.role,
+          action: 'FACEBOOK_CAMPAIGN_DELAYS_UPDATE',
+          targetId: campaignId,
+          targetType: 'facebook_campaign',
+          details: `Updated campaign pacing delays to min: ${res.minDelay}s, max: ${res.maxDelay}s.`,
+        });
+      } catch {}
+    }
+
+    return jsonResponse(res);
+  }
+
+  // Process Next Item (POST /api/admin/facebook/campaigns/:id/process-next)
+  const campProcessMatch = path.match(/^\/api\/admin\/facebook\/campaigns\/([^/]+)\/process-next$/);
+  if (campProcessMatch && method === 'POST') {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const isAuthorized =
+      hasPermission(auth!, 'settings.manage') ||
+      Boolean(auth?.legacyPermissions?.canManageSettings) ||
+      auth?.role === 'admin' ||
+      auth?.role === 'super_admin';
+
+    if (!isAuthorized) return jsonResponse({ success: false, error: 'Forbidden.' }, 403);
+
+    const campaignId = decodeURIComponent(campProcessMatch[1]);
+    const res = await processNextCampaignQueueItemInD1(env.DB, campaignId, env);
+
+    return jsonResponse(res, res.success ? 200 : 400);
+  }
+
+  // Get Campaign Details & Queue (GET /api/admin/facebook/campaigns/:id)
+  const campDetailsMatch = path.match(/^\/api\/admin\/facebook\/campaigns\/([^/]+)$/);
+  if (campDetailsMatch && method === 'GET') {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const isAuthorized =
+      hasPermission(auth!, 'settings.manage') ||
+      Boolean(auth?.legacyPermissions?.canManageSettings) ||
+      auth?.role === 'admin' ||
+      auth?.role === 'super_admin';
+
+    if (!isAuthorized) return jsonResponse({ success: false, error: 'Forbidden.' }, 403);
+
+    const campaignId = decodeURIComponent(campDetailsMatch[1]);
+    const res = await getFacebookCampaignByIdFromD1(env.DB, campaignId);
+    if (!res.campaign) {
+      return jsonResponse({ success: false, error: 'Campaign not found' }, 404);
+    }
+
+    return jsonResponse({ success: true, campaign: res.campaign, queue: res.queue });
+  }
+
 
     return jsonResponse({ success: false, error: 'Endpoint not found' }, 404);
   } catch (err: any) {

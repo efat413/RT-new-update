@@ -479,7 +479,7 @@ export interface FacebookRecipient {
   eligibilityReason: string;
 }
 
-export type FacebookCampaignStatus = 'idle' | 'running' | 'paused' | 'completed' | 'cancelled';
+export type FacebookCampaignStatus = 'draft' | 'idle' | 'running' | 'paused' | 'completed' | 'cancelled';
 
 export interface BroadcasterMetrics {
   queued: number;
@@ -498,4 +498,59 @@ export interface BroadcastLogItem {
   recipientId?: string;
   recipientName?: string;
 }
+
+export type FacebookQueueItemStatus =
+  | 'pending'
+  | 'processing'
+  | 'accepted'
+  | 'delivered'
+  | 'skipped'
+  | 'failed'
+  | 'cancelled';
+
+export interface FacebookCampaign {
+  id: string;
+  name: string;
+  audienceType: FacebookAudienceType;
+  tag: FacebookMessageTag;
+  messageTemplate: string;
+  status: FacebookCampaignStatus;
+  minDelay: number;
+  maxDelay: number;
+  totalQueued: number;
+  acceptedCount: number;
+  deliveredCount: number;
+  skippedCount: number;
+  failedCount: number;
+  remainingCount: number;
+  startedAt?: string;
+  pausedAt?: string;
+  completedAt?: string;
+  createdBy?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FacebookQueueItem {
+  id: string;
+  campaignId: string;
+  recipientId: string;
+  recipientName: string;
+  psid?: string;
+  phone?: string;
+  isWithin24h: boolean;
+  hasConsent: boolean;
+  messageText: string;
+  status: FacebookQueueItemStatus;
+  metaMessageId?: string;
+  deliveredWatermark?: number;
+  deliveredAt?: string;
+  skipReason?: string;
+  errorMessage?: string;
+  delayUsedSeconds?: number;
+  processedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 

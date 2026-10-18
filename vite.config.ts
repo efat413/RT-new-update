@@ -125,6 +125,8 @@ function localApiDevPlugin(): Plugin {
   let devCategories: any[] = [...INITIAL_CATEGORIES];
   let devSliders: any[] = [...INITIAL_SLIDES];
   let devSettings: any = { ...INITIAL_SETTINGS };
+  let devFacebookCampaigns: any[] = [];
+  let devFacebookCampaignQueue: any[] = [];
   const generateInitialDevAuditLogs = (): any[] => {
     const actions = [
       { action: 'SETTINGS_UPDATE', targetType: 'settings', details: 'Store brand settings updated' },
@@ -7167,6 +7169,259 @@ function localApiDevPlugin(): Plugin {
             return res.end(JSON.stringify(result));
           });
         }
+
+        // Facebook Broadcaster Campaign Engine & Persistent Queue
+        if (url.pathname === '/api/admin/facebook/campaigns' && req.method === 'POST') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          return readBody((body) => {
+            if (!body || !body.name || !body.recipients || !Array.isArray(body.recipients)) {
+              res.statusCode = 400;
+              res.setHeader('Content-Type', 'application/json');
+              return res.end(JSON.stringify({ success: false, error: 'Name and recipients are required.' }));
+            }
+
+            const rawMin = Number(body.minDelay) || 2.0;
+            const rawMax = Number(body.maxDelay) || 3.0;
+            const minDelay = Math.max(0.5, Math.min(rawMin, rawMax));
+            const maxDelay = Math.min(60, Math.max(minDelay, rawMax));
+            const campaignId = `fbc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+            // Deduplicate recipients by ID
+            const seenIds = new Set<string>();
+            const uniqueRecipients = body.recipients.filter((r: any) => {
+              if (!r.id || seenIds.has(r.id)) return false;
+              seenIds.add(r.id);
+              return true;
+            });
+
+            const newCampaign = {
+              id: campaignId,
+              name: String(body.name).trim(),
+              audienceType: body.audienceType || 'page_contacts',
+              tag: body.tag || 'NONE',
+              messageTemplate: body.messageTemplate || '',
+              status: 'draft',
+              minDelay,
+              maxDelay,
+              totalQueued: uniqueRecipients.length,
+              acceptedCount: 0,
+              deliveredCount: 0,
+              skippedCount: 0,
+              failedCount: 0,
+              remainingCount: uniqueRecipients.length,
+              startedAt: undefined,
+              pausedAt: undefined,
+              completedAt: undefined,
+              createdBy: 'dev-admin',
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            };
+
+            devFacebookCampaigns.unshift(newCampaign);
+
+            uniqueRecipients.forEach((r: any) => {
+              devFacebookCampaignQueue.push({
+                id: `fbq-${campaignId}-${r.id}`,
+                campaignId,
+                recipientId: r.id,
+                recipientName: r.name || 'Customer',
+                psid: r.psid || undefined,
+                phone: r.phone || undefined,
+                isWithin24h: r.isWithin24Hours !== false,
+                hasConsent: r.hasMarketingConsent !== false,
+                messageText: r.personalizedText || body.messageTemplate || '',
+                status: 'pending',
+                metaMessageId: undefined,
+                deliveredWatermark: undefined,
+                deliveredAt: undefined,
+                skipReason: undefined,
+                errorMessage: undefined,
+                delayUsedSeconds: undefined,
+                processedAt: undefined,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+              });
+            });
+
+            res.statusCode = 201;
+            res.setHeader('Content-Type', 'application/json');
+            return res.end(JSON.stringify({ success: true, campaign: newCampaign, queuedCount: uniqueRecipients.length }));
+          });
+        }
+
+        if (url.pathname === '/api/admin/facebook/campaigns' && req.method === 'GET') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          return res.end(JSON.stringify({ success: true, campaigns: devFacebookCampaigns }));
+        }
+
+        const devCampPauseMatch = url.pathname.match(/^\/api\/admin\/facebook\/campaigns\/([^/]+)\/pause$/);
+        if (devCampPauseMatch && req.method === 'POST') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          const camp = devFacebookCampaigns.find((c) => c.id === devCampPauseMatch[1]);
+          if (!camp) {
+            res.statusCode = 404;
+            return res.end(JSON.stringify({ success: false, error: 'Campaign not found' }));
+          }
+          camp.status = 'paused';
+          camp.pausedAt = new Date().toISOString();
+          camp.updatedAt = new Date().toISOString();
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          return res.end(JSON.stringify({ success: true, status: 'paused' }));
+        }
+
+        const devCampResumeMatch = url.pathname.match(/^\/api\/admin\/facebook\/campaigns\/([^/]+)\/resume$/);
+        if (devCampResumeMatch && req.method === 'POST') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          const camp = devFacebookCampaigns.find((c) => c.id === devCampResumeMatch[1]);
+          if (!camp) {
+            res.statusCode = 404;
+            return res.end(JSON.stringify({ success: false, error: 'Campaign not found' }));
+          }
+          camp.status = 'running';
+          camp.startedAt = camp.startedAt || new Date().toISOString();
+          camp.updatedAt = new Date().toISOString();
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          return res.end(JSON.stringify({ success: true, status: 'running' }));
+        }
+
+        const devCampCancelMatch = url.pathname.match(/^\/api\/admin\/facebook\/campaigns\/([^/]+)\/cancel$/);
+        if (devCampCancelMatch && req.method === 'POST') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          const camp = devFacebookCampaigns.find((c) => c.id === devCampCancelMatch[1]);
+          if (!camp) {
+            res.statusCode = 404;
+            return res.end(JSON.stringify({ success: false, error: 'Campaign not found' }));
+          }
+          camp.status = 'cancelled';
+          camp.remainingCount = 0;
+          camp.updatedAt = new Date().toISOString();
+          devFacebookCampaignQueue.forEach((q) => {
+            if (q.campaignId === camp.id && (q.status === 'pending' || q.status === 'processing')) {
+              q.status = 'cancelled';
+              q.updatedAt = new Date().toISOString();
+            }
+          });
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          return res.end(JSON.stringify({ success: true, status: 'cancelled' }));
+        }
+
+        const devCampDelaysMatch = url.pathname.match(/^\/api\/admin\/facebook\/campaigns\/([^/]+)\/delays$/);
+        if (devCampDelaysMatch && (req.method === 'PATCH' || req.method === 'PUT')) {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          return readBody((body) => {
+            const camp = devFacebookCampaigns.find((c) => c.id === devCampDelaysMatch[1]);
+            if (!camp) {
+              res.statusCode = 404;
+              return res.end(JSON.stringify({ success: false, error: 'Campaign not found' }));
+            }
+            const cleanMin = Math.max(0.5, Math.min(Number(body?.minDelay) || 2.0, Number(body?.maxDelay) || 3.0));
+            const cleanMax = Math.min(60, Math.max(cleanMin, Number(body?.maxDelay) || 3.0));
+            camp.minDelay = cleanMin;
+            camp.maxDelay = cleanMax;
+            camp.updatedAt = new Date().toISOString();
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'application/json');
+            return res.end(JSON.stringify({ success: true, minDelay: cleanMin, maxDelay: cleanMax }));
+          });
+        }
+
+        const devCampProcessMatch = url.pathname.match(/^\/api\/admin\/facebook\/campaigns\/([^/]+)\/process-next$/);
+        if (devCampProcessMatch && req.method === 'POST') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          const camp = devFacebookCampaigns.find((c) => c.id === devCampProcessMatch[1]);
+          if (!camp) {
+            res.statusCode = 404;
+            return res.end(JSON.stringify({ success: false, error: 'Campaign not found' }));
+          }
+          if (camp.status === 'paused' || camp.status === 'cancelled' || camp.status === 'completed') {
+            res.statusCode = 400;
+            return res.end(JSON.stringify({ success: false, error: `Campaign in state: ${camp.status}` }));
+          }
+          if (camp.status === 'draft') {
+            camp.status = 'running';
+            camp.startedAt = new Date().toISOString();
+          }
+
+          const nextItem = devFacebookCampaignQueue.find((q) => q.campaignId === camp.id && q.status === 'pending');
+          if (!nextItem) {
+            camp.status = 'completed';
+            camp.completedAt = new Date().toISOString();
+            camp.remainingCount = 0;
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'application/json');
+            return res.end(JSON.stringify({ success: true, completed: true, campaignStatus: 'completed', remainingCount: 0 }));
+          }
+
+          nextItem.status = 'processing';
+          const minD = Math.max(0.5, Number(camp.minDelay) || 2.0);
+          const maxD = Math.max(minD, Number(camp.maxDelay) || 3.0);
+          const freshDelaySeconds = Math.round((minD + Math.random() * (maxD - minD)) * 100) / 100;
+          nextItem.delayUsedSeconds = freshDelaySeconds;
+          nextItem.processedAt = new Date().toISOString();
+
+          // Policy check
+          if (!nextItem.psid) {
+            nextItem.status = 'skipped';
+            nextItem.skipReason = 'Missing Facebook PSID';
+            camp.skippedCount++;
+            camp.remainingCount = Math.max(0, camp.remainingCount - 1);
+          } else if (!nextItem.isWithin24h && camp.tag === 'NONE') {
+            nextItem.status = 'skipped';
+            nextItem.skipReason = 'Outside 24-hour messaging window without approved Meta Message Tag';
+            camp.skippedCount++;
+            camp.remainingCount = Math.max(0, camp.remainingCount - 1);
+          } else {
+            nextItem.status = 'accepted';
+            nextItem.metaMessageId = `dev_mid_${Math.random().toString(36).slice(2, 12)}`;
+            camp.acceptedCount++;
+            camp.remainingCount = Math.max(0, camp.remainingCount - 1);
+          }
+
+          const isCompleted = camp.remainingCount <= 0;
+          if (isCompleted) {
+            camp.status = 'completed';
+            camp.completedAt = new Date().toISOString();
+          }
+
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          return res.end(JSON.stringify({
+            success: true,
+            item: nextItem,
+            delayUsedSeconds: freshDelaySeconds,
+            remainingCount: camp.remainingCount,
+            completed: isCompleted,
+            campaignStatus: camp.status,
+          }));
+        }
+
+        const devCampDetailsMatch = url.pathname.match(/^\/api\/admin\/facebook\/campaigns\/([^/]+)$/);
+        if (devCampDetailsMatch && req.method === 'GET') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          const camp = devFacebookCampaigns.find((c) => c.id === devCampDetailsMatch[1]);
+          if (!camp) {
+            res.statusCode = 404;
+            return res.end(JSON.stringify({ success: false, error: 'Campaign not found' }));
+          }
+          const queue = devFacebookCampaignQueue.filter((q) => q.campaignId === camp.id);
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          return res.end(JSON.stringify({ success: true, campaign: camp, queue }));
+        }
+
 
         if (url.pathname.startsWith('/api/')) {
           res.setHeader('Content-Type', 'application/json');
