@@ -17,6 +17,7 @@ import {
   Bug,
   TrendingUp,
   MessageSquare,
+  Facebook,
 } from 'lucide-react';
 
 interface AdminSidebarProps {
@@ -168,6 +169,14 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
       permission: 'canManageAccounts',
     },
     {
+      id: 'broadcaster',
+      label: 'Facebook Broadcaster',
+      icon: Facebook,
+      badge: 'Setup',
+      color: 'blue',
+      permission: 'canManageSettings',
+    },
+    {
       id: 'pixels',
       label: 'Marketing Pixels',
       icon: Activity,
@@ -209,7 +218,7 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
           Menu Options
         </span>
         <span className="text-[10px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full font-mono">
-          11 Modules
+          12 Modules
         </span>
       </div>
 

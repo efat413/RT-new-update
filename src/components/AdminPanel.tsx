@@ -129,6 +129,9 @@ const AdminCouriersTab = React.lazy(() =>
 const AdminMarketingPixelsTab = React.lazy(() =>
   import('./AdminMarketingPixelsTab').then((m) => ({ default: m.AdminMarketingPixelsTab }))
 );
+const AdminFacebookBroadcasterTab = React.lazy(() =>
+  import('./AdminFacebookBroadcasterTab').then((m) => ({ default: m.AdminFacebookBroadcasterTab }))
+);
 const AdminVouchersTab = React.lazy(() =>
   import('./AdminVouchersTab').then((m) => ({ default: m.AdminVouchersTab }))
 );
@@ -324,7 +327,7 @@ const AdminPanelContent: React.FC = () => {
 
   // Active Tab
   const [activeTab, setActiveTab] = useState<
-    'overview' | 'profit' | 'orders' | 'products' | 'categories' | 'slides' | 'couriers' | 'settings' | 'users' | 'pixels' | 'vouchers' | 'debug'
+    'overview' | 'profit' | 'orders' | 'products' | 'categories' | 'slides' | 'couriers' | 'settings' | 'users' | 'pixels' | 'broadcaster' | 'vouchers' | 'debug'
   >((adminActiveTab as any) || 'overview');
 
   const handleSelectTab = useCallback((tabId: string) => {
@@ -7245,6 +7248,19 @@ const AdminPanelContent: React.FC = () => {
             <ErrorBoundary compact fallbackTitle="Pixels Unavailable" fallbackMessage="Could not load marketing pixels tab.">
               <React.Suspense fallback={<AdminTabFallback />}>
                 <AdminMarketingPixelsTab />
+              </React.Suspense>
+            </ErrorBoundary>
+          )
+        )}
+
+        {/* FACEBOOK BROADCASTER: UI scaffold; sending requires Meta API integration */}
+        {activeTab === 'broadcaster' && (
+          !hasPermission('canManageSettings') ? (
+            renderPermissionRestrictedNotice('canManageSettings', 'Facebook Broadcaster')
+          ) : (
+            <ErrorBoundary compact fallbackTitle="Facebook Broadcaster Unavailable" fallbackMessage="Could not load Facebook Broadcaster tab.">
+              <React.Suspense fallback={<AdminTabFallback />}>
+                <AdminFacebookBroadcasterTab />
               </React.Suspense>
             </ErrorBoundary>
           )
