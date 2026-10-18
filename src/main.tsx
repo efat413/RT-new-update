@@ -8,14 +8,6 @@ import { sanitizeAllBrowserStorage } from './utils/courierStorage';
 // Sanitize any legacy credentials stored in browser storage immediately on application load
 sanitizeAllBrowserStorage();
 
-// Configure manual browser scroll restoration so SPA route changes and history.replaceState
-// do not cause conflicting synthetic scroll jumps
-if (typeof window !== 'undefined' && 'scrollRestoration' in window.history) {
-  try {
-    window.history.scrollRestoration = 'manual';
-  } catch {}
-}
-
 // Safely unregister any legacy/stale service workers to prevent cached preview/demo HTML
 if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
   navigator.serviceWorker.getRegistrations().then((registrations) => {

@@ -31,8 +31,6 @@ export function createSignedTestToken(
     pwdSig?: string;
     permissions?: Record<string, boolean>;
     exp?: number;
-    authTime?: number;
-    lastActivity?: number;
   },
   secret: string = getTestSecret(),
   expiresInSeconds: number = 7 * 86400

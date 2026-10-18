@@ -294,11 +294,6 @@ const StoreContent: React.FC = () => {
   const [invalidNotice, setInvalidNotice] = useState<string | null>(null);
   const [homeCategoryFilter, setHomeCategoryFilter] = useState<string>('all');
 
-  // Single Product Route (/product/:id)
-  const isProductRoute =
-    currentView === 'product' ||
-    (typeof window !== 'undefined' && window.location.pathname.startsWith('/product/'));
-
   const filteredHomeCategories = React.useMemo(() => {
     return homeCategoryFilter === 'all'
       ? categories
@@ -323,11 +318,6 @@ const StoreContent: React.FC = () => {
 
   // Authoritative post-render scroll orchestration for category navigation
   React.useEffect(() => {
-    // When customer is viewing a product, category scroll orchestration must never fire
-    if (isProductRoute) {
-      return;
-    }
-
     if (isInitialMountRef.current) {
       isInitialMountRef.current = false;
       prevCategoryRef.current = selectedCategory;
@@ -360,7 +350,7 @@ const StoreContent: React.FC = () => {
       // Navigated back to homepage
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
-  }, [selectedCategory, categoryNavSeq, isProductRoute]);
+  }, [selectedCategory, categoryNavSeq]);
 
   React.useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -419,6 +409,10 @@ const StoreContent: React.FC = () => {
     );
   }
 
+  // Single Product Route (/product/:id)
+  const isProductRoute =
+    currentView === 'product' ||
+    (typeof window !== 'undefined' && window.location.pathname.startsWith('/product/'));
   const currentProductId =
     selectedProductId ||
     (typeof window !== 'undefined' && window.location.pathname.startsWith('/product/')

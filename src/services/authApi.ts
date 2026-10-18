@@ -112,7 +112,6 @@ export function isSessionUnauthorizedError(status: number, errorMsg?: string): b
 }
 
 export function notifyAuthUnauthorized(details: { url: string; error?: string }): void {
-  cachedMeResult = null;
   purgeLegacyTokens(true);
 
   // Notify registered listeners (e.g. StoreContext)
@@ -339,8 +338,9 @@ export const authApi = {
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !data.success) {
           const errorMsg = data.error || `HTTP ${res.status}: Failed to authenticate session`;
-          cachedMeResult = null;
-          return { success: false, status: res.status, error: errorMsg };
+          const failResult = { success: false, status: res.status, error: errorMsg };
+          cachedMeResult = { data: failResult, timestamp: Date.now() };
+          return failResult;
         }
 
         const successResult = { success: true, status: res.status, user: data.user };
@@ -521,8 +521,6 @@ export const authApi = {
    * and clearing in-memory client state.
    */
   async logout(): Promise<void> {
-    cachedMeResult = null;
-    activeMePromise = null;
     purgeLegacyTokens(true);
     try {
       await fetch(`${API_BASE}/auth/logout`, {

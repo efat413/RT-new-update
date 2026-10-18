@@ -3397,7 +3397,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
   const productIdMatch = path.match(/^\/api\/(?:admin\/)?products\/([^/]+)$/);
   if (productIdMatch) {
-    const prodId = decodeURIComponent(productIdMatch[1]).trim();
+    const prodId = decodeURIComponent(productIdMatch[1]);
     const isAdminRoute = path.startsWith('/api/admin/products/');
     const adminParam = url.searchParams.get('admin') === 'true';
     const isExplicitAdminRequest = isAdminRoute || adminParam;

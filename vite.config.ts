@@ -2889,15 +2889,12 @@ function localApiDevPlugin(): Plugin {
               }
             }
 
-            let found = devProducts.find((p) => p.id === id || p.slug === id || (p.slug && p.slug.toLowerCase() === id.toLowerCase()));
+            let found = devProducts.find((p) => p.id === id || p.slug === id);
             if (!found) {
-              const hist = devProductSlugHistory.find((h) => h.slug === id || h.slug.toLowerCase() === id.toLowerCase());
+              const hist = devProductSlugHistory.find((h) => h.slug === id);
               if (hist) {
                 found = devProducts.find((p) => p.id === hist.productId);
               }
-            }
-            if (!found) {
-              found = devProducts.find((p) => (typeof p.title === 'string' && p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') === id.toLowerCase()));
             }
 
             if (!found) {
