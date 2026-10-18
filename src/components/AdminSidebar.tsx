@@ -17,7 +17,6 @@ import {
   Bug,
   TrendingUp,
   MessageSquare,
-  Radio,
 } from 'lucide-react';
 
 interface AdminSidebarProps {
@@ -177,14 +176,6 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
       permission: 'canManageSettings',
     },
     {
-      id: 'broadcaster',
-      label: 'FB Broadcaster',
-      icon: Radio,
-      badge: 'One PSID',
-      color: 'indigo',
-      permission: 'canManageSettings',
-    },
-    {
       id: 'vouchers',
       label: 'Vouchers & Promos',
       icon: TicketPercent,
@@ -226,7 +217,7 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
       <nav className="space-y-1.5 flex-1" aria-label="Admin Navigation Menu">
         {menuItems.map((item) => {
           const Icon = item.icon;
-          const isActive = activeTab === item.id || (item.id === 'broadcaster' && (activeTab === 'broadcaster' || activeTab === 'one-psid'));
+          const isActive = activeTab === item.id;
           const isPermitted = !item.permission || hasPermission(item.permission);
 
           return (

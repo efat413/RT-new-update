@@ -17,7 +17,6 @@ import {
   CheckCircle2,
   Lock,
   MessageSquare,
-  Radio,
 } from 'lucide-react';
 
 export interface AdminTopOptionsBarProps {
@@ -135,14 +134,6 @@ export const AdminTopOptionsBar: React.FC<AdminTopOptionsBarProps> = ({
       permission: 'canManageSettings',
     },
     {
-      id: 'broadcaster',
-      label: 'FB Broadcaster',
-      icon: Radio,
-      badge: 'One PSID',
-      badgeColor: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30',
-      permission: 'canManageSettings',
-    },
-    {
       id: 'vouchers',
       label: 'Vouchers & Promos',
       icon: TicketPercent,
@@ -198,17 +189,10 @@ export const AdminTopOptionsBar: React.FC<AdminTopOptionsBarProps> = ({
 
   const handleSelectOption = (optionId: string) => {
     setActiveTab(optionId);
-    // Smooth scroll the selected element horizontally within the options bar only (never scroll the window)
+    // Smooth scroll the selected element into view
     const target = document.getElementById(`top-nav-opt-${optionId}`);
     if (target && scrollContainerRef.current) {
-      const container = scrollContainerRef.current;
-      const targetOffset = target.offsetLeft;
-      const targetWidth = target.clientWidth;
-      const containerWidth = container.clientWidth;
-      container.scrollTo({
-        left: targetOffset - (containerWidth / 2) + (targetWidth / 2),
-        behavior: 'smooth',
-      });
+      target.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
     }
   };
 
@@ -243,7 +227,7 @@ export const AdminTopOptionsBar: React.FC<AdminTopOptionsBarProps> = ({
         >
           {optionsList.map((opt) => {
             const Icon = opt.icon;
-            const isActive = activeTab === opt.id || (opt.id === 'broadcaster' && (activeTab === 'broadcaster' || activeTab === 'one-psid'));
+            const isActive = activeTab === opt.id;
             const isPermitted = !opt.permission || hasPermission(opt.permission);
 
             return (

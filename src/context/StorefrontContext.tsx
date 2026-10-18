@@ -346,7 +346,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         if (!pathname.startsWith('/admin')) {
           const lastTab = localStorage.getItem('rongdhonu_admin_last_tab') || '';
           const targetPath = lastTab && lastTab !== 'overview'
-            ? (lastTab === 'users' ? '/admin/customers' : (lastTab === 'one-psid' || lastTab === 'broadcaster' || lastTab === 'fb-broadcaster' ? '/admin/one-psid' : `/admin/${lastTab}`))
+            ? (lastTab === 'users' ? '/admin/customers' : `/admin/${lastTab}`)
             : '/admin';
           window.history.pushState({}, '', targetPath);
         }

@@ -14,7 +14,6 @@ export const BODY_LIMIT_REVIEW_UPLOAD = 12 * 1024 * 1024; // 12 MB: Up to 5 phot
 export const BODY_LIMIT_REVIEW_MODERATION = 128 * 1024; // 128 KB: Review status updates & text edits (no image upload)
 export const BODY_LIMIT_ADMIN_CATALOG = 1024 * 1024; // 1 MB: Products, categories, sliders, settings, rich markdown
 export const BODY_LIMIT_MEDIA_UPLOAD = 15 * 1024 * 1024; // 15 MB: Up to 10 MB binary image + base64 encoding / multipart
-export const BODY_LIMIT_BROADCASTER = 512 * 1024; // 512 KB: Recipient audience arrays and campaign broadcast payloads
 export const BODY_LIMIT_DEFAULT = 256 * 1024; // 256 KB: Default ceiling for any other mutating routes
 
 export interface BodyReadError {
@@ -105,12 +104,7 @@ export function getBodySizeLimit(pathname: string, method = 'POST'): number {
     return BODY_LIMIT_ADMIN_CATALOG;
   }
 
-  // 8. Facebook Broadcaster Endpoints (512 KB)
-  if (normPath.startsWith('/api/broadcaster')) {
-    return BODY_LIMIT_BROADCASTER;
-  }
-
-  // 9. Safe Default for any other mutating requests
+  // 8. Safe Default for any other mutating requests
   return BODY_LIMIT_DEFAULT;
 }
 

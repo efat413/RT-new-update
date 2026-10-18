@@ -129,9 +129,6 @@ const AdminCouriersTab = React.lazy(() =>
 const AdminMarketingPixelsTab = React.lazy(() =>
   import('./AdminMarketingPixelsTab').then((m) => ({ default: m.AdminMarketingPixelsTab }))
 );
-const AdminBroadcasterTab = React.lazy(() =>
-  import('./AdminBroadcasterTab').then((m) => ({ default: m.AdminBroadcasterTab }))
-);
 const AdminVouchersTab = React.lazy(() =>
   import('./AdminVouchersTab').then((m) => ({ default: m.AdminVouchersTab }))
 );
@@ -330,18 +327,13 @@ export const AdminPanelContent: React.FC = () => {
 
   // Active Tab
   const [activeTab, setActiveTab] = useState<
-    'overview' | 'profit' | 'orders' | 'products' | 'categories' | 'slides' | 'couriers' | 'settings' | 'users' | 'pixels' | 'vouchers' | 'debug' | 'broadcaster' | 'one-psid'
+    'overview' | 'profit' | 'orders' | 'products' | 'categories' | 'slides' | 'couriers' | 'settings' | 'users' | 'pixels' | 'vouchers' | 'debug'
   >((adminActiveTab as any) || 'overview');
 
   const handleSelectTab = useCallback((tabId: string) => {
-    const targetTab = tabId === 'customers' || tabId === 'accounts'
-      ? 'users'
-      : (tabId === 'broadcaster' || tabId === 'one-psid' || tabId === 'fb-broadcaster' ? 'one-psid' : tabId);
+    const targetTab = tabId === 'customers' || tabId === 'accounts' ? 'users' : tabId;
     setActiveTab(targetTab as any);
     setAdminActiveTab(targetTab);
-    if (typeof window !== 'undefined') {
-      window.scrollTo({ top: 0, behavior: 'instant' });
-    }
   }, [setAdminActiveTab]);
 
   const handleManualLogout = useCallback(() => {
@@ -609,10 +601,7 @@ export const AdminPanelContent: React.FC = () => {
   // Sync tab & section when externally requested via openAdminSettingsSection or deep-linking
   useEffect(() => {
     if (adminActiveTab) {
-      const target = (adminActiveTab === 'broadcaster' || adminActiveTab === 'one-psid' || adminActiveTab === 'fb-broadcaster')
-        ? 'one-psid'
-        : adminActiveTab;
-      setActiveTab(target as any);
+      setActiveTab(adminActiveTab as any);
     }
   }, [adminActiveTab]);
 
@@ -7267,21 +7256,6 @@ export const AdminPanelContent: React.FC = () => {
             <ErrorBoundary compact fallbackTitle="Pixels Unavailable" fallbackMessage="Could not load marketing pixels tab.">
               <React.Suspense fallback={<AdminTabFallback />}>
                 <AdminMarketingPixelsTab />
-              </React.Suspense>
-            </ErrorBoundary>
-          )
-        )}
-
-        {/* ============================================================ */}
-        {/* TAB 9B: FACEBOOK BROADCASTER (ONE PSID = ONE MESSAGE EVER)   */}
-        {/* ============================================================ */}
-        {(activeTab === 'broadcaster' || activeTab === 'one-psid') && (
-          !hasPermission('canManageSettings') ? (
-            renderPermissionRestrictedNotice('canManageSettings', 'Facebook Broadcaster')
-          ) : (
-            <ErrorBoundary compact fallbackTitle="Broadcaster Unavailable" fallbackMessage="Could not load Facebook Broadcaster tab.">
-              <React.Suspense fallback={<AdminTabFallback />}>
-                <AdminBroadcasterTab />
               </React.Suspense>
             </ErrorBoundary>
           )
