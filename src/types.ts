@@ -440,3 +440,62 @@ export interface ToastNotificationData {
 export const isMasterAdminEmail = (_email?: string | null): boolean => {
   return false;
 };
+
+// ==========================================
+// FACEBOOK BROADCASTER TYPES
+// ==========================================
+
+export type FacebookAudienceType =
+  | 'page_contacts'
+  | 'website_customers'
+  | 'post_purchase_subscribers'
+  | 'all_eligible';
+
+export type FacebookMessageTag =
+  | 'NONE'
+  | 'POST_PURCHASE_UPDATE'
+  | 'CONFIRMED_EVENT_UPDATE'
+  | 'ACCOUNT_UPDATE';
+
+export type FacebookRecipientEligibility =
+  | 'eligible_24h'
+  | 'eligible_tag'
+  | 'requires_consent'
+  | 'ineligible_no_psid'
+  | 'opted_out';
+
+export interface FacebookRecipient {
+  id: string;
+  name: string;
+  psid?: string;
+  phone?: string;
+  email?: string;
+  source: 'facebook_messenger' | 'website_order' | 'website_account';
+  lastInteraction: string;
+  isWithin24Hours: boolean;
+  hasMarketingConsent: boolean;
+  orderNumber?: string;
+  eligibilityStatus: FacebookRecipientEligibility;
+  eligibilityReason: string;
+}
+
+export type FacebookCampaignStatus = 'idle' | 'running' | 'paused' | 'completed' | 'cancelled';
+
+export interface BroadcasterMetrics {
+  queued: number;
+  accepted: number;
+  delivered: number;
+  skipped: number;
+  failed: number;
+  remaining: number;
+}
+
+export interface BroadcastLogItem {
+  id: string;
+  timestamp: string;
+  level: 'info' | 'warn' | 'error' | 'success' | 'dispatch' | 'delivery' | 'pacing';
+  message: string;
+  recipientId?: string;
+  recipientName?: string;
+}
+
