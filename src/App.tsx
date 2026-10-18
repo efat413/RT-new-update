@@ -413,11 +413,17 @@ const StoreContent: React.FC = () => {
   const isProductRoute =
     currentView === 'product' ||
     (typeof window !== 'undefined' && window.location.pathname.startsWith('/product/'));
-  const currentProductId =
-    selectedProductId ||
-    (typeof window !== 'undefined' && window.location.pathname.startsWith('/product/')
-      ? decodeURIComponent(window.location.pathname.replace(/^\/product\//, '').replace(/\/$/, '')).trim()
-      : null);
+  const pathProductId =
+    typeof window !== 'undefined' && window.location.pathname.startsWith('/product/')
+      ? (() => {
+          try {
+            return decodeURIComponent(window.location.pathname.replace(/^\/product\//, '').replace(/\/$/, '')).trim();
+          } catch {
+            return window.location.pathname.replace(/^\/product\//, '').replace(/\/$/, '').trim();
+          }
+        })()
+      : null;
+  const currentProductId = pathProductId || selectedProductId;
 
   if (isProductRoute && currentProductId) {
     return (

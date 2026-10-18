@@ -217,22 +217,64 @@ export default {
 
     // 5. Technical SEO & SSR: Check for Product URL (query param or pathname)
     if (url.searchParams.has('product') || url.searchParams.has('p') || url.pathname.startsWith('/product/')) {
-      const prodParam = (
+      const rawProdParam = (
         url.searchParams.get('product') ||
         url.searchParams.get('p') ||
         url.pathname.replace(/^\/product\//, '').replace(/\/$/, '')
       ).trim();
 
+      let prodParam = rawProdParam;
+      try {
+        prodParam = decodeURIComponent(rawProdParam).trim();
+      } catch {
+        prodParam = rawProdParam;
+      }
+
       if (prodParam) {
         let product = null;
+        let dbLookupFailed = false;
         if (env.DB) {
           try {
             product = await getProductById(env.DB, prodParam, { includeBuyingPrice: false, publicOnly: true });
-          } catch {}
+          } catch (err) {
+            console.warn('[Worker Product SEO] D1 query error for product:', err);
+            dbLookupFailed = true;
+          }
         } else {
           product = INITIAL_PRODUCTS.find(
-            (p) => p.id === prodParam || p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') === prodParam
+            (p) => p.id === prodParam || p.slug === prodParam || p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') === prodParam
           ) || null;
+        }
+
+        // If DB query failed due to transient D1 error, serve the SPA shell so client React can fetch and retry
+        if (dbLookupFailed) {
+          console.warn('[Worker Product SEO] Serving SPA index.html fallback for:', prodParam);
+          if (env.ASSETS) {
+            try {
+              const indexRes = await env.ASSETS.fetch(new Request(new URL('/', request.url).toString(), {
+                headers: request.headers,
+              }));
+              if (indexRes.ok) {
+                const html = await indexRes.text();
+                return new Response(html, {
+                  status: 200,
+                  headers: {
+                    'Content-Type': 'text/html; charset=UTF-8',
+                    'Cache-Control': 'public, max-age=0, must-revalidate',
+                    ...secHeaders,
+                  },
+                });
+              }
+            } catch {}
+          }
+          return new Response(getFallbackHtmlTemplate(), {
+            status: 200,
+            headers: {
+              'Content-Type': 'text/html; charset=UTF-8',
+              'Cache-Control': 'public, max-age=0, must-revalidate',
+              ...secHeaders,
+            },
+          });
         }
 
         // Return genuine 404 for missing or inactive/deleted products

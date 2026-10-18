@@ -31,9 +31,25 @@ function safeErrorMessage(rawMsg: any, status: number = 200): string {
   return rawMsg;
 }
 
-async function apiRequest<T>(url: string, options?: RequestInit, timeoutMs = 45000): Promise<{ success: boolean; data?: T; error?: string }> {
+async function apiRequest<T>(
+  url: string,
+  options?: RequestInit,
+  timeoutMs = 45000
+): Promise<{ success: boolean; data?: T; error?: string; status?: number }> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  let isTimedOut = false;
+  const timeoutId = setTimeout(() => {
+    isTimedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  if (options?.signal) {
+    if (options.signal.aborted) {
+      controller.abort();
+    } else {
+      options.signal.addEventListener('abort', () => controller.abort(), { once: true });
+    }
+  }
 
   try {
     const isMutation = options?.method && options.method.toUpperCase() !== 'GET' && options.method.toUpperCase() !== 'HEAD';
@@ -90,29 +106,37 @@ async function apiRequest<T>(url: string, options?: RequestInit, timeoutMs = 450
       return {
         success: false,
         error: errorMsg,
+        status: res.status,
       };
     }
     if (json && json.success === false && json.error) {
       return {
         success: false,
         error: safeErrorMessage(json.error, res.status),
+        status: res.status,
       };
     }
     return {
       success: true,
       data: json as T,
+      status: res.status,
     };
   } catch (err: any) {
     clearTimeout(timeoutId);
-    if (err?.name === 'AbortError' || err?.message?.toLowerCase().includes('abort')) {
+    if (options?.signal?.aborted) {
+      throw new DOMException('The user aborted a request.', 'AbortError');
+    }
+    if (isTimedOut || err?.name === 'AbortError' || err?.message?.toLowerCase().includes('abort')) {
       return {
         success: false,
         error: 'Request timed out while contacting the server. Please try again.',
+        status: 408,
       };
     }
     return {
       success: false,
       error: 'Unable to communicate with the server. Please try again.',
+      status: 0,
     };
   }
 }
@@ -373,11 +397,80 @@ export const productsApi = {
     throw new Error(res.error || 'Failed to fetch paginated products. Please try again.');
   },
 
-  async getById(id: string): Promise<Product | null> {
-    const res = await apiRequest<{ success: boolean; product: Product }>(
-      `${API_BASE}/products/${encodeURIComponent(id)}`
-    );
-    return res.success && res.data && res.data.product ? res.data.product : null;
+  async getById(id: string, options?: { signal?: AbortSignal }): Promise<Product | null> {
+    const res = await this.getByIdDetailed(id, options);
+    return res.product;
+  },
+
+  async getByIdDetailed(id: string, options?: { signal?: AbortSignal }): Promise<{
+    success: boolean;
+    product: Product | null;
+    status: number;
+    error?: string;
+    isNotFound: boolean;
+    isNetworkOrServerError: boolean;
+  }> {
+    const cleanId = String(id || '').trim();
+    if (!cleanId) {
+      return {
+        success: false,
+        product: null,
+        status: 400,
+        error: 'Product identifier is required',
+        isNotFound: true,
+        isNetworkOrServerError: false,
+      };
+    }
+
+    try {
+      if (options?.signal?.aborted) {
+        throw new DOMException('The user aborted a request.', 'AbortError');
+      }
+
+      const res = await apiRequest<{ success: boolean; product: Product }>(
+        `${API_BASE}/products/${encodeURIComponent(cleanId)}`,
+        options?.signal ? { signal: options.signal } : undefined
+      );
+
+      if (options?.signal?.aborted) {
+        throw new DOMException('The user aborted a request.', 'AbortError');
+      }
+
+      if (res.success && res.data && res.data.product) {
+        return {
+          success: true,
+          product: res.data.product,
+          status: 200,
+          isNotFound: false,
+          isNetworkOrServerError: false,
+        };
+      }
+
+      const status = typeof res.status === 'number' ? res.status : (res.success ? 200 : 500);
+      const isNotFound = status === 404;
+      const isNetworkOrServerError = status >= 500 || status === 0 || status === 408;
+
+      return {
+        success: false,
+        product: null,
+        status,
+        error: res.error || (isNotFound ? 'Product not found' : 'Unable to load product'),
+        isNotFound,
+        isNetworkOrServerError,
+      };
+    } catch (err: any) {
+      if (err?.name === 'AbortError' || options?.signal?.aborted) {
+        throw err;
+      }
+      return {
+        success: false,
+        product: null,
+        status: 0,
+        error: err?.message || 'Network error while loading product',
+        isNotFound: false,
+        isNetworkOrServerError: true,
+      };
+    }
   },
 
   async create(product: Partial<Product>): Promise<Product> {

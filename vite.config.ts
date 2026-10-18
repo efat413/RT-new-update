@@ -2861,7 +2861,12 @@ function localApiDevPlugin(): Plugin {
 
         const prodMatch = url.pathname.match(/^\/api\/(?:admin\/)?products\/([^/]+)$/);
         if (prodMatch) {
-          const id = decodeURIComponent(prodMatch[1]);
+          let id = prodMatch[1];
+          try {
+            id = decodeURIComponent(prodMatch[1]).trim();
+          } catch {
+            id = String(prodMatch[1] || '').trim();
+          }
           const isAdminRoute = url.pathname.startsWith('/api/admin/products/');
           const adminParam = url.searchParams.get('admin') === 'true';
           const isExplicitAdminRequest = isAdminRoute || adminParam;
@@ -2889,12 +2894,25 @@ function localApiDevPlugin(): Plugin {
               }
             }
 
-            let found = devProducts.find((p) => p.id === id || p.slug === id);
+            const cleanId = String(id || '').trim();
+            const lowerId = cleanId.toLowerCase();
+            let found = devProducts.find(
+              (p) =>
+                p.id === cleanId ||
+                p.slug === cleanId ||
+                p.id.toLowerCase() === lowerId ||
+                (p.slug && p.slug.toLowerCase() === lowerId)
+            );
             if (!found) {
-              const hist = devProductSlugHistory.find((h) => h.slug === id);
+              const hist = devProductSlugHistory.find((h) => h.slug === cleanId || h.slug?.toLowerCase() === lowerId);
               if (hist) {
                 found = devProducts.find((p) => p.id === hist.productId);
               }
+            }
+            if (!found) {
+              found = devProducts.find(
+                (p) => typeof p.title === 'string' && p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') === lowerId
+              );
             }
 
             if (!found) {

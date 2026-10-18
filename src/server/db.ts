@@ -70,13 +70,16 @@ export async function getProductTableColumns(db: D1Database): Promise<Set<string
     return cachedProductTableColumns;
   }
   try {
-    const res = await db.prepare("SELECT name FROM pragma_table_info('products')").all<{ name: string }>();
-    if (res.results && res.results.length > 0) {
-      cachedProductTableColumns = new Set(res.results.map((r) => r.name.toLowerCase()));
-      return cachedProductTableColumns;
+    const prep = db.prepare("SELECT name FROM pragma_table_info('products')");
+    if (prep && typeof prep.all === 'function') {
+      const res = await prep.all<{ name: string }>();
+      if (res?.results && res.results.length > 0) {
+        cachedProductTableColumns = new Set(res.results.map((r) => r.name.toLowerCase()));
+        return cachedProductTableColumns;
+      }
     }
   } catch (err) {
-    console.warn('[D1] Could not query pragma_table_info for products:', err);
+    // Graceful fallback to default column list
   }
   return new Set([
     'id', 'slug', 'title', 'price', 'original_price', 'buying_price', 'featured_sort_order', 'video_url', 'category_id', 'description',
@@ -1274,15 +1277,18 @@ export async function getProductById(
   id: string,
   options?: { includeBuyingPrice?: boolean; publicOnly?: boolean }
 ): Promise<Product | null> {
+  const cleanId = String(id || '').trim();
+  if (!cleanId) return null;
+
   const availableColumns = await ensureProductTableSchema(db);
   const columns = buildSelectProductColumns(
     availableColumns,
     !options?.publicOnly && options?.includeBuyingPrice !== false
   );
-  // Match either internal product ID or current SEO URL slug
+  // Match either internal product ID or current SEO URL slug (exact or case-insensitive)
   let row = await db
-    .prepare(`SELECT ${columns} FROM products WHERE id = ? OR slug = ? LIMIT 1`)
-    .bind(id, id)
+    .prepare(`SELECT ${columns} FROM products WHERE id = ? OR LOWER(id) = LOWER(?) OR LOWER(slug) = LOWER(?) LIMIT 1`)
+    .bind(cleanId, cleanId, cleanId)
     .first<ProductRow>();
 
   // If not found as current product or slug, resolve via historical slug in product_slug_history
@@ -1297,13 +1303,32 @@ export async function getProductById(
           SELECT ${pCols}
           FROM product_slug_history psh
           JOIN products p ON psh.product_id = p.id
-          WHERE psh.slug = ?
+          WHERE psh.slug = ? OR LOWER(psh.slug) = LOWER(?)
           LIMIT 1
         `)
-        .bind(id)
+        .bind(cleanId, cleanId)
         .first<ProductRow>();
     } catch {
       // Historical lookup gracefully proceeds if table empty or query fails
+    }
+  }
+
+  // Fallback: If still not found, check if cleanId matches normalized slugified title
+  if (!row) {
+    try {
+      const lowerCleanId = cleanId.toLowerCase();
+      const allRows = await db
+        .prepare(`SELECT ${columns} FROM products WHERE status = 'active' OR status = 'published' LIMIT 150`)
+        .all<ProductRow>();
+      if (allRows?.results) {
+        row = allRows.results.find((r) => {
+          if (!r.title) return false;
+          const slugified = r.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+          return slugified === lowerCleanId || r.title.toLowerCase() === lowerCleanId;
+        }) || null;
+      }
+    } catch {
+      // Graceful fallback
     }
   }
 
@@ -1315,31 +1340,7 @@ export async function getProductBySlug(
   slug: string,
   options?: { includeBuyingPrice?: boolean; publicOnly?: boolean }
 ): Promise<Product | null> {
-  const availableColumns = await ensureProductTableSchema(db);
-  const columns = buildSelectProductColumns(
-    availableColumns,
-    !options?.publicOnly && options?.includeBuyingPrice !== false
-  );
-  let row = await db.prepare(`SELECT ${columns} FROM products WHERE slug = ? LIMIT 1`).bind(slug).first<ProductRow>();
-  if (!row) {
-    try {
-      const pCols = columns
-        .split(',')
-        .map((col) => `p.${col.trim()}`)
-        .join(', ');
-      row = await db
-        .prepare(`
-          SELECT ${pCols}
-          FROM product_slug_history psh
-          JOIN products p ON psh.product_id = p.id
-          WHERE psh.slug = ?
-          LIMIT 1
-        `)
-        .bind(slug)
-        .first<ProductRow>();
-    } catch {}
-  }
-  return row ? rowToProduct(row) : null;
+  return getProductById(db, slug, options);
 }
 
 /**

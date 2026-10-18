@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import {
   Star,
   ShoppingCart,
@@ -70,6 +70,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
     singleProduct,
     isProductLoading,
     productNotFound,
+    productError,
     loadProductById,
     currentView,
     selectedProductId,
@@ -112,18 +113,33 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
     onConfirm: () => {},
   });
 
-  // Fetch product directly from server on mount or when productId prop changes
-  useEffect(() => {
-    if (productId) {
-      loadProductById(productId);
-    }
-    // Scroll window smoothly to top when viewing a new product
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }, [productId, loadProductById]);
+  // Helper: check if product matches productId query (case-insensitive, by id, slug, or slugified title)
+  const matchesProduct = useCallback((p: Product | null | undefined, targetId?: string) => {
+    if (!p) return false;
+    const query = String(targetId || productId || '').trim().toLowerCase();
+    if (!query) return false;
+    const prodId = String(p.id || '').trim().toLowerCase();
+    const prodSlug = String(p.slug || '').trim().toLowerCase();
+    const prodTitleSlug = typeof p.title === 'string'
+      ? p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+      : '';
+    return prodId === query || prodSlug === query || prodTitleSlug === query;
+  }, [productId]);
 
   // Use the fetched product or the matching one from products (matches by slug, id, or normalized title)
-  const matchesProduct = (p: Product | null | undefined) => Boolean(p && (p.id === productId || p.slug === productId || (typeof p.title === 'string' && p.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') === productId)));
   const product = (matchesProduct(singleProduct) ? singleProduct : null) || products.find((p) => matchesProduct(p)) || null;
+
+  // Fetch product directly from server on mount or when productId prop changes
+  useEffect(() => {
+    if (!productId) return;
+    // If currently loaded product already matches this productId, avoid redundant network roundtrip
+    if (matchesProduct(singleProduct, productId)) {
+      return;
+    }
+    loadProductById(productId);
+    // Scroll window smoothly to top when viewing a new product
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [productId, loadProductById, matchesProduct, singleProduct]);
 
   // Dynamic URL Synchronization:
   // As soon as a single product is viewed or loaded, automatically update the browser's
@@ -233,8 +249,10 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  // 1. Loading Skeleton State
-  if (isProductLoading && !product) {
+  // 1. Loading Skeleton State:
+  // Render skeleton whenever product is loading OR while initial product fetch is inflight
+  const isLoading = isProductLoading || (!product && !productNotFound && !productError);
+  if (isLoading && !product) {
     return (
       <div className="py-6 sm:py-10 max-w-7xl mx-auto">
         {/* Breadcrumb Skeleton */}
@@ -274,8 +292,57 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
     );
   }
 
-  // 2. 404 Product Not Found State
-  if (productNotFound || (!product && !isProductLoading)) {
+  // 2. Recoverable Network / Server Error State (5xx or connection drop)
+  if (productError && !product) {
+    return (
+      <div className="py-12 sm:py-16 max-w-4xl mx-auto px-4 text-center">
+        <div className="bg-white rounded-3xl border border-slate-200 shadow-sm p-8 sm:p-12 space-y-6">
+          <div className="w-20 h-20 rounded-3xl bg-amber-50 text-amber-500 flex items-center justify-center mx-auto border border-amber-100 shadow-xs">
+            <AlertTriangle className="w-10 h-10" />
+          </div>
+
+          <div className="space-y-2 max-w-lg mx-auto">
+            <span className="inline-block px-3 py-1 rounded-full bg-amber-100 text-amber-800 text-xs font-bold uppercase tracking-wider">
+              Connection Issue
+            </span>
+            <h1 className="font-display font-extrabold text-2xl sm:text-3xl text-slate-900">
+              Unable to Load Product
+            </h1>
+            <p className="text-sm text-slate-500 leading-relaxed">
+              {productError || 'We could not reach the server to load this product. Please check your connection and try again.'}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+            <button
+              type="button"
+              onClick={() => {
+                if (productId) {
+                  loadProductById(productId, { force: true });
+                }
+              }}
+              className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs sm:text-sm font-bold shadow-md hover:shadow-lg active:scale-95 transition-all cursor-pointer"
+            >
+              <RotateCcw className="w-4 h-4" />
+              <span>Try Again</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleBackToHome}
+              className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-slate-900 hover:bg-black text-white text-xs sm:text-sm font-bold shadow-md hover:shadow-lg active:scale-95 transition-all cursor-pointer"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>Back to All Products</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 3. 404 Product Not Found State
+  if (productNotFound || (!product && !isLoading && !productError)) {
     const supportWhatsAppNumber = settings.footer?.supportWhatsApp || settings.phone || '';
     const whatsappHref = formatWhatsAppLink(
       supportWhatsAppNumber,
