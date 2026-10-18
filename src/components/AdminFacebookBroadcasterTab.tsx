@@ -39,6 +39,12 @@ import {
   BroadcasterMetrics,
   BroadcastLogItem,
 } from '../types';
+import {
+  fetchFacebookStatus,
+  testFacebookConnection,
+  sendFacebookMessage,
+} from '../services/facebookApi';
+import { FacebookConfigStatus } from '../server/facebookMessenger';
 
 // Pre-defined high-conversion Bangladeshi e-commerce message templates
 interface MessagePreset {
@@ -118,6 +124,8 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
   const [selectedRecipientIds, setSelectedRecipientIds] = useState<Set<string>>(new Set());
   const [showRecipientInspector, setShowRecipientInspector] = useState<boolean>(false);
   const [showSecretsGuide, setShowSecretsGuide] = useState<boolean>(false);
+  const [configStatus, setConfigStatus] = useState<FacebookConfigStatus | null>(null);
+  const [isTestingConnection, setIsTestingConnection] = useState<boolean>(false);
 
   // Campaign State & Metrics
   const [campaignStatus, setCampaignStatus] = useState<FacebookCampaignStatus>('idle');
@@ -136,7 +144,7 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
       id: 'init-1',
       timestamp: new Date().toLocaleTimeString(),
       level: 'info',
-      message: 'Broadcaster Pro Engine initialized. Waiting for campaign setup.',
+      message: 'Broadcaster Pro Engine initialized. Checking Cloudflare Worker Meta status...',
     },
     {
       id: 'init-2',
@@ -145,6 +153,40 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
       message: 'Notice: Delivery tracking relies on Meta delivery webhook receipts. Engine strictly separates API acceptance from verified delivery.',
     },
   ]);
+
+  // Check backend Meta setup status on mount
+  useEffect(() => {
+    fetchFacebookStatus().then((res) => {
+      if (res.success && res.status) {
+        setConfigStatus(res.status);
+        if (res.status.isConfigured) {
+          addLog('success', `[BACKEND READY] Meta credentials verified on Cloudflare Worker (Page ID: ${res.status.pageId || 'Configured'}).`);
+        } else {
+          addLog('warn', `[SETUP REQUIRED] Meta credentials incomplete: ${res.status.missingRequirements.length} required Worker secret(s) missing.`);
+        }
+      }
+    }).catch(() => {});
+  }, []);
+
+  const handleTestMetaConnection = async () => {
+    setIsTestingConnection(true);
+    addLog('info', 'Testing Meta Graph API connection via Cloudflare Worker backend...');
+    try {
+      const res = await testFacebookConnection();
+      setIsTestingConnection(false);
+
+      if (res.success) {
+        addLog('success', `[META CONNECTED] Authenticated as Page: "${res.pageName || res.pageId}" (ID: ${res.pageId}).`);
+        showNotification('success', 'Meta API Connected', `Connected to Facebook Page: ${res.pageName || res.pageId}`);
+      } else {
+        addLog('error', `[META CONNECTION FAILED] ${res.error || 'Check FB_PAGE_ACCESS_TOKEN'}`);
+        showNotification('error', 'Connection Test Failed', res.error || 'Failed to authenticate with Meta Graph API.');
+      }
+    } catch (err: any) {
+      setIsTestingConnection(false);
+      addLog('error', `[META CONNECTION ERROR] ${err.message || 'Network error'}`);
+    }
+  };
 
   const consoleBottomRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState<boolean>(true);
@@ -513,19 +555,64 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
       .replace(/{discount_code}/g, 'RONGDHONU10')
       .replace(/{shop_name}/g, settings?.siteName || 'Rongdhonu Trade');
 
-    // Simulate dispatch acceptance (Truthful: marks as ACCEPTED by engine, NOT delivered)
-    setMetrics((prev) => ({
-      ...prev,
-      accepted: prev.accepted + 1,
-      remaining: Math.max(0, prev.remaining - 1),
-    }));
+    // Call secure backend dispatch endpoint
+    sendFacebookMessage({
+      recipientPsid: recipient.psid,
+      text: personalized,
+      tag: selectedTag,
+      isWithin24Hours: recipient.isWithin24Hours,
+      recipientName: recipient.name,
+      orderNumber: recipient.orderNumber,
+    })
+      .then((res) => {
+        if (res.success) {
+          setMetrics((prev) => ({
+            ...prev,
+            accepted: prev.accepted + 1,
+            remaining: Math.max(0, prev.remaining - 1),
+          }));
+          addLog('dispatch', `[ACCEPTED] Dispatched to ${recipient.name} [PSID: ${recipient.psid?.slice(0, 10)}...] via Meta Tag: ${selectedTag} (Meta Message ID: ${res.messageId})`);
+          addLog('info', `Message preview: "${personalized.slice(0, 60)}..."`);
+          addLog('delivery', `Delivery note: Delivery watermark pending Meta Webhook receipt.`);
+        } else if (res.policyBlocked) {
+          setMetrics((prev) => ({
+            ...prev,
+            skipped: prev.skipped + 1,
+            remaining: Math.max(0, prev.remaining - 1),
+          }));
+          addLog('warn', `[POLICY BLOCKED] ${recipient.name}: ${res.error || 'Meta 24-hour window policy restriction'}`, recipient.name);
+        } else if (res.notConfigured) {
+          // Worker secrets not set: local pacing simulation
+          setMetrics((prev) => ({
+            ...prev,
+            accepted: prev.accepted + 1,
+            remaining: Math.max(0, prev.remaining - 1),
+          }));
+          addLog('dispatch', `[ACCEPTED (DEV QUEUE)] Dispatched to ${recipient.name} [PSID: ${recipient.psid?.slice(0, 10)}...] (Worker secret not set; simulated pacing queue)`);
+          addLog('info', `Message preview: "${personalized.slice(0, 60)}..."`);
+          addLog('delivery', `Delivery note: Real dispatch requires setting FB_PAGE_ACCESS_TOKEN in Cloudflare Worker secrets.`);
+        } else {
+          setMetrics((prev) => ({
+            ...prev,
+            failed: prev.failed + 1,
+            remaining: Math.max(0, prev.remaining - 1),
+          }));
+          addLog('error', `[FAILED] ${recipient.name}: ${res.error || 'Dispatch rejected by Meta Graph API'}`, recipient.name);
+        }
 
-    addLog('dispatch', `[ACCEPTED] Dispatched to ${recipient.name} [PSID: ${recipient.psid.slice(0, 10)}...] via Meta Tag: ${selectedTag}`);
-    addLog('info', `Message preview: "${personalized.slice(0, 60)}..."`);
-    addLog('delivery', `Delivery note: Delivery watermark pending Meta Webhook receipt.`);
-
-    currentIndexRef.current++;
-    scheduleNextStep();
+        currentIndexRef.current++;
+        scheduleNextStep();
+      })
+      .catch((err: any) => {
+        setMetrics((prev) => ({
+          ...prev,
+          failed: prev.failed + 1,
+          remaining: Math.max(0, prev.remaining - 1),
+        }));
+        addLog('error', `[FAILED] ${recipient.name}: ${err.message || 'Dispatch error'}`, recipient.name);
+        currentIndexRef.current++;
+        scheduleNextStep();
+      });
   };
 
   // SCHEDULE NEXT STEP WITH RANDOM DELAY (PACING)
@@ -596,6 +683,18 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
             <span className="text-slate-700">Page ID:</span>
             <code className="font-mono text-slate-900 font-bold">{pageId}</code>
           </div>
+
+          <button
+            type="button"
+            id="broadcaster-test-connection-btn"
+            disabled={isTestingConnection}
+            onClick={handleTestMetaConnection}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 text-xs font-bold transition-all cursor-pointer disabled:opacity-50"
+            title="Ping Meta Graph API with server-side Cloudflare Worker secrets"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isTestingConnection ? 'animate-spin' : ''}`} />
+            <span>{isTestingConnection ? 'Testing...' : 'Test Connection'}</span>
+          </button>
 
           <button
             type="button"

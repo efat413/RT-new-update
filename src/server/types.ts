@@ -45,6 +45,11 @@ export interface Env {
   ALLOWED_ORIGINS?: string;
   SUPER_ADMIN_EMAILS?: string;
   SUPER_ADMIN_USER_IDS?: string;
+  // Meta Messenger Broadcaster Secrets
+  FB_PAGE_ACCESS_TOKEN?: string;
+  FB_APP_SECRET?: string;
+  FB_PAGE_ID?: string;
+  FB_WEBHOOK_VERIFY_TOKEN?: string;
   [key: string]: any;
 }
 

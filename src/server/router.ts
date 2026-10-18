@@ -168,6 +168,13 @@ import {
   MAX_REVIEW_IMAGE_DIMENSION,
 } from './imageSecurity';
 import {
+  getFacebookConfigStatus,
+  sendMetaMessengerMessage,
+  handleMetaWebhookHandshake,
+  handleMetaWebhookEvent,
+  testMetaConnection,
+} from './facebookMessenger';
+import {
   getBodySizeLimit,
   readRawBodyWithLimit,
   BODY_LIMIT_DEFAULT,
@@ -8230,6 +8237,138 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       console.error('Error deleting expense:', err);
       return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
     }
+  }
+
+  // ==========================================
+  // 11. FACEBOOK BROADCASTER & META MESSENGER ROUTES
+  // ==========================================
+
+  // 11A. Meta Webhook Verification Challenge (GET /api/webhooks/facebook)
+  if ((path === '/api/webhooks/facebook' || path === '/api/webhook/facebook') && method === 'GET') {
+    return handleMetaWebhookHandshake(url, env);
+  }
+
+  // 11B. Meta Webhook Inbound Delivery Receipts & Read Watermarks (POST /api/webhooks/facebook)
+  if ((path === '/api/webhooks/facebook' || path === '/api/webhook/facebook') && method === 'POST') {
+    const { buffer: rawBytes, error: bodyErr } = await readRawBodyWithLimit(request, BODY_LIMIT_WEBHOOK);
+    if (bodyErr) {
+      return jsonResponse({ success: false, error: bodyErr.error }, bodyErr.status);
+    }
+    const rawBody = rawBytes ? new TextDecoder('utf-8').decode(rawBytes) : '';
+
+    const eventResult = await handleMetaWebhookEvent(request, rawBody, env);
+    if (!eventResult.success) {
+      return jsonResponse({ success: false, error: eventResult.error }, eventResult.status);
+    }
+
+    if (env.DB && eventResult.events && eventResult.events.length > 0) {
+      try {
+        await insertAuditLogInD1(env.DB, {
+          actorId: 'webhook:meta_facebook',
+          actorEmail: 'webhook@graph.facebook.com',
+          actorRole: 'webhook',
+          action: 'FACEBOOK_WEBHOOK_DELIVERY_RECEIPT',
+          targetId: 'meta_messenger',
+          targetType: 'facebook_message',
+          details: `Processed ${eventResult.events.length} Meta event(s): ${eventResult.events.map((e) => e.type).join(', ')}.`,
+        });
+      } catch {}
+    }
+
+    return new Response('EVENT_RECEIVED', {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/plain; charset=UTF-8',
+        'Cache-Control': 'no-store, no-cache',
+      },
+    });
+  }
+
+  // 11C. Status & Security Readiness (GET /api/admin/facebook/status or /api/admin/broadcaster/status)
+  if (
+    (path === '/api/admin/facebook/status' || path === '/api/admin/broadcaster/status') &&
+    method === 'GET'
+  ) {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const isAuthorized =
+      hasPermission(auth!, 'settings.manage') ||
+      Boolean(auth?.legacyPermissions?.canManageSettings) ||
+      auth?.role === 'admin' ||
+      auth?.role === 'super_admin';
+
+    if (!isAuthorized) {
+      return jsonResponse(
+        { success: false, error: 'Forbidden: Admin settings privileges required to inspect Facebook Broadcaster status.' },
+        403
+      );
+    }
+
+    const status = getFacebookConfigStatus(env);
+    return jsonResponse({ success: true, status });
+  }
+
+  // 11D. Test Meta Page Connection (POST /api/admin/facebook/test-connection)
+  if (path === '/api/admin/facebook/test-connection' && method === 'POST') {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const isAuthorized =
+      hasPermission(auth!, 'settings.manage') ||
+      Boolean(auth?.legacyPermissions?.canManageSettings) ||
+      auth?.role === 'admin' ||
+      auth?.role === 'super_admin';
+
+    if (!isAuthorized) {
+      return jsonResponse(
+        { success: false, error: 'Forbidden: Admin settings privileges required to test Facebook connection.' },
+        403
+      );
+    }
+
+    const testResult = await testMetaConnection(env);
+    return jsonResponse(testResult, testResult.status);
+  }
+
+  // 11E. Official Meta Graph Send API Dispatch (POST /api/admin/facebook/send or /api/admin/broadcaster/send)
+  if (
+    (path === '/api/admin/facebook/send' || path === '/api/admin/broadcaster/send') &&
+    method === 'POST'
+  ) {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const isAuthorized =
+      hasPermission(auth!, 'settings.manage') ||
+      Boolean(auth?.legacyPermissions?.canManageSettings) ||
+      auth?.role === 'admin' ||
+      auth?.role === 'super_admin';
+
+    if (!isAuthorized) {
+      return jsonResponse(
+        { success: false, error: 'Forbidden: Admin privileges required to dispatch Facebook Broadcaster campaigns.' },
+        403
+      );
+    }
+
+    const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+    if (jsonErr) return jsonErr;
+
+    const result = await sendMetaMessengerMessage(body || {}, env);
+
+    if (result.success && env.DB) {
+      try {
+        await insertAuditLogInD1(env.DB, {
+          actorId: auth!.dbUser.id,
+          actorEmail: auth!.dbUser.email,
+          actorRole: auth!.role,
+          action: 'FACEBOOK_BROADCAST_SEND',
+          targetId: result.recipientId || body?.recipientPsid || 'unknown',
+          targetType: 'facebook_message',
+          details: `Dispatched Messenger message (ID: ${result.messageId}) via Meta Tag [${body?.tag || 'NONE'}].`,
+        });
+      } catch {}
+    }
+
+    return jsonResponse(result, result.status);
   }
 
     return jsonResponse({ success: false, error: 'Endpoint not found' }, 404);

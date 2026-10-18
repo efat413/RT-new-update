@@ -52,6 +52,13 @@ import {
   sanitizeReviewImageReference,
   MAX_IMAGE_SIZE_BYTES,
 } from './src/server/imageSecurity';
+import {
+  getFacebookConfigStatus,
+  sendMetaMessengerMessage,
+  handleMetaWebhookHandshake,
+  handleMetaWebhookEvent,
+  testMetaConnection,
+} from './src/server/facebookMessenger';
 
 process.env.ADMIN_SECRET = process.env.ADMIN_SECRET || 'dev-secret-test-shared-999';
 process.env.COURIER_WEBHOOK_SECRET = process.env.COURIER_WEBHOOK_SECRET || 'dev-courier-webhook-secret-999';
@@ -1657,7 +1664,11 @@ function localApiDevPlugin(): Plugin {
 
         // Strict CSRF and Origin Validation on mutating requests
         if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
-          const isWebhook = url.pathname.startsWith('/api/courier/webhook') || url.pathname.startsWith('/api/steadfast/webhook');
+          const isWebhook =
+            url.pathname.startsWith('/api/courier/webhook') ||
+            url.pathname.startsWith('/api/steadfast/webhook') ||
+            url.pathname.startsWith('/api/webhooks/facebook') ||
+            url.pathname.startsWith('/api/webhook/facebook');
           if (!isWebhook) {
             if (reqOrigin && !isOriginAllowed) {
               res.statusCode = 403;
@@ -7066,6 +7077,95 @@ function localApiDevPlugin(): Plugin {
           devExpenses = devExpenses.filter((e) => e.id !== id);
           res.statusCode = 200;
           return res.end(JSON.stringify({ success: true, message: `Expense "${id}" deleted.` }));
+        }
+
+        // 12. FACEBOOK BROADCASTER & META MESSENGER ROUTES (DEV SERVER)
+        if (url.pathname === '/api/webhooks/facebook' || url.pathname === '/api/webhook/facebook') {
+          const devEnv: any = {
+            ...process.env,
+            ADMIN_SECRET: process.env.ADMIN_SECRET,
+            FB_PAGE_ACCESS_TOKEN: process.env.FB_PAGE_ACCESS_TOKEN,
+            FB_APP_SECRET: process.env.FB_APP_SECRET,
+            FB_PAGE_ID: process.env.FB_PAGE_ID,
+            FB_WEBHOOK_VERIFY_TOKEN: process.env.FB_WEBHOOK_VERIFY_TOKEN,
+          };
+
+          if (method === 'GET') {
+            const handshakeResp = handleMetaWebhookHandshake(url, devEnv);
+            res.statusCode = handshakeResp.status;
+            res.setHeader('Content-Type', 'text/plain; charset=UTF-8');
+            const text = await handshakeResp.text();
+            return res.end(text);
+          }
+
+          if (method === 'POST') {
+            return readRawBody(async (rawText) => {
+              const dummyReq = new Request('http://localhost:3000/api/webhooks/facebook', {
+                method: 'POST',
+                headers: req.headers as any,
+                body: rawText,
+              });
+              const eventResult = await handleMetaWebhookEvent(dummyReq, rawText, devEnv);
+              if (!eventResult.success) {
+                res.statusCode = eventResult.status;
+                res.setHeader('Content-Type', 'application/json');
+                return res.end(JSON.stringify({ success: false, error: eventResult.error }));
+              }
+
+              res.statusCode = 200;
+              res.setHeader('Content-Type', 'text/plain; charset=UTF-8');
+              return res.end('EVENT_RECEIVED');
+            });
+          }
+        }
+
+        if (url.pathname === '/api/admin/facebook/status' || url.pathname === '/api/admin/broadcaster/status') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          const devEnv: any = {
+            ...process.env,
+            FB_PAGE_ACCESS_TOKEN: process.env.FB_PAGE_ACCESS_TOKEN,
+            FB_APP_SECRET: process.env.FB_APP_SECRET,
+            FB_PAGE_ID: process.env.FB_PAGE_ID,
+            FB_WEBHOOK_VERIFY_TOKEN: process.env.FB_WEBHOOK_VERIFY_TOKEN,
+          };
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          return res.end(JSON.stringify({ success: true, status: getFacebookConfigStatus(devEnv) }));
+        }
+
+        if (url.pathname === '/api/admin/facebook/test-connection') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          const devEnv: any = {
+            ...process.env,
+            FB_PAGE_ACCESS_TOKEN: process.env.FB_PAGE_ACCESS_TOKEN,
+            FB_APP_SECRET: process.env.FB_APP_SECRET,
+            FB_PAGE_ID: process.env.FB_PAGE_ID,
+            FB_WEBHOOK_VERIFY_TOKEN: process.env.FB_WEBHOOK_VERIFY_TOKEN,
+          };
+          const testRes = await testMetaConnection(devEnv);
+          res.statusCode = testRes.status;
+          res.setHeader('Content-Type', 'application/json');
+          return res.end(JSON.stringify(testRes));
+        }
+
+        if (url.pathname === '/api/admin/facebook/send' || url.pathname === '/api/admin/broadcaster/send') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          return readBody(async (body) => {
+            const devEnv: any = {
+              ...process.env,
+              FB_PAGE_ACCESS_TOKEN: process.env.FB_PAGE_ACCESS_TOKEN,
+              FB_APP_SECRET: process.env.FB_APP_SECRET,
+              FB_PAGE_ID: process.env.FB_PAGE_ID,
+              FB_WEBHOOK_VERIFY_TOKEN: process.env.FB_WEBHOOK_VERIFY_TOKEN,
+            };
+            const result = await sendMetaMessengerMessage(body || {}, devEnv);
+            res.statusCode = result.status;
+            res.setHeader('Content-Type', 'application/json');
+            return res.end(JSON.stringify(result));
+          });
         }
 
         if (url.pathname.startsWith('/api/')) {
