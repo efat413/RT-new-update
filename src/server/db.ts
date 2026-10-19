@@ -2297,6 +2297,19 @@ export function controlledMergeSettings(current: StoreSettings, updates: Partial
     }
   }
 
+  // Approved public address enforcement
+  const isOutdatedAddress = (addr?: any): boolean => {
+    if (typeof addr !== 'string') return false;
+    const lower = addr.toLowerCase();
+    return lower.includes('house 14') || (lower.includes('sector 7') && lower.includes('uttara'));
+  };
+  if (merged.footer && isOutdatedAddress(merged.footer.officeAddress)) {
+    merged.footer.officeAddress = 'Uttara, Dhaka 1230';
+  }
+  if (isOutdatedAddress(merged.address)) {
+    merged.address = 'Uttara, Dhaka 1230';
+  }
+
   // Security constraint: Production courier API credentials must never be persisted into D1 store_settings
   delete (merged as any).steadfastApiKey;
   delete (merged as any).steadfastSecretKey;
@@ -2402,10 +2415,25 @@ export function parseStoreSettingsRow(row: { settings_json?: string } | null | u
       ? parsed.topBarAnnouncementText
       : (parsed.announcementText !== undefined && parsed.announcementText !== null ? parsed.announcementText : '');
 
+    const isOutdatedAddress = (addr?: any): boolean => {
+      if (typeof addr !== 'string') return false;
+      const lower = addr.toLowerCase();
+      return lower.includes('house 14') || (lower.includes('sector 7') && lower.includes('uttara'));
+    };
+
+    const cleanAddress = isOutdatedAddress(parsed.address)
+      ? 'Uttara, Dhaka 1230'
+      : (parsed.address || INITIAL_SETTINGS.address);
+
+    const cleanOfficeAddress = isOutdatedAddress(parsed.footer?.officeAddress)
+      ? 'Uttara, Dhaka 1230'
+      : (parsed.footer?.officeAddress || INITIAL_SETTINGS.footer.officeAddress);
+
     // D1 is authoritative. Return exact values stored in D1 without hardcoding fallbacks.
     return {
       ...INITIAL_SETTINGS,
       ...parsed,
+      address: cleanAddress,
       fbPixelId: parsed.fbPixelId !== undefined ? parsed.fbPixelId : (INITIAL_SETTINGS.fbPixelId || ''),
       fbTestEventCode: parsed.fbTestEventCode !== undefined ? parsed.fbTestEventCode : (INITIAL_SETTINGS.fbTestEventCode || ''),
       gtmId: parsed.gtmId !== undefined ? parsed.gtmId : (INITIAL_SETTINGS.gtmId || ''),
@@ -2423,6 +2451,7 @@ export function parseStoreSettingsRow(row: { settings_json?: string } | null | u
       footer: {
         ...INITIAL_SETTINGS.footer,
         ...(parsed.footer || {}),
+        officeAddress: cleanOfficeAddress,
         warrantyBadgeText:
           parsed.footer?.warrantyBadgeText === '7-Day Return & Replacement Warranty'
             ? ''
@@ -2448,6 +2477,39 @@ export async function getStoreSettings(db: D1Database): Promise<StoreSettings> {
   const row = await db
     .prepare('SELECT settings_json FROM store_settings WHERE id = "default" LIMIT 1')
     .first<StoreSettingsRow>();
+
+  if (row && typeof row.settings_json === 'string') {
+    const rawLower = row.settings_json.toLowerCase();
+    if (rawLower.includes('house 14') || (rawLower.includes('sector 7') && rawLower.includes('uttara'))) {
+      try {
+        await db
+          .prepare(
+            `UPDATE store_settings
+             SET settings_json = json_set(
+               json_set(settings_json, '$.footer.officeAddress', 'Uttara, Dhaka 1230'),
+               '$.address', 'Uttara, Dhaka 1230'
+             ),
+             updated_at = CURRENT_TIMESTAMP
+             WHERE id = 'default'`
+          )
+          .run();
+      } catch {
+        try {
+          const parsed = JSON.parse(row.settings_json);
+          if (parsed && typeof parsed === 'object') {
+            if (parsed.footer && typeof parsed.footer === 'object') {
+              parsed.footer.officeAddress = 'Uttara, Dhaka 1230';
+            }
+            parsed.address = 'Uttara, Dhaka 1230';
+            await db
+              .prepare('UPDATE store_settings SET settings_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = "default"')
+              .bind(JSON.stringify(parsed))
+              .run();
+          }
+        } catch {}
+      }
+    }
+  }
 
   return parseStoreSettingsRow(row);
 }

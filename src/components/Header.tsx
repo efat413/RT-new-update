@@ -133,7 +133,15 @@ export const Header: React.FC = () => {
   const displayPhone = (settings.phone || settings.footer?.supportPhone || '').trim();
   const supportWhatsApp = (settings.footer?.supportWhatsApp || settings.phone || settings.footer?.supportPhone || '').trim();
   const displayEmail = (settings.footer?.supportEmail || '').trim();
-  const displayAddress = (settings.address || settings.footer?.officeAddress || '').trim();
+  const isOutdatedAddress = (addr?: string): boolean => {
+    if (!addr || typeof addr !== 'string') return false;
+    const lower = addr.toLowerCase();
+    return lower.includes('house 14') || (lower.includes('sector 7') && lower.includes('uttara'));
+  };
+  const rawDisplayAddress = (settings.address || settings.footer?.officeAddress || '').trim();
+  const displayAddress = isOutdatedAddress(rawDisplayAddress)
+    ? 'Uttara, Dhaka 1230'
+    : rawDisplayAddress;
   const whatsAppButtonText = settings.footer?.whatsAppButtonText || 'WhatsApp';
 
   const isPrivilegedAdmin =

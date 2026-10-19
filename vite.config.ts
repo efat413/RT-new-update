@@ -166,9 +166,22 @@ function localApiDevPlugin(): Plugin {
       const savedRaw = fs.readFileSync(SETTINGS_FILE, 'utf-8');
       const savedParsed = JSON.parse(savedRaw);
       if (savedParsed && typeof savedParsed === 'object') {
+        const isOutdated = (addr?: any): boolean => {
+          if (typeof addr !== 'string') return false;
+          const lower = addr.toLowerCase();
+          return lower.includes('house 14') || (lower.includes('sector 7') && lower.includes('uttara'));
+        };
+        const cleanDevOfficeAddress = isOutdated(savedParsed.footer?.officeAddress)
+          ? 'Uttara, Dhaka 1230'
+          : (savedParsed.footer?.officeAddress || INITIAL_SETTINGS.footer.officeAddress);
+        const cleanDevAddress = isOutdated(savedParsed.address)
+          ? 'Uttara, Dhaka 1230'
+          : (savedParsed.address || INITIAL_SETTINGS.address);
+
         devSettings = {
           ...INITIAL_SETTINGS,
           ...savedParsed,
+          address: cleanDevAddress,
           dbblBank: {
             ...INITIAL_SETTINGS.dbblBank,
             ...(savedParsed.dbblBank || {}),
@@ -176,6 +189,7 @@ function localApiDevPlugin(): Plugin {
           footer: {
             ...INITIAL_SETTINGS.footer,
             ...(savedParsed.footer || {}),
+            officeAddress: cleanDevOfficeAddress,
           },
         };
       }
@@ -1128,7 +1142,19 @@ function localApiDevPlugin(): Plugin {
     });
   };
 
+  const isOutdatedDevAddressVal = (addr?: any): boolean => {
+    if (typeof addr !== 'string') return false;
+    const lower = addr.toLowerCase();
+    return lower.includes('house 14') || (lower.includes('sector 7') && lower.includes('uttara'));
+  };
+
   const maskDevSettings = (settings: any, isAuthenticatedAdmin: boolean, canViewCourierCredentials: boolean = false) => {
+    const cleanAddress = isOutdatedDevAddressVal(settings.address) ? 'Uttara, Dhaka 1230' : (settings.address || 'Uttara, Dhaka 1230');
+    const cleanFooter = settings.footer ? {
+      ...settings.footer,
+      officeAddress: isOutdatedDevAddressVal(settings.footer.officeAddress) ? 'Uttara, Dhaka 1230' : (settings.footer.officeAddress || 'Uttara, Dhaka 1230'),
+    } : settings.footer;
+
     if (!isAuthenticatedAdmin) {
       const {
         steadfastApiKey,
@@ -1136,9 +1162,13 @@ function localApiDevPlugin(): Plugin {
         courierWebhooks,
         ...safeSettings
       } = settings;
-      return safeSettings;
+      return {
+        ...safeSettings,
+        address: cleanAddress,
+        footer: cleanFooter,
+      };
     }
-    const safeAdminSettings = { ...settings };
+    const safeAdminSettings = { ...settings, address: cleanAddress, footer: cleanFooter };
     if (canViewCourierCredentials) {
       const hasConfigured = Boolean(
         process.env.STEADFAST_API_KEY ||

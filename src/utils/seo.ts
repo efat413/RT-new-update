@@ -688,9 +688,7 @@ export function getProductSEOMetadata(
 export function generateOrganizationSchema(settings?: Partial<StoreSettings>) {
   const name = settings?.siteName || DEFAULT_SITE_NAME;
   const phone = settings?.footer?.supportPhone || settings?.phone || '+8801518739561';
-  // SEO schema address: fallback represents only Uttara, Dhaka 1230 without street address
-  const fallbackAddress = 'Uttara, Dhaka 1230';
-  const address = fallbackAddress;
+  // Approved public business address strictly: Uttara, Dhaka 1230
   const logo = settings?.logoUrl || DEFAULT_FALLBACK_IMAGE;
 
   const sameAs: string[] = [];

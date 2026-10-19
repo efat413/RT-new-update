@@ -61,7 +61,16 @@ export const Footer: React.FC = () => {
     `Hello ${settings.siteName || 'Rongdhonu Trade'}! I need assistance with an order or inquiry.`
   );
   const supportEmail = footer.supportEmail || '';
-  const officeAddress = footer.officeAddress || settings.address || '';
+  const isOutdatedAddress = (addr?: string): boolean => {
+    if (!addr || typeof addr !== 'string') return false;
+    const lower = addr.toLowerCase();
+    return lower.includes('house 14') || (lower.includes('sector 7') && lower.includes('uttara'));
+  };
+
+  const rawOfficeAddress = (footer.officeAddress || settings.address || '').trim();
+  const officeAddress = isOutdatedAddress(rawOfficeAddress)
+    ? 'Uttara, Dhaka 1230'
+    : (rawOfficeAddress || 'Uttara, Dhaka 1230');
   const aboutText = footer.aboutText || settings.bannerSubtext || '';
 
   const categoriesTitle = footer.categoriesTitle || 'Product Categories';

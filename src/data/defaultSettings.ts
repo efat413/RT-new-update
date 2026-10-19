@@ -49,7 +49,7 @@ export const DEFAULT_STORE_SETTINGS: StoreSettings = {
     supportPhone: '+8801518739561',
     supportEmail: 'support@rongdhonutrade.com',
     supportWhatsApp: '+8801518739561',
-    officeAddress: 'House 14, Sector 7, Uttara, Dhaka 1230, Bangladesh',
+    officeAddress: 'Uttara, Dhaka 1230',
     supportHoursText: 'Daily 9:00 AM – 10:00 PM (Instant Response)',
     categoriesTitle: 'Product Categories',
     supportDeliveryTitle: 'Customer Support & Delivery',

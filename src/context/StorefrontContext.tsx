@@ -222,9 +222,22 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               ? parsed.announcementText
               : '';
 
+          const isOutdatedAddress = (addr?: any): boolean => {
+            if (typeof addr !== 'string') return false;
+            const lower = addr.toLowerCase();
+            return lower.includes('house 14') || (lower.includes('sector 7') && lower.includes('uttara'));
+          };
+          const cleanOfficeAddress = isOutdatedAddress(parsed.footer?.officeAddress)
+            ? 'Uttara, Dhaka 1230'
+            : (parsed.footer?.officeAddress || DEFAULT_STORE_SETTINGS.footer.officeAddress);
+          const cleanAddress = isOutdatedAddress(parsed.address)
+            ? 'Uttara, Dhaka 1230'
+            : (parsed.address || DEFAULT_STORE_SETTINGS.address);
+
           return {
             ...DEFAULT_STORE_SETTINGS,
             ...parsed,
+            address: cleanAddress,
             topBarAnnouncementText: effectiveAnnouncement,
             announcementText: effectiveAnnouncement,
             fbPixelId: parsed.fbPixelId !== undefined ? parsed.fbPixelId : (DEFAULT_STORE_SETTINGS.fbPixelId || ''),
@@ -237,6 +250,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               ? {
                   ...DEFAULT_STORE_SETTINGS.footer,
                   ...parsed.footer,
+                  officeAddress: cleanOfficeAddress,
                   warrantyBadgeText:
                     parsed.footer.warrantyBadgeText === '7-Day Return & Replacement Warranty'
                       ? ''

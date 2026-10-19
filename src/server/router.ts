@@ -1426,6 +1426,17 @@ function maskSettings(
   canViewCourierCredentials: boolean = false,
   env?: any
 ): StoreSettings {
+  const isOutdated = (addr?: any): boolean => {
+    if (typeof addr !== 'string') return false;
+    const lower = addr.toLowerCase();
+    return lower.includes('house 14') || (lower.includes('sector 7') && lower.includes('uttara'));
+  };
+  const cleanAddress = isOutdated(settings.address) ? 'Uttara, Dhaka 1230' : (settings.address || 'Uttara, Dhaka 1230');
+  const cleanFooter = settings.footer ? {
+    ...settings.footer,
+    officeAddress: isOutdated(settings.footer.officeAddress) ? 'Uttara, Dhaka 1230' : (settings.footer.officeAddress || 'Uttara, Dhaka 1230'),
+  } : settings.footer;
+
   if (!isAuthenticatedAdmin) {
     // Return only safe customer-facing public properties
     return {
@@ -1434,7 +1445,7 @@ function maskSettings(
       faviconUrl: settings.faviconUrl,
       bannerUrl: settings.bannerUrl,
       phone: settings.phone,
-      address: settings.address,
+      address: cleanAddress,
       insideDhakaFee: settings.insideDhakaFee,
       outsideDhakaFee: settings.outsideDhakaFee,
       announcementText: settings.announcementText,
@@ -1455,7 +1466,7 @@ function maskSettings(
       trackingDebugMode: settings.trackingDebugMode,
       sliderAspectRatio: settings.sliderAspectRatio,
       bannerFitMode: settings.bannerFitMode,
-      footer: settings.footer,
+      footer: cleanFooter,
       // Internal courier credentials strictly omitted for customers
     };
   }
@@ -1463,6 +1474,8 @@ function maskSettings(
   // For authenticated admins: mask secrets so credentials are never exposed in browser
   const safeAdminSettings: StoreSettings = {
     ...settings,
+    address: cleanAddress,
+    footer: cleanFooter,
   };
   if (canViewCourierCredentials) {
     const hasSteadfastConfigured = Boolean(

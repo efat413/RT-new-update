@@ -76,6 +76,22 @@ export function sanitizeSettingsForBrowserStorage(settings: any): any {
   delete copy.steadfastSecretKey;
   delete copy.webhookSecret;
   delete copy.secret;
+
+  const isOutdated = (addr?: any): boolean => {
+    if (typeof addr !== 'string') return false;
+    const lower = addr.toLowerCase();
+    return lower.includes('house 14') || (lower.includes('sector 7') && lower.includes('uttara'));
+  };
+
+  if (copy.footer && typeof copy.footer === 'object') {
+    if (isOutdated(copy.footer.officeAddress)) {
+      copy.footer = { ...copy.footer, officeAddress: 'Uttara, Dhaka 1230' };
+    }
+  }
+  if (isOutdated(copy.address)) {
+    copy.address = 'Uttara, Dhaka 1230';
+  }
+
   return copy;
 }
 

@@ -23,7 +23,15 @@ export function generateInvoiceHtml(order: Order, settings: StoreSettings): stri
   const logoUrl = settings?.logoUrl || settings?.faviconUrl || 'https://i.pinimg.com/736x/bb/fe/59/bbfe59570509bbc00e9d703fd45ada18.jpg';
   const faviconUrl = settings?.faviconUrl || logoUrl;
   const storePhone = settings?.phone || '+8801518739561';
-  const storeAddress = settings?.address || 'House 14, Sector 7, Uttara, Dhaka 1230, Bangladesh';
+  const isOutdatedAddress = (addr?: string): boolean => {
+    if (!addr || typeof addr !== 'string') return false;
+    const lower = addr.toLowerCase();
+    return lower.includes('house 14') || (lower.includes('sector 7') && lower.includes('uttara'));
+  };
+  const rawStoreAddress = (settings?.address || settings?.footer?.officeAddress || '').trim();
+  const storeAddress = isOutdatedAddress(rawStoreAddress) || !rawStoreAddress
+    ? 'Uttara, Dhaka 1230'
+    : rawStoreAddress;
   const currency = settings?.currencySymbol || '৳';
 
   const safeSiteName = escapeHtml(siteName);

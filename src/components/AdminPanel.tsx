@@ -6135,7 +6135,7 @@ const AdminPanelContent: React.FC = () => {
                           type="text"
                           value={settingsForm.footer?.officeAddress || ''}
                           onChange={(e) => updateFooterSetting('officeAddress', e.target.value)}
-                          placeholder="House 14, Sector 7, Uttara, Dhaka 1230, Bangladesh"
+                          placeholder="Uttara, Dhaka 1230"
                           className="w-full pl-9 pr-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-medium text-slate-800 focus:ring-2 focus:ring-purple-500"
                         />
                       </div>
