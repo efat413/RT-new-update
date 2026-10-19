@@ -506,6 +506,105 @@ describe('Meta Messenger Backend Integration & Security Tests', () => {
       expect(componentContent).not.toContain('"104829104820194"');
       expect(componentContent).toContain('Facebook Page ID not configured');
     });
+
+    it('Scenario 8: Insufficient permissions returns classified permission error', async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async (url: any) => {
+        const u = String(url);
+        if (u.includes('graph.facebook.com')) {
+          return {
+            ok: false,
+            status: 403,
+            json: async () => ({
+              error: {
+                message: 'Application does not have permission for this action: requires pages_messaging',
+                type: 'OAuthException',
+                code: 200,
+              },
+            }),
+          };
+        }
+        return originalFetch(url);
+      }) as any;
+
+      try {
+        const result = await testMetaConnection({
+          FB_PAGE_ACCESS_TOKEN: validToken,
+          FB_PAGE_ID: realPageId,
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.status).toBe(403);
+        expect(result.errorCategory).toBe('insufficient_permissions');
+        expect(result.error).toContain('Meta Permission Error');
+        expect(result.error).toContain('pages_messaging');
+        expect(result.diagnostics?.code).toBe(200);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('Scenario 9: Meta API Code 100 invalid request classifies with diagnostics and queries minimal fields', async () => {
+      let queriedUrl = '';
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async (url: any) => {
+        queriedUrl = String(url);
+        return {
+          ok: false,
+          status: 400,
+          json: async () => ({
+            error: {
+              message: 'Invalid request: Tried accessing nonexisting field on type Page',
+              type: 'OAuthException',
+              code: 100,
+              error_subcode: 33,
+              fbtrace_id: 'FbTraceId123456',
+            },
+          }),
+        };
+      }) as any;
+
+      try {
+        const result = await testMetaConnection({
+          FB_PAGE_ACCESS_TOKEN: validToken,
+          FB_PAGE_ID: realPageId,
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.status).toBe(400);
+        expect(result.errorCategory).toBe('invalid_request');
+        expect(result.errorCode).toBe(100);
+        expect(result.errorSubcode).toBe(33);
+        expect(result.diagnostics?.fbtraceId).toBe('FbTraceId123456');
+        // Confirms request used simplified fields=id,name and avoided category,link
+        expect(queriedUrl).toContain('fields=id,name');
+        expect(queriedUrl).not.toContain('category');
+        expect(queriedUrl).not.toContain('link');
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('Scenario 10: Network failure is caught, safely classified, and logs cleanly', async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async () => {
+        throw new Error('Connection reset by peer: DNS timeout');
+      }) as any;
+
+      try {
+        const result = await testMetaConnection({
+          FB_PAGE_ACCESS_TOKEN: validToken,
+          FB_PAGE_ID: realPageId,
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.status).toBe(502);
+        expect(result.errorCategory).toBe('network_error');
+        expect(result.error).toContain('Network error connecting to Meta Graph API');
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
   });
 });
 

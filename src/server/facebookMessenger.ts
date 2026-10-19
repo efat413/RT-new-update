@@ -468,7 +468,128 @@ export async function handleMetaWebhookEvent(
 }
 
 /**
- * Validates Meta Page Connection health using Graph API /me endpoint.
+ * Classifies Meta Graph API errors into distinct categories and user-friendly diagnostics.
+ * Prevents secret leakage: raw requests, headers, or tokens are never included.
+ */
+export function classifyMetaGraphError(
+  metaError: any,
+  httpStatus: number
+): {
+  category: 'invalid_token' | 'expired_token' | 'insufficient_permissions' | 'page_mismatch' | 'invalid_request' | 'rate_limited' | 'network_error' | 'meta_service_error' | 'unknown';
+  userMessage: string;
+  code?: number;
+  subcode?: number;
+  type?: string;
+  fbtraceId?: string;
+} {
+  const code = Number(metaError?.code) || 0;
+  const subcode = Number(metaError?.error_subcode) || 0;
+  const type = String(metaError?.type || '');
+  const rawMsg = String(metaError?.message || '').trim();
+  const fbtraceId = metaError?.fbtrace_id ? String(metaError.fbtrace_id) : undefined;
+  const detail = rawMsg ? `: ${rawMsg}` : '';
+
+  // 1. Expired or Invalid Token (Code 190)
+  if (code === 190) {
+    if (subcode === 463 || rawMsg.toLowerCase().includes('expired')) {
+      return {
+        category: 'expired_token',
+        userMessage: `Meta Authentication Error: Facebook Page Access Token has expired${detail}. Please generate a fresh Page Access Token in Meta App Dashboard.`,
+        code,
+        subcode,
+        type,
+        fbtraceId,
+      };
+    }
+    if (subcode === 467 || rawMsg.toLowerCase().includes('invalidated') || rawMsg.toLowerCase().includes('revoked')) {
+      return {
+        category: 'invalid_token',
+        userMessage: `Meta Authentication Error: Facebook Page Access Token was invalidated or revoked${detail}. Please re-authenticate and update FB_PAGE_ACCESS_TOKEN.`,
+        code,
+        subcode,
+        type,
+        fbtraceId,
+      };
+    }
+    return {
+      category: 'invalid_token',
+      userMessage: `Meta Authentication Error: Invalid Facebook Page Access Token${detail}.`,
+      code,
+      subcode,
+      type,
+      fbtraceId,
+    };
+  }
+
+  // 2. Insufficient Permissions (Code 200, 10, 298, or permission message)
+  if (
+    code === 200 ||
+    code === 10 ||
+    code === 298 ||
+    rawMsg.toLowerCase().includes('permission') ||
+    rawMsg.toLowerCase().includes('scope') ||
+    rawMsg.toLowerCase().includes('access denied')
+  ) {
+    return {
+      category: 'insufficient_permissions',
+      userMessage: `Meta Permission Error: Token lacks required Page permissions${detail}. Ensure the Page Access Token has pages_messaging, pages_read_engagement, and pages_manage_metadata.`,
+      code,
+      subcode,
+      type,
+      fbtraceId,
+    };
+  }
+
+  // 3. Invalid Request / Unsupported field / Bad parameter (Code 100)
+  if (code === 100) {
+    return {
+      category: 'invalid_request',
+      userMessage: `Meta API Error: Invalid request or unsupported field${detail}. The verification endpoint queries minimal supported Page fields (id, name).`,
+      code,
+      subcode,
+      type,
+      fbtraceId,
+    };
+  }
+
+  // 4. Rate Limited (Code 613, 4, 17)
+  if (code === 613 || code === 4 || code === 17 || rawMsg.toLowerCase().includes('rate limit')) {
+    return {
+      category: 'rate_limited',
+      userMessage: `Meta Rate Limit Exceeded: Calls to Meta Graph API have reached the rate limit for this Page or App${detail}. Please wait a few moments before trying again.`,
+      code,
+      subcode,
+      type,
+      fbtraceId,
+    };
+  }
+
+  // 5. Meta Service Error (Code 1, 2, or 5xx)
+  if (code === 1 || code === 2 || httpStatus >= 500) {
+    return {
+      category: 'meta_service_error',
+      userMessage: `Meta Service Error: Temporary Meta platform error${detail}. Please retry shortly.`,
+      code,
+      subcode,
+      type,
+      fbtraceId,
+    };
+  }
+
+  return {
+    category: 'unknown',
+    userMessage: rawMsg ? `Meta Graph API error (HTTP ${httpStatus}): ${rawMsg}` : `Meta Graph API returned HTTP ${httpStatus}.`,
+    code: code || undefined,
+    subcode: subcode || undefined,
+    type: type || undefined,
+    fbtraceId,
+  };
+}
+
+/**
+ * Validates Meta Page Connection health using Graph API /me endpoint with minimal fields (id, name).
+ * Eliminates optional/deprecated fields like category, link that cause 'Invalid request' (#100) errors in Graph API v21.0.
+ * Safely classifies errors and logs diagnostics without leaking credentials.
  */
 export async function testMetaConnection(env: Env): Promise<{
   success: boolean;
@@ -477,28 +598,60 @@ export async function testMetaConnection(env: Env): Promise<{
   pageName?: string;
   category?: string;
   error?: string;
+  errorCategory?: string;
+  errorCode?: number;
+  errorSubcode?: number;
+  errorType?: string;
   mismatch?: boolean;
+  diagnostics?: {
+    category: string;
+    code?: number;
+    subcode?: number;
+    type?: string;
+    fbtraceId?: string;
+  };
 }> {
   const token = (env.FB_PAGE_ACCESS_TOKEN || '').trim();
   if (!token) {
     return {
       success: false,
       status: 503,
+      errorCategory: 'missing_credentials',
       error: 'FB_PAGE_ACCESS_TOKEN is not configured. Please set the FB_PAGE_ACCESS_TOKEN Cloudflare Worker secret.',
     };
   }
 
+  const configuredPageId = env.FB_PAGE_ID ? String(env.FB_PAGE_ID).trim() : null;
+
   try {
-    const resp = await fetch('https://graph.facebook.com/v21.0/me?fields=id,name,category,link', {
+    // 1. Primary verification request: Minimal universal Page fields (id, name)
+    let resp = await fetch('https://graph.facebook.com/v21.0/me?fields=id,name', {
       headers: {
         Authorization: `Bearer ${token}`,
+        'User-Agent': 'RongdhonuTrade-FacebookBroadcaster/1.0',
       },
     });
 
-    const data: any = await resp.json().catch(() => ({}));
-    if (resp.ok && data.id) {
-      const configuredPageId = env.FB_PAGE_ID ? String(env.FB_PAGE_ID).trim() : null;
+    let data: any = await resp.json().catch(() => ({}));
 
+    // If /me returns an error and configuredPageId is available, fallback to querying the Page object directly
+    if (!resp.ok && configuredPageId && data?.error?.code === 100) {
+      try {
+        const pageResp = await fetch(`https://graph.facebook.com/v21.0/${encodeURIComponent(configuredPageId)}?fields=id,name`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'User-Agent': 'RongdhonuTrade-FacebookBroadcaster/1.0',
+          },
+        });
+        const pageData: any = await pageResp.json().catch(() => ({}));
+        if (pageResp.ok && pageData.id) {
+          resp = pageResp;
+          data = pageData;
+        }
+      } catch {}
+    }
+
+    if (resp.ok && data.id) {
       // Cache verified page credentials for token
       pageVerificationCache.set(token, {
         pageId: data.id,
@@ -513,7 +666,7 @@ export async function testMetaConnection(env: Env): Promise<{
           status: 400,
           pageId: data.id,
           pageName: data.name,
-          category: data.category,
+          errorCategory: 'page_unconfigured',
           error: `Facebook Page ID is not configured. Authenticated as "${data.name}" (ID: ${data.id}), but FB_PAGE_ID is missing from the environment. Please configure FB_PAGE_ID=${data.id}.`,
         };
       }
@@ -526,7 +679,7 @@ export async function testMetaConnection(env: Env): Promise<{
           mismatch: true,
           pageId: data.id,
           pageName: data.name,
-          category: data.category,
+          errorCategory: 'page_mismatch',
           error: `Facebook Page ID mismatch: Configured FB_PAGE_ID (${configuredPageId}) does not match authenticated Page ID (${data.id} - "${data.name}"). Sending blocked to prevent messaging from the wrong Page.`,
         };
       }
@@ -537,21 +690,50 @@ export async function testMetaConnection(env: Env): Promise<{
         status: 200,
         pageId: data.id,
         pageName: data.name,
-        category: data.category,
       };
     }
 
+    // Inspect HTTP status and Meta error response
     const metaError = data.error || {};
+    const classification = classifyMetaGraphError(metaError, resp.status);
+
+    // Safely log diagnostic on server without leaking credentials
+    console.error('[Meta Connection Test Diagnostic]:', {
+      httpStatus: resp.status,
+      category: classification.category,
+      code: classification.code,
+      subcode: classification.subcode,
+      type: classification.type,
+      message: metaError.message,
+      fbtraceId: classification.fbtraceId,
+    });
+
     return {
       success: false,
       status: resp.status >= 400 && resp.status < 500 ? resp.status : 502,
-      error: metaError.message || 'Meta connection test failed: Invalid or expired Page Access Token.',
+      error: classification.userMessage,
+      errorCategory: classification.category,
+      errorCode: classification.code,
+      errorSubcode: classification.subcode,
+      errorType: classification.type,
+      diagnostics: {
+        category: classification.category,
+        code: classification.code,
+        subcode: classification.subcode,
+        type: classification.type,
+        fbtraceId: classification.fbtraceId,
+      },
     };
   } catch (err: any) {
+    console.error('[Meta Connection Test Network Error]:', err?.message || err);
     return {
       success: false,
       status: 502,
+      errorCategory: 'network_error',
       error: `Network error connecting to Meta Graph API: ${err.message || 'Connection failed'}`,
+      diagnostics: {
+        category: 'network_error',
+      },
     };
   }
 }

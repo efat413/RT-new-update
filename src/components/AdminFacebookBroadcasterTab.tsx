@@ -227,6 +227,12 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
           showNotification('error', 'Page ID Mismatch', res.error || 'Configured FB_PAGE_ID does not match authenticated Page ID.');
         } else {
           addLog('error', `[META CONNECTION FAILED] ${res.error || 'Check FB_PAGE_ACCESS_TOKEN and FB_PAGE_ID'}`);
+          if (res.diagnostics && (res.diagnostics.code || res.diagnostics.category)) {
+            const codeStr = res.diagnostics.code ? `Code: ${res.diagnostics.code}${res.diagnostics.subcode ? ` (Subcode: ${res.diagnostics.subcode})` : ''}` : '';
+            const typeStr = res.diagnostics.type ? `Type: ${res.diagnostics.type}` : '';
+            const diagDetails = [codeStr, typeStr, `Category: ${res.diagnostics.category}`].filter(Boolean).join(' | ');
+            addLog('warn', `[META DIAGNOSTIC] ${diagDetails}`);
+          }
           showNotification('error', 'Connection Test Failed', res.error || 'Failed to authenticate with Meta Graph API.');
         }
       }

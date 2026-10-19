@@ -29,7 +29,18 @@ export async function testFacebookConnection(): Promise<{
   pageName?: string;
   category?: string;
   error?: string;
+  errorCategory?: string;
+  errorCode?: number;
+  errorSubcode?: number;
+  errorType?: string;
   mismatch?: boolean;
+  diagnostics?: {
+    category: string;
+    code?: number;
+    subcode?: number;
+    type?: string;
+    fbtraceId?: string;
+  };
 }> {
   try {
     const token = getAuthToken();
