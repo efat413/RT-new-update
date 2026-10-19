@@ -450,5 +450,18 @@ CREATE INDEX IF NOT EXISTS idx_fb_recipients_last_interaction ON fb_recipients(l
 CREATE INDEX IF NOT EXISTS idx_fb_recipients_incoming_time ON fb_recipients(last_incoming_message_at);
 CREATE INDEX IF NOT EXISTS idx_fb_recipients_page_id ON fb_recipients(page_id);
 
+-- ==============================================================
+-- 21. FACEBOOK MESSAGE TEMPLATES TABLE (Custom Saved Templates)
+-- ==============================================================
+CREATE TABLE IF NOT EXISTS fb_message_templates (
+  id TEXT PRIMARY KEY,
+  template_name TEXT NOT NULL,
+  message_content TEXT NOT NULL,
+  tag TEXT NOT NULL DEFAULT 'NONE',
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 
-
+CREATE INDEX IF NOT EXISTS idx_fb_templates_name ON fb_message_templates(template_name);
+CREATE INDEX IF NOT EXISTS idx_fb_templates_created_at ON fb_message_templates(created_at);

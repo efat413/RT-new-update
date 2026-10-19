@@ -128,6 +128,7 @@ function localApiDevPlugin(): Plugin {
   let devFacebookCampaigns: any[] = [];
   let devFacebookCampaignQueue: any[] = [];
   let devFacebookRecipients: any[] = [];
+  let devFacebookTemplates: any[] = [];
   const generateInitialDevAuditLogs = (): any[] => {
     const actions = [
       { action: 'SETTINGS_UPDATE', targetType: 'settings', details: 'Store brand settings updated' },
@@ -7550,6 +7551,153 @@ function localApiDevPlugin(): Plugin {
           res.statusCode = 200;
           res.setHeader('Content-Type', 'application/json');
           return res.end(JSON.stringify({ success: true, message: 'Subscribed Facebook Page to webhooks (dev mode).' }));
+        }
+
+        if (url.pathname === '/api/admin/facebook/templates' && req.method === 'GET') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          return res.end(JSON.stringify({ success: true, templates: devFacebookTemplates }));
+        }
+
+        if (url.pathname === '/api/admin/facebook/templates' && req.method === 'POST') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          return readBody((body) => {
+            const templateName = typeof body?.templateName === 'string' ? body.templateName.trim() : '';
+            const messageContent = typeof body?.messageContent === 'string' ? body.messageContent.trim() : '';
+
+            if (!templateName) {
+              res.statusCode = 400;
+              res.setHeader('Content-Type', 'application/json');
+              return res.end(JSON.stringify({ success: false, error: 'Template name is required.' }));
+            }
+            if (templateName.length > 120) {
+              res.statusCode = 400;
+              res.setHeader('Content-Type', 'application/json');
+              return res.end(JSON.stringify({ success: false, error: 'Template name cannot exceed 120 characters.' }));
+            }
+            if (!messageContent) {
+              res.statusCode = 400;
+              res.setHeader('Content-Type', 'application/json');
+              return res.end(JSON.stringify({ success: false, error: 'Message content is required.' }));
+            }
+            if (messageContent.length > 2000) {
+              res.statusCode = 400;
+              res.setHeader('Content-Type', 'application/json');
+              return res.end(JSON.stringify({ success: false, error: 'Message content cannot exceed 2000 characters.' }));
+            }
+
+            const validTags = ['NONE', 'POST_PURCHASE_UPDATE', 'CONFIRMED_EVENT_UPDATE', 'ACCOUNT_UPDATE'];
+            const tag = validTags.includes(body?.tag) ? body.tag : 'NONE';
+            const nowIso = new Date().toISOString();
+
+            if (body?.id) {
+              const idx = devFacebookTemplates.findIndex((t) => t.id === body.id);
+              if (idx !== -1) {
+                devFacebookTemplates[idx] = {
+                  ...devFacebookTemplates[idx],
+                  templateName,
+                  messageContent,
+                  tag,
+                  updatedAt: nowIso,
+                };
+                res.statusCode = 200;
+                res.setHeader('Content-Type', 'application/json');
+                return res.end(JSON.stringify({ success: true, template: devFacebookTemplates[idx] }));
+              }
+            }
+
+            const newTemplate = {
+              id: body?.id || `fb-tmpl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              templateName,
+              messageContent,
+              tag,
+              createdBy: authResult.auth?.user?.email || 'admin@local.test',
+              createdAt: nowIso,
+              updatedAt: nowIso,
+            };
+            devFacebookTemplates.unshift(newTemplate);
+
+            res.statusCode = 201;
+            res.setHeader('Content-Type', 'application/json');
+            return res.end(JSON.stringify({ success: true, template: newTemplate }));
+          });
+        }
+
+        if (url.pathname.startsWith('/api/admin/facebook/templates/') && req.method === 'PUT') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          const templateId = decodeURIComponent(url.pathname.slice('/api/admin/facebook/templates/'.length)).trim();
+          return readBody((body) => {
+            const templateName = typeof body?.templateName === 'string' ? body.templateName.trim() : '';
+            const messageContent = typeof body?.messageContent === 'string' ? body.messageContent.trim() : '';
+
+            if (!templateName) {
+              res.statusCode = 400;
+              res.setHeader('Content-Type', 'application/json');
+              return res.end(JSON.stringify({ success: false, error: 'Template name is required.' }));
+            }
+            if (templateName.length > 120) {
+              res.statusCode = 400;
+              res.setHeader('Content-Type', 'application/json');
+              return res.end(JSON.stringify({ success: false, error: 'Template name cannot exceed 120 characters.' }));
+            }
+            if (!messageContent) {
+              res.statusCode = 400;
+              res.setHeader('Content-Type', 'application/json');
+              return res.end(JSON.stringify({ success: false, error: 'Message content is required.' }));
+            }
+            if (messageContent.length > 2000) {
+              res.statusCode = 400;
+              res.setHeader('Content-Type', 'application/json');
+              return res.end(JSON.stringify({ success: false, error: 'Message content cannot exceed 2000 characters.' }));
+            }
+
+            const validTags = ['NONE', 'POST_PURCHASE_UPDATE', 'CONFIRMED_EVENT_UPDATE', 'ACCOUNT_UPDATE'];
+            const tag = validTags.includes(body?.tag) ? body.tag : 'NONE';
+            const nowIso = new Date().toISOString();
+
+            const idx = devFacebookTemplates.findIndex((t) => t.id === templateId);
+            if (idx === -1) {
+              const created = {
+                id: templateId,
+                templateName,
+                messageContent,
+                tag,
+                createdBy: authResult.auth?.user?.email || 'admin@local.test',
+                createdAt: nowIso,
+                updatedAt: nowIso,
+              };
+              devFacebookTemplates.unshift(created);
+              res.statusCode = 200;
+              res.setHeader('Content-Type', 'application/json');
+              return res.end(JSON.stringify({ success: true, template: created }));
+            }
+
+            devFacebookTemplates[idx] = {
+              ...devFacebookTemplates[idx],
+              templateName,
+              messageContent,
+              tag,
+              updatedAt: nowIso,
+            };
+
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'application/json');
+            return res.end(JSON.stringify({ success: true, template: devFacebookTemplates[idx] }));
+          });
+        }
+
+        if (url.pathname.startsWith('/api/admin/facebook/templates/') && req.method === 'DELETE') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          const templateId = decodeURIComponent(url.pathname.slice('/api/admin/facebook/templates/'.length)).trim();
+          devFacebookTemplates = devFacebookTemplates.filter((t) => t.id !== templateId);
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          return res.end(JSON.stringify({ success: true, deleted: true }));
         }
 
 

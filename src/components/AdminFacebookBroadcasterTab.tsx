@@ -29,8 +29,13 @@ import {
   ChevronUp,
   FileText,
   RefreshCw,
+  Save,
+  Trash2,
+  Plus,
+  Bookmark,
 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
+import { ConfirmModal } from './ConfirmModal';
 import {
   FacebookAudienceType,
   FacebookMessageTag,
@@ -40,6 +45,7 @@ import {
   BroadcastLogItem,
   FacebookCampaign,
   FacebookQueueItem,
+  FacebookMessageTemplate,
 } from '../types';
 import {
   fetchFacebookStatus,
@@ -55,6 +61,10 @@ import {
   processFacebookCampaignNext,
   fetchFacebookRecipients,
   subscribeFacebookPage,
+  fetchFacebookTemplates,
+  saveFacebookTemplate,
+  updateFacebookTemplate,
+  deleteFacebookTemplate,
 } from '../services/facebookApi';
 import { FacebookConfigStatus } from '../server/facebookMessenger';
 import {
@@ -131,6 +141,16 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
     TEMPLATE_PRESETS[0].variations.join('\n---\n')
   );
 
+  // Saved Custom Message Templates (Cloudflare D1)
+  const [savedTemplates, setSavedTemplates] = useState<FacebookMessageTemplate[]>([]);
+  const [isLoadingTemplates, setIsLoadingTemplates] = useState<boolean>(false);
+  const [selectedSavedTemplateId, setSelectedSavedTemplateId] = useState<string>('');
+  const [templateName, setTemplateName] = useState<string>(TEMPLATE_PRESETS[0].name);
+  const [activeTemplateSource, setActiveTemplateSource] = useState<'preset' | 'custom' | 'new'>('preset');
+  const [isSavingTemplate, setIsSavingTemplate] = useState<boolean>(false);
+  const [templateToDelete, setTemplateToDelete] = useState<FacebookMessageTemplate | null>(null);
+  const [isDeletingTemplate, setIsDeletingTemplate] = useState<boolean>(false);
+
   // Dynamic Pacing Controls (Min / Max Random Delay - default 2-3 seconds per user requirement)
   const [minDelay, setMinDelay] = useState<number>(2.0);
   const [maxDelay, setMaxDelay] = useState<number>(3.0);
@@ -204,7 +224,28 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
     }
   };
 
-  // Check backend Meta setup status and load saved campaigns and recipients on mount
+  // Load custom saved message templates from Cloudflare D1
+  const loadTemplates = async () => {
+    setIsLoadingTemplates(true);
+    try {
+      const res = await fetchFacebookTemplates();
+      if (res.success && Array.isArray(res.templates)) {
+        setSavedTemplates(res.templates);
+      } else if (res.error) {
+        if (res.error.toLowerCase().includes('forbidden')) {
+          addLog('warn', '[TEMPLATES] Unauthorized: Admin privileges required to view saved templates.');
+        } else {
+          addLog('warn', `[TEMPLATES] Could not load templates: ${res.error}`);
+        }
+      }
+    } catch (err: any) {
+      addLog('error', `[TEMPLATES] Network error loading templates: ${err.message || 'Unknown error'}`);
+    } finally {
+      setIsLoadingTemplates(false);
+    }
+  };
+
+  // Check backend Meta setup status and load saved campaigns, recipients, and templates on mount
   useEffect(() => {
     fetchFacebookStatus().then((res) => {
       if (res.success && res.status) {
@@ -227,6 +268,7 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
     }).catch(() => {});
     loadSavedCampaigns();
     loadRecipients();
+    loadTemplates();
   }, []);
 
   const handleTestMetaConnection = async () => {
@@ -618,14 +660,149 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
     }
   }, [logs, autoScroll]);
 
-  // Apply template preset
+  // Apply built-in template preset (keeps custom templates safe)
   const handleSelectPreset = (presetId: string) => {
     setSelectedPresetId(presetId);
+    setSelectedSavedTemplateId('');
+    setActiveTemplateSource('preset');
     const found = TEMPLATE_PRESETS.find((p) => p.id === presetId);
     if (found) {
       setSelectedTag(found.tag);
+      setTemplateName(found.name);
       setMessageVariationsText(found.variations.join('\n---\n'));
-      addLog('info', `Loaded template preset: "${found.name}" (Meta Tag: ${found.tag})`);
+      addLog('info', `Loaded built-in template preset: "${found.name}" (Meta Tag: ${found.tag})`);
+    }
+  };
+
+  // Start a fresh new custom template draft
+  const handleCreateNewTemplate = () => {
+    setSelectedPresetId('');
+    setSelectedSavedTemplateId('');
+    setActiveTemplateSource('new');
+    setTemplateName('');
+    setMessageVariationsText('');
+    addLog('info', 'Started new custom message template draft.');
+  };
+
+  // Load custom template from D1 into message editor (DOES NOT start campaign)
+  const handleLoadSavedTemplate = (tmplId: string) => {
+    if (!tmplId) {
+      setSelectedSavedTemplateId('');
+      return;
+    }
+    const tmpl = savedTemplates.find((t) => t.id === tmplId);
+    if (!tmpl) {
+      showNotification('error', 'Template Not Found', 'Could not load the selected message template.');
+      addLog('error', `Could not load template ID: ${tmplId}`);
+      return;
+    }
+    setSelectedSavedTemplateId(tmpl.id);
+    setSelectedPresetId('');
+    setActiveTemplateSource('custom');
+    setTemplateName(tmpl.templateName);
+    setMessageVariationsText(tmpl.messageContent);
+    if (tmpl.tag && tmpl.tag !== 'NONE') {
+      setSelectedTag(tmpl.tag);
+    }
+    showNotification('info', 'Template Loaded', `Loaded template "${tmpl.templateName}" into message editor.`);
+    addLog('info', `Loaded custom saved template: "${tmpl.templateName}" (Tag: ${tmpl.tag || 'NONE'})`);
+  };
+
+  // Save or update custom template in Cloudflare D1
+  const handleSaveTemplate = async (isUpdate = false) => {
+    const trimmedName = templateName.trim();
+    const trimmedContent = messageVariationsText.trim();
+
+    if (!trimmedName) {
+      showNotification('error', 'Template Name Missing', 'Please enter a name for this message template.');
+      addLog('warn', 'Template save failed: Template name is missing.');
+      return;
+    }
+    if (!trimmedContent) {
+      showNotification('error', 'Message Content Missing', 'Please enter message content or variations before saving.');
+      addLog('warn', 'Template save failed: Message content is missing.');
+      return;
+    }
+
+    setIsSavingTemplate(true);
+    try {
+      const targetId = isUpdate && selectedSavedTemplateId ? selectedSavedTemplateId : undefined;
+      const res = targetId
+        ? await updateFacebookTemplate(targetId, {
+            templateName: trimmedName,
+            messageContent: trimmedContent,
+            tag: selectedTag,
+          })
+        : await saveFacebookTemplate({
+            templateName: trimmedName,
+            messageContent: trimmedContent,
+            tag: selectedTag,
+          });
+
+      if (res.success && res.template) {
+        const saved = res.template;
+        setSelectedSavedTemplateId(saved.id);
+        setSelectedPresetId('');
+        setActiveTemplateSource('custom');
+        showNotification(
+          'success',
+          isUpdate ? 'Template Updated' : 'Template Saved',
+          `Template "${saved.templateName}" successfully ${isUpdate ? 'updated' : 'saved'} in Cloudflare D1.`
+        );
+        addLog(
+          'success',
+          `[TEMPLATE ${isUpdate ? 'UPDATED' : 'SAVED'}] "${saved.templateName}" (ID: ${saved.id}) stored in D1 database.`
+        );
+        await loadTemplates();
+      } else {
+        const errMsg = res.error || 'Failed to save template to database.';
+        if (errMsg.toLowerCase().includes('forbidden')) {
+          showNotification('error', 'Unauthorized', 'You do not have administrative privileges to manage templates.');
+          addLog('error', '[TEMPLATE ERROR] Unauthorized operation: Admin privileges required.');
+        } else {
+          showNotification('error', 'Could Not Save Template', errMsg);
+          addLog('error', `[TEMPLATE ERROR] Could not save template: ${errMsg}`);
+        }
+      }
+    } catch (err: any) {
+      showNotification('error', 'Network Error', err.message || 'Failed to save message template.');
+      addLog('error', `[TEMPLATE ERROR] ${err.message || 'Network exception saving template'}`);
+    } finally {
+      setIsSavingTemplate(false);
+    }
+  };
+
+  // Confirm and delete custom template from Cloudflare D1
+  const handleConfirmDeleteTemplate = async () => {
+    if (!templateToDelete) return;
+    setIsDeletingTemplate(true);
+    try {
+      const res = await deleteFacebookTemplate(templateToDelete.id);
+      if (res.success) {
+        showNotification('success', 'Template Deleted', `Template "${templateToDelete.templateName}" has been deleted.`);
+        addLog('info', `[TEMPLATE DELETED] Deleted template "${templateToDelete.templateName}" from D1.`);
+        if (selectedSavedTemplateId === templateToDelete.id) {
+          setSelectedSavedTemplateId('');
+          setActiveTemplateSource('new');
+          setTemplateName('');
+        }
+        await loadTemplates();
+      } else {
+        const errMsg = res.error || 'Failed to delete template.';
+        if (errMsg.toLowerCase().includes('forbidden')) {
+          showNotification('error', 'Unauthorized', 'You do not have administrative privileges to delete templates.');
+          addLog('error', '[TEMPLATE ERROR] Unauthorized deletion attempt.');
+        } else {
+          showNotification('error', 'Could Not Delete Template', errMsg);
+          addLog('error', `[TEMPLATE ERROR] Could not delete template: ${errMsg}`);
+        }
+      }
+    } catch (err: any) {
+      showNotification('error', 'Network Error', err.message || 'Failed to delete template.');
+      addLog('error', `[TEMPLATE ERROR] ${err.message || 'Network exception deleting template'}`);
+    } finally {
+      setIsDeletingTemplate(false);
+      setTemplateToDelete(null);
     }
   };
 
@@ -1373,7 +1550,7 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
 
           {/* STEP 2: MESSAGE TEMPLATES & VARIATIONS */}
           <section className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 flex-wrap gap-2">
               <div className="flex items-center gap-2">
                 <div className="w-7 h-7 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center font-bold text-xs">
                   2
@@ -1382,41 +1559,145 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
                   Message Templates & Content Variations
                 </h3>
               </div>
-              <span className="text-xs font-bold text-slate-500">
-                {parsedVariations.length} Variation{parsedVariations.length !== 1 ? 's' : ''} Active
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-slate-500">
+                  {parsedVariations.length} Variation{parsedVariations.length !== 1 ? 's' : ''} Active
+                </span>
+                {selectedSavedTemplateId && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                    <Bookmark className="w-3 h-3 text-emerald-600" />
+                    Saved in D1
+                  </span>
+                )}
+              </div>
             </div>
 
-            {/* Template Presets Picker */}
+            {/* TEMPLATE PICKER & ACTIONS BAR */}
+            <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                  <Bookmark className="w-3.5 h-3.5 text-blue-600" />
+                  Saved Message Templates & Presets
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    id="broadcaster-create-template-btn"
+                    onClick={handleCreateNewTemplate}
+                    className="px-2.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+                    title="Create a new custom template from scratch"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Create New Template</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={loadTemplates}
+                    disabled={isLoadingTemplates}
+                    className="p-1.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-100 text-slate-600 text-xs font-bold transition-colors cursor-pointer disabled:opacity-50"
+                    title="Refresh saved templates from D1"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isLoadingTemplates ? 'animate-spin' : ''}`} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* 1. Custom Saved Templates Library (Cloudflare D1) */}
+                <div>
+                  <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1">
+                    Custom Saved Templates ({savedTemplates.length})
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <select
+                      id="broadcaster-saved-templates-select"
+                      value={selectedSavedTemplateId}
+                      onChange={(e) => handleLoadSavedTemplate(e.target.value)}
+                      className="flex-1 px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:ring-2 focus:ring-blue-500 cursor-pointer"
+                    >
+                      <option value="">
+                        {savedTemplates.length === 0 ? '-- No custom templates saved yet --' : '-- Load a custom saved template --'}
+                      </option>
+                      {savedTemplates.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.templateName} [{t.tag || 'NONE'}]
+                        </option>
+                      ))}
+                    </select>
+                    {selectedSavedTemplateId && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const tmpl = savedTemplates.find((t) => t.id === selectedSavedTemplateId);
+                          if (tmpl) setTemplateToDelete(tmpl);
+                        }}
+                        className="p-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 transition-colors cursor-pointer shrink-0"
+                        title="Delete this template from D1"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* 2. Built-in Preset Templates */}
+                <div>
+                  <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1">
+                    Built-in Presets
+                  </label>
+                  <select
+                    id="broadcaster-preset-select"
+                    value={selectedPresetId}
+                    onChange={(e) => handleSelectPreset(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:ring-2 focus:ring-blue-500 cursor-pointer"
+                  >
+                    <option value="">-- Choose a built-in preset --</option>
+                    {TEMPLATE_PRESETS.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} [{p.tag}]
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {selectedPresetId && (
+                <p className="text-[11px] text-slate-500">
+                  {TEMPLATE_PRESETS.find((p) => p.id === selectedPresetId)?.description}
+                </p>
+              )}
+            </div>
+
+            {/* TEMPLATE NAME INPUT */}
             <div>
               <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1.5">
-                Load Preset Template
+                Template Name *
               </label>
-              <select
-                value={selectedPresetId}
-                onChange={(e) => handleSelectPreset(e.target.value)}
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:ring-2 focus:ring-blue-500 cursor-pointer"
-              >
-                {TEMPLATE_PRESETS.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} [{p.tag}]
-                  </option>
-                ))}
-              </select>
-              <p className="text-[11px] text-slate-500 mt-1">
-                {TEMPLATE_PRESETS.find((p) => p.id === selectedPresetId)?.description}
-              </p>
+              <div className="relative">
+                <input
+                  type="text"
+                  id="broadcaster-template-name-input"
+                  value={templateName}
+                  onChange={(e) => setTemplateName(e.target.value)}
+                  placeholder="e.g. Customer Follow-up, Order Confirmation, VIP Offer..."
+                  maxLength={120}
+                  className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-xs font-medium text-slate-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+                <span className="absolute right-3 top-2.5 text-[10px] text-slate-400">
+                  {templateName.length}/120
+                </span>
+              </div>
             </div>
 
-            {/* Message Variation Editor */}
+            {/* MESSAGE CONTENT / VARIATIONS EDITOR */}
             <div>
-              <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center justify-between mb-1.5 flex-wrap gap-1">
                 <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
-                  Message Variations <span className="font-normal normal-case text-slate-500">(Separate with <code className="bg-slate-100 px-1 rounded font-bold">---</code> or <code className="bg-slate-100 px-1 rounded font-bold">|</code>)</span>
+                  Message Content / Variations <span className="font-normal normal-case text-slate-500">(Separate with <code className="bg-slate-100 px-1 rounded font-bold">---</code> or <code className="bg-slate-100 px-1 rounded font-bold">|</code>)</span>
                 </label>
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1 flex-wrap">
                   <span className="text-[10px] text-slate-400 font-semibold">Click to insert:</span>
-                  {['{name}', '{order_number}', '{discount_code}', '{phone}'].map((token) => (
+                  {['{name}', '{order_number}', '{discount_code}', '{phone}', '{shop_name}'].map((token) => (
                     <button
                       key={token}
                       type="button"
@@ -1430,11 +1711,69 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
               </div>
               <textarea
                 rows={6}
+                id="broadcaster-message-content-textarea"
                 value={messageVariationsText}
                 onChange={(e) => setMessageVariationsText(e.target.value)}
-                placeholder="Enter message variations..."
+                placeholder="Enter message text or multiple variations separated by --- or | ..."
+                maxLength={2000}
                 className="w-full p-3 bg-white border border-slate-300 rounded-xl text-xs font-sans leading-relaxed text-slate-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               />
+              <div className="flex items-center justify-between text-[11px] text-slate-400 mt-1">
+                <span>Use <code className="font-mono">{'{name}'}</code> to personalize with recipient name.</span>
+                <span>{messageVariationsText.length}/2000</span>
+              </div>
+            </div>
+
+            {/* TEMPLATE SAVE / UPDATE ACTION BUTTONS */}
+            <div className="flex items-center justify-between flex-wrap gap-2 pt-2 border-t border-slate-100">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  id="broadcaster-save-template-btn"
+                  onClick={() => handleSaveTemplate(false)}
+                  disabled={isSavingTemplate}
+                  className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-black text-white text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shadow-xs disabled:opacity-50"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>{isSavingTemplate ? 'Saving...' : 'Save as New Template'}</span>
+                </button>
+
+                {selectedSavedTemplateId && (
+                  <button
+                    type="button"
+                    id="broadcaster-update-template-btn"
+                    onClick={() => handleSaveTemplate(true)}
+                    disabled={isSavingTemplate}
+                    className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shadow-xs disabled:opacity-50"
+                    title="Update existing saved template in D1"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    <span>{isSavingTemplate ? 'Updating...' : 'Update Template'}</span>
+                  </button>
+                )}
+
+                {selectedSavedTemplateId && (
+                  <button
+                    type="button"
+                    id="broadcaster-delete-template-btn"
+                    onClick={() => {
+                      const tmpl = savedTemplates.find((t) => t.id === selectedSavedTemplateId);
+                      if (tmpl) setTemplateToDelete(tmpl);
+                    }}
+                    disabled={isDeletingTemplate}
+                    className="px-3 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Template</span>
+                  </button>
+                )}
+              </div>
+
+              {activeTemplateSource === 'preset' && (
+                <span className="text-[11px] text-slate-500 italic">
+                  Built-in preset loaded. You can customize text and "Save as New Template".
+                </span>
+              )}
             </div>
 
             {/* LIVE PREVIEW OF FIRST VARIATION */}
@@ -1444,9 +1783,9 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
                   <Smartphone className="w-3.5 h-3.5 text-blue-600" />
                   Live Messenger Bubble Preview ({sampleRecipient.name})
                 </span>
-                <span className="text-[11px] text-slate-400">Meta Graph API format</span>
+                <span className="text-[11px] text-slate-400">Dynamic preview with sample data</span>
               </div>
-              <div className="bg-white p-3 rounded-2xl rounded-tl-sm border border-slate-200 shadow-2xs max-w-md text-xs text-slate-800 leading-relaxed font-sans">
+              <div className="bg-white p-3.5 rounded-2xl rounded-tl-sm border border-slate-200 shadow-2xs max-w-md text-xs text-slate-800 leading-relaxed font-sans whitespace-pre-wrap break-words">
                 {previewMessage}
               </div>
             </div>
@@ -1726,6 +2065,20 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
           </section>
         </div>
       </div>
+
+      {/* CONFIRMATION MODAL FOR TEMPLATE DELETION */}
+      {templateToDelete && (
+        <ConfirmModal
+          isOpen={Boolean(templateToDelete)}
+          onClose={() => setTemplateToDelete(null)}
+          onConfirm={handleConfirmDeleteTemplate}
+          title="Delete Message Template"
+          message={`Are you sure you want to delete template "${templateToDelete.templateName}"?\n\nThis will permanently remove the template from Cloudflare D1 storage. This action cannot be undone.`}
+          confirmText={isDeletingTemplate ? 'Deleting...' : 'Delete Template'}
+          cancelText="Cancel"
+          variant="danger"
+        />
+      )}
     </div>
   );
 };

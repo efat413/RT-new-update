@@ -104,6 +104,10 @@ import {
   recordMetaDeliveryWatermarkInD1,
   upsertFacebookRecipientFromMessageInD1,
   getFacebookRecipientsFromD1,
+  getFacebookMessageTemplatesFromD1,
+  getFacebookMessageTemplateByIdFromD1,
+  saveFacebookMessageTemplateInD1,
+  deleteFacebookMessageTemplateFromD1,
 } from './db';
 import {
   Order,
@@ -8739,8 +8743,190 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     return jsonResponse(subResult, subResult.status);
   }
 
+  // 11I. Facebook Saved Message Templates (CRUD)
+  // List Templates (GET /api/admin/facebook/templates)
+  if (path === '/api/admin/facebook/templates' && method === 'GET') {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const isAuthorized =
+      hasPermission(auth!, 'settings.manage') ||
+      Boolean(auth?.legacyPermissions?.canManageSettings) ||
+      auth?.role === 'admin' ||
+      auth?.role === 'super_admin';
 
+    if (!isAuthorized) {
+      return jsonResponse({ success: false, error: 'Forbidden: Admin privileges required.' }, 403);
+    }
 
+    const templates = await getFacebookMessageTemplatesFromD1(env.DB);
+    return jsonResponse({ success: true, templates });
+  }
+
+  // Create or Upsert Template (POST /api/admin/facebook/templates)
+  if (path === '/api/admin/facebook/templates' && method === 'POST') {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const isAuthorized =
+      hasPermission(auth!, 'settings.manage') ||
+      Boolean(auth?.legacyPermissions?.canManageSettings) ||
+      auth?.role === 'admin' ||
+      auth?.role === 'super_admin';
+
+    if (!isAuthorized) {
+      return jsonResponse({ success: false, error: 'Forbidden: Admin privileges required.' }, 403);
+    }
+
+    const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+    if (jsonErr) return jsonErr;
+
+    const templateName = typeof body?.templateName === 'string' ? body.templateName.trim() : '';
+    const messageContent = typeof body?.messageContent === 'string' ? body.messageContent.trim() : '';
+
+    if (!templateName) {
+      return jsonResponse({ success: false, error: 'Template name is required.' }, 400);
+    }
+    if (templateName.length > 120) {
+      return jsonResponse({ success: false, error: 'Template name cannot exceed 120 characters.' }, 400);
+    }
+    if (!messageContent) {
+      return jsonResponse({ success: false, error: 'Message content is required.' }, 400);
+    }
+    if (messageContent.length > 2000) {
+      return jsonResponse({ success: false, error: 'Message content cannot exceed 2000 characters.' }, 400);
+    }
+
+    const validTags = ['NONE', 'POST_PURCHASE_UPDATE', 'CONFIRMED_EVENT_UPDATE', 'ACCOUNT_UPDATE'];
+    const tag = validTags.includes(body?.tag) ? body.tag : 'NONE';
+
+    const saved = await saveFacebookMessageTemplateInD1(env.DB, {
+      id: body.id ? String(body.id).trim() : undefined,
+      templateName,
+      messageContent,
+      tag,
+      createdBy: auth!.dbUser.email,
+    });
+
+    if (env.DB) {
+      try {
+        await insertAuditLogInD1(env.DB, {
+          actorId: auth!.dbUser.id,
+          actorEmail: auth!.dbUser.email,
+          actorRole: auth!.role,
+          action: body.id ? 'FACEBOOK_TEMPLATE_UPDATE' : 'FACEBOOK_TEMPLATE_CREATE',
+          targetId: saved.id,
+          targetType: 'facebook_template',
+          details: `Saved message template "${saved.templateName}" [Tag: ${saved.tag}].`,
+        });
+      } catch {}
+    }
+
+    return jsonResponse({ success: true, template: saved }, 201);
+  }
+
+  // Update Template (PUT /api/admin/facebook/templates/:id)
+  if (path.startsWith('/api/admin/facebook/templates/') && method === 'PUT') {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const isAuthorized =
+      hasPermission(auth!, 'settings.manage') ||
+      Boolean(auth?.legacyPermissions?.canManageSettings) ||
+      auth?.role === 'admin' ||
+      auth?.role === 'super_admin';
+
+    if (!isAuthorized) {
+      return jsonResponse({ success: false, error: 'Forbidden: Admin privileges required.' }, 403);
+    }
+
+    const templateId = decodeURIComponent(path.slice('/api/admin/facebook/templates/'.length)).trim();
+    if (!templateId) {
+      return jsonResponse({ success: false, error: 'Template ID is required.' }, 400);
+    }
+
+    const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+    if (jsonErr) return jsonErr;
+
+    const templateName = typeof body?.templateName === 'string' ? body.templateName.trim() : '';
+    const messageContent = typeof body?.messageContent === 'string' ? body.messageContent.trim() : '';
+
+    if (!templateName) {
+      return jsonResponse({ success: false, error: 'Template name is required.' }, 400);
+    }
+    if (templateName.length > 120) {
+      return jsonResponse({ success: false, error: 'Template name cannot exceed 120 characters.' }, 400);
+    }
+    if (!messageContent) {
+      return jsonResponse({ success: false, error: 'Message content is required.' }, 400);
+    }
+    if (messageContent.length > 2000) {
+      return jsonResponse({ success: false, error: 'Message content cannot exceed 2000 characters.' }, 400);
+    }
+
+    const validTags = ['NONE', 'POST_PURCHASE_UPDATE', 'CONFIRMED_EVENT_UPDATE', 'ACCOUNT_UPDATE'];
+    const tag = validTags.includes(body?.tag) ? body.tag : 'NONE';
+
+    const updated = await saveFacebookMessageTemplateInD1(env.DB, {
+      id: templateId,
+      templateName,
+      messageContent,
+      tag,
+      createdBy: auth!.dbUser.email,
+    });
+
+    if (env.DB) {
+      try {
+        await insertAuditLogInD1(env.DB, {
+          actorId: auth!.dbUser.id,
+          actorEmail: auth!.dbUser.email,
+          actorRole: auth!.role,
+          action: 'FACEBOOK_TEMPLATE_UPDATE',
+          targetId: updated.id,
+          targetType: 'facebook_template',
+          details: `Updated message template "${updated.templateName}" [Tag: ${updated.tag}].`,
+        });
+      } catch {}
+    }
+
+    return jsonResponse({ success: true, template: updated }, 200);
+  }
+
+  // Delete Template (DELETE /api/admin/facebook/templates/:id)
+  if (path.startsWith('/api/admin/facebook/templates/') && method === 'DELETE') {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const isAuthorized =
+      hasPermission(auth!, 'settings.manage') ||
+      Boolean(auth?.legacyPermissions?.canManageSettings) ||
+      auth?.role === 'admin' ||
+      auth?.role === 'super_admin';
+
+    if (!isAuthorized) {
+      return jsonResponse({ success: false, error: 'Forbidden: Admin privileges required.' }, 403);
+    }
+
+    const templateId = decodeURIComponent(path.slice('/api/admin/facebook/templates/'.length)).trim();
+    if (!templateId) {
+      return jsonResponse({ success: false, error: 'Template ID is required.' }, 400);
+    }
+
+    const existing = await getFacebookMessageTemplateByIdFromD1(env.DB, templateId);
+    const deleted = await deleteFacebookMessageTemplateFromD1(env.DB, templateId);
+
+    if (env.DB && deleted) {
+      try {
+        await insertAuditLogInD1(env.DB, {
+          actorId: auth!.dbUser.id,
+          actorEmail: auth!.dbUser.email,
+          actorRole: auth!.role,
+          action: 'FACEBOOK_TEMPLATE_DELETE',
+          targetId: templateId,
+          targetType: 'facebook_template',
+          details: `Deleted message template "${existing?.templateName || templateId}".`,
+        });
+      } catch {}
+    }
+
+    return jsonResponse({ success: true, deleted: true });
+  }
     return jsonResponse({ success: false, error: 'Endpoint not found' }, 404);
   } catch (err: any) {
     console.error('[Router Unhandled Exception Logged Safely]:', err);

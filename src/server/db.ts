@@ -16,6 +16,7 @@ import {
   FacebookCampaign,
   FacebookQueueItem,
   FacebookCampaignStatus,
+  FacebookMessageTemplate,
 } from '../types';
 import {
   D1Database,
@@ -6374,6 +6375,184 @@ export async function getFacebookRecipientsFromD1(
   } catch (err: any) {
     console.error('[D1 getFacebookRecipientsFromD1 error]:', err?.message || err);
     return [];
+  }
+}
+
+// ==============================================================
+// 19. FACEBOOK BROADCASTER SAVED MESSAGE TEMPLATES (D1 & In-Memory Fallback)
+// ==============================================================
+
+let inMemoryFacebookTemplates: FacebookMessageTemplate[] = [];
+
+export async function ensureFacebookMessageTemplatesSchema(db: D1Database): Promise<void> {
+  if (!db || typeof db.prepare !== 'function') return;
+  try {
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS fb_message_templates (
+        id TEXT PRIMARY KEY,
+        template_name TEXT NOT NULL,
+        message_content TEXT NOT NULL,
+        tag TEXT NOT NULL DEFAULT 'NONE',
+        created_by TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `).run();
+    await db.prepare(`CREATE INDEX IF NOT EXISTS idx_fb_templates_name ON fb_message_templates(template_name)`).run();
+    await db.prepare(`CREATE INDEX IF NOT EXISTS idx_fb_templates_created_at ON fb_message_templates(created_at)`).run();
+  } catch (err) {
+    console.warn('[D1 ensureFacebookMessageTemplatesSchema notice]:', err);
+  }
+}
+
+export function rowToFacebookMessageTemplate(row: any): FacebookMessageTemplate {
+  return {
+    id: row.id,
+    templateName: row.template_name,
+    messageContent: row.message_content,
+    tag: row.tag || 'NONE',
+    createdBy: row.created_by || undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function getFacebookMessageTemplatesFromD1(db: D1Database): Promise<FacebookMessageTemplate[]> {
+  if (!db || typeof db.prepare !== 'function') {
+    return [...inMemoryFacebookTemplates].sort(
+      (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+    );
+  }
+  await ensureFacebookMessageTemplatesSchema(db);
+  try {
+    const res = await db.prepare(
+      'SELECT id, template_name, message_content, tag, created_by, created_at, updated_at FROM fb_message_templates ORDER BY updated_at DESC, created_at DESC'
+    ).all();
+    return (res?.results || []).map(rowToFacebookMessageTemplate);
+  } catch (err: any) {
+    console.error('[D1 getFacebookMessageTemplatesFromD1 error]:', err?.message || err);
+    return [];
+  }
+}
+
+export async function getFacebookMessageTemplateByIdFromD1(
+  db: D1Database,
+  id: string
+): Promise<FacebookMessageTemplate | null> {
+  if (!db || typeof db.prepare !== 'function') {
+    const found = inMemoryFacebookTemplates.find((t) => t.id === id);
+    return found ? { ...found } : null;
+  }
+  await ensureFacebookMessageTemplatesSchema(db);
+  try {
+    const row = await db.prepare(
+      'SELECT id, template_name, message_content, tag, created_by, created_at, updated_at FROM fb_message_templates WHERE id = ?'
+    ).bind(id).first();
+    if (!row) return null;
+    return rowToFacebookMessageTemplate(row);
+  } catch (err: any) {
+    console.error('[D1 getFacebookMessageTemplateByIdFromD1 error]:', err?.message || err);
+    return null;
+  }
+}
+
+export async function saveFacebookMessageTemplateInD1(
+  db: D1Database,
+  template: {
+    id?: string;
+    templateName: string;
+    messageContent: string;
+    tag?: string;
+    createdBy?: string;
+  }
+): Promise<FacebookMessageTemplate> {
+  const cleanName = String(template.templateName || '').trim();
+  const cleanContent = String(template.messageContent || '').trim();
+  const cleanTag = (template.tag || 'NONE') as any;
+  const nowIso = new Date().toISOString();
+
+  if (!db || typeof db.prepare !== 'function') {
+    if (template.id) {
+      const idx = inMemoryFacebookTemplates.findIndex((t) => t.id === template.id);
+      if (idx !== -1) {
+        const updated: FacebookMessageTemplate = {
+          ...inMemoryFacebookTemplates[idx],
+          templateName: cleanName,
+          messageContent: cleanContent,
+          tag: cleanTag,
+          updatedAt: nowIso,
+        };
+        inMemoryFacebookTemplates[idx] = updated;
+        return updated;
+      }
+    }
+    const newId = template.id || `fb-tmpl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const created: FacebookMessageTemplate = {
+      id: newId,
+      templateName: cleanName,
+      messageContent: cleanContent,
+      tag: cleanTag,
+      createdBy: template.createdBy,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+    inMemoryFacebookTemplates.push(created);
+    return created;
+  }
+
+  await ensureFacebookMessageTemplatesSchema(db);
+
+  if (template.id) {
+    const existing = await getFacebookMessageTemplateByIdFromD1(db, template.id);
+    if (existing) {
+      await db.prepare(
+        'UPDATE fb_message_templates SET template_name = ?, message_content = ?, tag = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+      ).bind(cleanName, cleanContent, cleanTag, template.id).run();
+      const updated = await getFacebookMessageTemplateByIdFromD1(db, template.id);
+      return updated || {
+        ...existing,
+        templateName: cleanName,
+        messageContent: cleanContent,
+        tag: cleanTag,
+        updatedAt: nowIso,
+      };
+    }
+  }
+
+  const id = template.id || `fb-tmpl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  await db.prepare(
+    'INSERT INTO fb_message_templates (id, template_name, message_content, tag, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)'
+  ).bind(id, cleanName, cleanContent, cleanTag, template.createdBy || null).run();
+
+  const created = await getFacebookMessageTemplateByIdFromD1(db, id);
+  return created || {
+    id,
+    templateName: cleanName,
+    messageContent: cleanContent,
+    tag: cleanTag,
+    createdBy: template.createdBy,
+    createdAt: nowIso,
+    updatedAt: nowIso,
+  };
+}
+
+export async function deleteFacebookMessageTemplateFromD1(
+  db: D1Database,
+  id: string
+): Promise<boolean> {
+  if (!db || typeof db.prepare !== 'function') {
+    const beforeLen = inMemoryFacebookTemplates.length;
+    inMemoryFacebookTemplates = inMemoryFacebookTemplates.filter((t) => t.id !== id);
+    return inMemoryFacebookTemplates.length < beforeLen;
+  }
+
+  await ensureFacebookMessageTemplatesSchema(db);
+  try {
+    const res = await db.prepare('DELETE FROM fb_message_templates WHERE id = ?').bind(id).run();
+    return (res?.meta?.changes ?? 1) > 0;
+  } catch (err: any) {
+    console.error('[D1 deleteFacebookMessageTemplateFromD1 error]:', err?.message || err);
+    return false;
   }
 }
 

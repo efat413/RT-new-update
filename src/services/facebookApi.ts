@@ -1,5 +1,6 @@
 import { getAuthToken } from './authApi';
 import { FacebookConfigStatus } from '../server/facebookMessenger';
+import { FacebookMessageTemplate } from '../types';
 
 export async function fetchFacebookStatus(): Promise<{ success: boolean; status?: FacebookConfigStatus; error?: string }> {
   try {
@@ -327,6 +328,109 @@ export async function subscribeFacebookPage(): Promise<{
     return data;
   } catch (err: any) {
     return { success: false, status: 502, error: err.message || 'Network error subscribing page.' };
+  }
+}
+
+export async function fetchFacebookTemplates(): Promise<{
+  success: boolean;
+  templates?: FacebookMessageTemplate[];
+  error?: string;
+}> {
+  try {
+    const token = getAuthToken();
+    const res = await fetch('/api/admin/facebook/templates', {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      credentials: 'include',
+    });
+    const data = await res.json().catch(() => ({}));
+    return data;
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Network error fetching message templates.' };
+  }
+}
+
+export async function saveFacebookTemplate(payload: {
+  id?: string;
+  templateName: string;
+  messageContent: string;
+  tag?: string;
+}): Promise<{
+  success: boolean;
+  template?: FacebookMessageTemplate;
+  error?: string;
+}> {
+  try {
+    const token = getAuthToken();
+    const res = await fetch('/api/admin/facebook/templates', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(payload),
+      credentials: 'include',
+    });
+    const data = await res.json().catch(() => ({}));
+    return data;
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Network error saving message template.' };
+  }
+}
+
+export async function updateFacebookTemplate(
+  id: string,
+  payload: {
+    templateName: string;
+    messageContent: string;
+    tag?: string;
+  }
+): Promise<{
+  success: boolean;
+  template?: FacebookMessageTemplate;
+  error?: string;
+}> {
+  try {
+    const token = getAuthToken();
+    const res = await fetch(`/api/admin/facebook/templates/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(payload),
+      credentials: 'include',
+    });
+    const data = await res.json().catch(() => ({}));
+    return data;
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Network error updating message template.' };
+  }
+}
+
+export async function deleteFacebookTemplate(
+  id: string
+): Promise<{
+  success: boolean;
+  error?: string;
+}> {
+  try {
+    const token = getAuthToken();
+    const res = await fetch(`/api/admin/facebook/templates/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      credentials: 'include',
+    });
+    const data = await res.json().catch(() => ({}));
+    return data;
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Network error deleting message template.' };
   }
 }
 

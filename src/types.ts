@@ -556,4 +556,14 @@ export interface FacebookQueueItem {
   updatedAt: string;
 }
 
+export interface FacebookMessageTemplate {
+  id: string;
+  templateName: string;
+  messageContent: string;
+  tag?: FacebookMessageTag;
+  createdBy?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 
