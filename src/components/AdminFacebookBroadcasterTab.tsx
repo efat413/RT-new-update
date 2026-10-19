@@ -53,6 +53,8 @@ import {
   cancelFacebookCampaign,
   updateFacebookCampaignDelays,
   processFacebookCampaignNext,
+  fetchFacebookRecipients,
+  subscribeFacebookPage,
 } from '../services/facebookApi';
 import { FacebookConfigStatus } from '../server/facebookMessenger';
 
@@ -142,7 +144,8 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
   const [showSecretsGuide, setShowSecretsGuide] = useState<boolean>(false);
   const [configStatus, setConfigStatus] = useState<FacebookConfigStatus | null>(null);
   const [isTestingConnection, setIsTestingConnection] = useState<boolean>(false);
-
+  const [persistedRecipients, setPersistedRecipients] = useState<any[]>([]);
+  const [isLoadingRecipients, setIsLoadingRecipients] = useState<boolean>(false);
 
   // Campaign State & Metrics
   const [campaignStatus, setCampaignStatus] = useState<FacebookCampaignStatus>('idle');
@@ -181,7 +184,23 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
     } catch {}
   };
 
-  // Check backend Meta setup status and load saved campaigns on mount
+  // Load persisted Facebook Page recipients from D1
+  const loadRecipients = async () => {
+    setIsLoadingRecipients(true);
+    try {
+      const res = await fetchFacebookRecipients();
+      if (res.success && Array.isArray(res.recipients)) {
+        setPersistedRecipients(res.recipients);
+        if (res.recipients.length > 0) {
+          addLog('info', `[DIRECTORY SYNC] Loaded ${res.recipients.length} authentic Messenger contact(s) from D1 database.`);
+        }
+      }
+    } catch {} finally {
+      setIsLoadingRecipients(false);
+    }
+  };
+
+  // Check backend Meta setup status and load saved campaigns and recipients on mount
   useEffect(() => {
     fetchFacebookStatus().then((res) => {
       if (res.success && res.status) {
@@ -203,6 +222,7 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
       }
     }).catch(() => {});
     loadSavedCampaigns();
+    loadRecipients();
   }, []);
 
   const handleTestMetaConnection = async () => {
@@ -221,6 +241,20 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
         }
         addLog('success', `[META CONNECTED] Authenticated as Page: "${res.pageName || res.pageId}" (ID: ${res.pageId}).`);
         showNotification('success', 'Meta API Connected', `Connected to Facebook Page: ${res.pageName || res.pageId}`);
+
+        // Automatically ensure Facebook Page is subscribed to webhook events in Meta Graph API
+        subscribeFacebookPage()
+          .then((subRes) => {
+            if (subRes.success) {
+              addLog('success', '[PAGE WEBHOOK SUBSCRIBED] Facebook Page is subscribed to Messenger events (messages, deliveries, reads).');
+            } else if (subRes.error) {
+              addLog('info', `[PAGE SUBSCRIPTION NOTE] ${subRes.error}`);
+            }
+          })
+          .catch(() => {});
+
+        // Reload persisted recipients from D1
+        loadRecipients();
       } else {
         if (res.mismatch) {
           addLog('error', `[PAGE ID MISMATCH] ${res.error}`);
@@ -406,8 +440,49 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
       });
     });
 
+    // 3. Add authentic Facebook Page Contacts from Messenger Webhook & D1 database
+    const seenPsids = new Set<string>();
+    persistedRecipients.forEach((contact) => {
+      const psid = contact.psid ? String(contact.psid).trim() : undefined;
+      if (!psid || seenPsids.has(psid)) return;
+      seenPsids.add(psid);
+
+      const interactionTime = new Date(contact.lastInteractionAt || contact.createdAt || now).getTime();
+      const diffHours = (now - interactionTime) / (60 * 60 * 1000);
+      const isWithin24 = diffHours <= 24;
+
+      let status: FacebookRecipient['eligibilityStatus'] = 'ineligible_no_psid';
+      let reason = '';
+
+      if (isWithin24) {
+        status = 'eligible_24h';
+        reason = `Active within 24h (${diffHours.toFixed(1)}h ago)`;
+      } else if (selectedTag !== 'NONE') {
+        status = 'eligible_tag';
+        reason = `Eligible under tag [${selectedTag}]`;
+      } else {
+        status = 'requires_consent';
+        reason = 'Outside 24h window without Meta Message Tag';
+      }
+
+      list.push({
+        id: contact.id || `fb_${psid}`,
+        name: contact.name || 'Messenger User',
+        phone: contact.phone || undefined,
+        email: contact.email || undefined,
+        psid,
+        source: 'facebook_messenger',
+        lastInteraction: contact.lastInteractionAt || contact.createdAt || new Date(now).toISOString(),
+        isWithin24Hours: isWithin24,
+        hasMarketingConsent: contact.consentStatus === 'consented' || isWithin24,
+        eligibilityStatus: status,
+        eligibilityReason: reason,
+        lastMessageSnippet: contact.lastMessageSnippet || undefined,
+      });
+    });
+
     return list;
-  }, [orders, users, selectedTag]);
+  }, [orders, users, persistedRecipients, selectedTag]);
 
   // Filter candidates according to selected audience type
   const audienceCandidates = useMemo(() => {
@@ -1014,6 +1089,15 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
                 >
                   Clear
                 </button>
+                <button
+                  type="button"
+                  onClick={loadRecipients}
+                  disabled={isLoadingRecipients}
+                  className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] cursor-pointer border border-slate-300 disabled:opacity-50"
+                  title="Reload recent Messenger contacts from D1"
+                >
+                  {isLoadingRecipients ? 'Syncing...' : 'Sync Contacts'}
+                </button>
               </div>
             </div>
 
@@ -1078,7 +1162,7 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
                               onChange={() => {}} // Handled by parent div onClick
                               className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer"
                             />
-                            <div>
+                            <div className="min-w-0">
                               <div className="flex items-center gap-2">
                                 <span className="font-bold text-slate-900 truncate">{r.name}</span>
                                 {r.orderNumber && (
@@ -1087,10 +1171,21 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
                                   </span>
                                 )}
                               </div>
+                              {r.lastMessageSnippet && (
+                                <div className="text-[11px] text-slate-600 truncate mt-0.5 max-w-md italic">
+                                  "{r.lastMessageSnippet}"
+                                </div>
+                              )}
                               <div className="text-[11px] text-slate-500 flex items-center gap-2 mt-0.5">
                                 <span>PSID: <code className="font-mono">{r.psid ? `${r.psid.slice(0, 12)}...` : 'None'}</code></span>
                                 <span>•</span>
                                 <span>{r.source === 'facebook_messenger' ? 'Messenger' : 'Website Order'}</span>
+                                {r.lastInteraction && (
+                                  <>
+                                    <span>•</span>
+                                    <span>{new Date(r.lastInteraction).toLocaleString('en-GB')}</span>
+                                  </>
+                                )}
                               </div>
                             </div>
                           </div>

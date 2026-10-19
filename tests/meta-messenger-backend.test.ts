@@ -169,6 +169,145 @@ describe('Meta Messenger Backend Integration & Security Tests', () => {
       expect(result.events?.[0].watermark).toBe(1729270000000);
     });
 
+    it('successfully parses authentic incoming customer message event', async () => {
+      const rawPayload = JSON.stringify({
+        object: 'page',
+        entry: [
+          {
+            id: 'page_12345',
+            time: 1729270000000,
+            messaging: [
+              {
+                sender: { id: 'psid_customer_789' },
+                recipient: { id: 'page_12345' },
+                timestamp: 1729270000000,
+                message: {
+                  mid: 'mid.msg.123456789',
+                  text: 'Hello, I want to order from Rongdhonu Trade!',
+                },
+              },
+            ],
+          },
+        ],
+      });
+
+      const signature = await computeHmacSha256Hex(testSecret, rawPayload);
+      const request = new Request('https://rongdhonutrade.com/api/webhooks/facebook', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-hub-signature-256': `sha256=${signature}`,
+        },
+        body: rawPayload,
+      });
+
+      const result = await handleMetaWebhookEvent(request, rawPayload, {
+        FB_APP_SECRET: testSecret,
+        FB_PAGE_ID: 'page_12345',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.status).toBe(200);
+      expect(result.events?.length).toBe(1);
+      expect(result.events?.[0].type).toBe('message');
+      expect(result.events?.[0].isEcho).toBe(false);
+      expect(result.events?.[0].senderId).toBe('psid_customer_789');
+      expect(result.events?.[0].recipientId).toBe('page_12345');
+      expect(result.events?.[0].text).toBe('Hello, I want to order from Rongdhonu Trade!');
+      expect(result.events?.[0].mids?.[0]).toBe('mid.msg.123456789');
+    });
+
+    it('correctly distinguishes page echo messages from incoming customer messages', async () => {
+      const rawPayload = JSON.stringify({
+        object: 'page',
+        entry: [
+          {
+            id: 'page_12345',
+            time: 1729270000000,
+            messaging: [
+              {
+                sender: { id: 'page_12345' },
+                recipient: { id: 'psid_customer_789' },
+                timestamp: 1729270000000,
+                message: {
+                  is_echo: true,
+                  mid: 'mid.echo.987654321',
+                  text: 'Thank you for reaching out to Rongdhonu Trade!',
+                },
+              },
+            ],
+          },
+        ],
+      });
+
+      const signature = await computeHmacSha256Hex(testSecret, rawPayload);
+      const request = new Request('https://rongdhonutrade.com/api/webhooks/facebook', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-hub-signature-256': `sha256=${signature}`,
+        },
+        body: rawPayload,
+      });
+
+      const result = await handleMetaWebhookEvent(request, rawPayload, {
+        FB_APP_SECRET: testSecret,
+        FB_PAGE_ID: 'page_12345',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.events?.length).toBe(1);
+      expect(result.events?.[0].type).toBe('echo');
+      expect(result.events?.[0].isEcho).toBe(true);
+      expect(result.events?.[0].senderId).toBe('page_12345');
+    });
+
+    it('correctly parses postback events as customer interactions', async () => {
+      const rawPayload = JSON.stringify({
+        object: 'page',
+        entry: [
+          {
+            id: 'page_12345',
+            time: 1729270000000,
+            messaging: [
+              {
+                sender: { id: 'psid_customer_999' },
+                recipient: { id: 'page_12345' },
+                timestamp: 1729270000000,
+                postback: {
+                  title: 'Get Started',
+                  payload: 'GET_STARTED_PAYLOAD',
+                },
+              },
+            ],
+          },
+        ],
+      });
+
+      const signature = await computeHmacSha256Hex(testSecret, rawPayload);
+      const request = new Request('https://rongdhonutrade.com/api/webhooks/facebook', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-hub-signature-256': `sha256=${signature}`,
+        },
+        body: rawPayload,
+      });
+
+      const result = await handleMetaWebhookEvent(request, rawPayload, {
+        FB_APP_SECRET: testSecret,
+        FB_PAGE_ID: 'page_12345',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.events?.length).toBe(1);
+      expect(result.events?.[0].type).toBe('postback');
+      expect(result.events?.[0].isEcho).toBe(false);
+      expect(result.events?.[0].senderId).toBe('psid_customer_999');
+      expect(result.events?.[0].text).toBe('Get Started');
+      expect(result.events?.[0].postbackPayload).toBe('GET_STARTED_PAYLOAD');
+    });
+
     it('rejects incoming webhook event (POST) when signature is invalid or tampered', async () => {
       const rawPayload = JSON.stringify({ object: 'page', entry: [] });
       const request = new Request('https://rongdhonutrade.com/api/webhooks/facebook', {

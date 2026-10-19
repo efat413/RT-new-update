@@ -127,6 +127,7 @@ function localApiDevPlugin(): Plugin {
   let devSettings: any = { ...INITIAL_SETTINGS };
   let devFacebookCampaigns: any[] = [];
   let devFacebookCampaignQueue: any[] = [];
+  let devFacebookRecipients: any[] = [];
   const generateInitialDevAuditLogs = (): any[] => {
     const actions = [
       { action: 'SETTINGS_UPDATE', targetType: 'settings', details: 'Store brand settings updated' },
@@ -7144,6 +7145,50 @@ function localApiDevPlugin(): Plugin {
                 return res.end(JSON.stringify({ success: false, error: eventResult.error }));
               }
 
+              if (eventResult.events && eventResult.events.length > 0) {
+                for (const ev of eventResult.events) {
+                  if ((ev.type === 'message' || ev.type === 'postback') && !ev.isEcho && ev.senderId) {
+                    const existingIdx = devFacebookRecipients.findIndex((r) => r.psid === ev.senderId || r.id === `fb_${ev.senderId}`);
+                    const interactionIso = new Date(ev.timestamp || Date.now()).toISOString();
+                    const metadata = {
+                      lastMessageText: ev.text ? ev.text.slice(0, 200) : '',
+                      lastMessageMid: ev.mids?.[0],
+                      lastInteractionAt: interactionIso,
+                    };
+
+                    if (existingIdx >= 0) {
+                      devFacebookRecipients[existingIdx] = {
+                        ...devFacebookRecipients[existingIdx],
+                        lastInteractionAt: interactionIso,
+                        consentStatus: 'consented',
+                        consentTimestamp: interactionIso,
+                        lastMessageSnippet: metadata.lastMessageText,
+                        metadata,
+                        updatedAt: interactionIso,
+                      };
+                    } else {
+                      devFacebookRecipients.unshift({
+                        id: `fb_${ev.senderId}`,
+                        audienceType: 'page_contacts',
+                        name: 'Messenger User',
+                        psid: ev.senderId,
+                        phone: null,
+                        email: null,
+                        source: 'facebook_messenger',
+                        consentStatus: 'consented',
+                        consentTimestamp: interactionIso,
+                        lastInteractionAt: interactionIso,
+                        recentOrderNumber: null,
+                        lastMessageSnippet: metadata.lastMessageText,
+                        metadata,
+                        createdAt: interactionIso,
+                        updatedAt: interactionIso,
+                      });
+                    }
+                  }
+                }
+              }
+
               res.statusCode = 200;
               res.setHeader('Content-Type', 'text/plain; charset=UTF-8');
               return res.end('EVENT_RECEIVED');
@@ -7451,6 +7496,23 @@ function localApiDevPlugin(): Plugin {
           res.setHeader('Content-Type', 'application/json');
           return res.end(JSON.stringify({ success: true, campaign: camp, queue }));
         }
+
+        if (url.pathname === '/api/admin/facebook/recipients' && req.method === 'GET') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          return res.end(JSON.stringify({ success: true, recipients: devFacebookRecipients }));
+        }
+
+        if (url.pathname === '/api/admin/facebook/subscribe-page' && req.method === 'POST') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          return res.end(JSON.stringify({ success: true, message: 'Subscribed Facebook Page to webhooks (dev mode).' }));
+        }
+
 
 
         if (url.pathname.startsWith('/api/')) {

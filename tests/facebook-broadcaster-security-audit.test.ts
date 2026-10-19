@@ -16,12 +16,14 @@ import {
 } from '../src/server/db';
 import { Env, UserRow } from '../src/server/types';
 import { createAuthToken, getAuthSecret } from '../src/server/auth';
+import { computeHmacSha256Hex } from '../src/server/webhookAuth';
 
 // Mock D1 Database for router & db integration tests
 class ComprehensiveMockD1 {
   public tables = {
     fb_campaigns: new Map<string, any>(),
     fb_campaign_queue: new Map<string, any>(),
+    fb_recipients: new Map<string, any>(),
     users: new Map<string, any>(),
     audit_logs: [] as any[],
   };
@@ -241,6 +243,40 @@ class ComprehensiveMockD1 {
           }
         }
 
+        if (clean.includes('INSERT INTO fb_recipients')) {
+          const [id, audience_type, name, psid, source, consent_status, consent_timestamp, consent_source, last_interaction_at, metadata] = args;
+          db.tables.fb_recipients.set(id, {
+            id,
+            audience_type: audience_type || 'page_contacts',
+            name: name || 'Messenger User',
+            psid,
+            source: source || 'facebook_messenger',
+            consent_status: consent_status || 'consented',
+            consent_timestamp,
+            consent_source,
+            last_interaction_at,
+            metadata,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          });
+          return { success: true, meta: { changes: 1 } };
+        }
+
+        if (clean.includes('UPDATE fb_recipients')) {
+          const [name, psid, last_interaction_at, consent_timestamp, consent_source, metadata, id] = args;
+          const row = db.tables.fb_recipients.get(id);
+          if (row) {
+            row.name = name || row.name;
+            row.psid = psid;
+            row.last_interaction_at = last_interaction_at;
+            row.consent_timestamp = consent_timestamp;
+            row.consent_source = consent_source || 'incoming_message';
+            row.metadata = metadata;
+            row.updated_at = new Date().toISOString();
+            return { success: true, meta: { changes: 1 } };
+          }
+        }
+
         return { success: true, meta: { changes: 0 } };
       },
 
@@ -303,6 +339,14 @@ class ComprehensiveMockD1 {
           return (db.tables.fb_campaign_queue.get(id) || null) as unknown as T;
         }
 
+        if (clean.includes('FROM fb_recipients WHERE psid = ? OR id = ?')) {
+          const [psid, id] = args;
+          for (const r of db.tables.fb_recipients.values()) {
+            if (r.psid === psid || r.id === id) return r as unknown as T;
+          }
+          return null as unknown as T;
+        }
+
         return null as unknown as T;
       },
 
@@ -314,6 +358,9 @@ class ComprehensiveMockD1 {
           const [cid] = args;
           const items = Array.from(db.tables.fb_campaign_queue.values()).filter((q) => q.campaign_id === cid);
           return { results: items };
+        }
+        if (clean.includes('SELECT * FROM fb_recipients')) {
+          return { results: Array.from(db.tables.fb_recipients.values()) };
         }
         return { results: [] };
       },
@@ -674,4 +721,104 @@ describe('Facebook Broadcaster Comprehensive Security & Deployment Audit (Part 6
       expect(res.error).toContain('signature');
     });
   });
+
+  describe('8. Incoming Messenger Webhook Persistence & Admin Recipients API', () => {
+    it('persists incoming message PSID to D1 fb_recipients and returns EVENT_RECEIVED', async () => {
+      const incomingPayload = JSON.stringify({
+        object: 'page',
+        entry: [
+          {
+            id: 'page-123456789',
+            time: Date.now(),
+            messaging: [
+              {
+                sender: { id: 'psid_customer_real_100' },
+                recipient: { id: 'page-123456789' },
+                timestamp: Date.now(),
+                message: {
+                  mid: 'mid.incoming.test.100',
+                  text: 'Hi Rongdhonu Trade, I want to confirm my delivery.',
+                },
+              },
+            ],
+          },
+        ],
+      });
+
+      const sig = await computeHmacSha256Hex(testEnv.FB_APP_SECRET!, incomingPayload);
+      const req = new Request('https://rongdhonutrade.com/api/webhooks/facebook', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-hub-signature-256': `sha256=${sig}`,
+        },
+        body: incomingPayload,
+      });
+
+      const res = await handleApiRequest(req, testEnv);
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      expect(text).toBe('EVENT_RECEIVED');
+
+      // Verify recipient was persisted in D1
+      const saved = mockDb.tables.fb_recipients.get('fb_psid_customer_real_100');
+      expect(saved).toBeDefined();
+      expect(saved.psid).toBe('psid_customer_real_100');
+      expect(saved.source).toBe('facebook_messenger');
+      expect(saved.consent_status).toBe('consented');
+    });
+
+    it('retrieves persisted Messenger recipients via GET /api/admin/facebook/recipients for authorized admin', async () => {
+      mockDb.tables.fb_recipients.set('fb_psid_customer_real_100', {
+        id: 'fb_psid_customer_real_100',
+        audience_type: 'page_contacts',
+        name: 'Messenger User',
+        psid: 'psid_customer_real_100',
+        source: 'facebook_messenger',
+        consent_status: 'consented',
+        last_interaction_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+
+      const req = new Request('https://rongdhonutrade.com/api/admin/facebook/recipients', {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${adminToken}`,
+        },
+      });
+
+      const res = await handleApiRequest(req, testEnv);
+      expect(res.status).toBe(200);
+      const data: any = await res.json();
+      expect(data.success).toBe(true);
+      expect(Array.isArray(data.recipients)).toBe(true);
+      const found = data.recipients.find((r: any) => r.psid === 'psid_customer_real_100');
+      expect(found).toBeDefined();
+      expect(found.source).toBe('facebook_messenger');
+    });
+
+    it('rejects unauthorized access to /api/admin/facebook/recipients with HTTP 401/403', async () => {
+      // Unauthenticated
+      const unauthReq = new Request('https://rongdhonutrade.com/api/admin/facebook/recipients', {
+        method: 'GET',
+      });
+      const unauthRes = await handleApiRequest(unauthReq, testEnv);
+      expect(unauthRes.status).toBe(401);
+
+      // Customer account without admin permissions
+      const customerToken = await createAuthToken(
+        { userId: 'customer-1', email: 'customer@gmail.com', role: 'customer' },
+        secretKey
+      );
+      const custReq = new Request('https://rongdhonutrade.com/api/admin/facebook/recipients', {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${customerToken}` },
+      });
+      const custRes = await handleApiRequest(custReq, testEnv);
+      expect(custRes.status).toBe(403);
+    });
+  });
 });
+

@@ -5410,6 +5410,33 @@ export async function checkAndRecordWebhookFingerprint(
 export async function ensureFacebookCampaignSchema(db: D1Database): Promise<void> {
   if (!db || typeof db.prepare !== 'function') return;
   try {
+    // 1. Facebook Page & Messenger Recipients Table (Migration 0024 parity)
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS fb_recipients (
+        id TEXT PRIMARY KEY,
+        audience_type TEXT NOT NULL DEFAULT 'page_contacts',
+        name TEXT NOT NULL,
+        psid TEXT,
+        phone TEXT,
+        email TEXT,
+        source TEXT NOT NULL DEFAULT 'facebook_messenger',
+        consent_status TEXT NOT NULL DEFAULT 'consented',
+        consent_timestamp TEXT,
+        consent_source TEXT,
+        last_interaction_at TEXT NOT NULL,
+        recent_order_number TEXT,
+        metadata TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `).run();
+
+    await db.prepare(`CREATE INDEX IF NOT EXISTS idx_fb_recipients_audience ON fb_recipients(audience_type)`).run();
+    await db.prepare(`CREATE INDEX IF NOT EXISTS idx_fb_recipients_psid ON fb_recipients(psid)`).run();
+    await db.prepare(`CREATE INDEX IF NOT EXISTS idx_fb_recipients_consent ON fb_recipients(consent_status)`).run();
+    await db.prepare(`CREATE INDEX IF NOT EXISTS idx_fb_recipients_last_interaction ON fb_recipients(last_interaction_at)`).run();
+
+    // 2. Facebook Campaigns Table
     await db.prepare(`
       CREATE TABLE IF NOT EXISTS fb_campaigns (
         id TEXT PRIMARY KEY,
@@ -5435,6 +5462,7 @@ export async function ensureFacebookCampaignSchema(db: D1Database): Promise<void
       )
     `).run();
 
+    // 3. Facebook Campaign Queue Table
     await db.prepare(`
       CREATE TABLE IF NOT EXISTS fb_campaign_queue (
         id TEXT PRIMARY KEY,
@@ -6030,4 +6058,200 @@ export async function recordMetaDeliveryWatermarkInD1(
 
   return { updatedCount };
 }
+
+/**
+ * Persists an authentic incoming Facebook Messenger message event into D1.
+ * Inserts or updates the sender in `fb_recipients` with updated `last_interaction_at` (used for 24h window),
+ * sets consent_status = 'consented', and stores message metadata (snippet, mid).
+ */
+export async function upsertFacebookRecipientFromMessageInD1(
+  db: D1Database,
+  event: {
+    senderId: string;
+    recipientId?: string;
+    timestamp?: number;
+    text?: string;
+    mids?: string[];
+    isEcho?: boolean;
+  },
+  env?: Env
+): Promise<{ success: boolean; recipientId?: string; isNew?: boolean; error?: string }> {
+  const senderId = String(event.senderId || '').trim();
+  if (!senderId) {
+    return { success: false, error: 'Cannot persist recipient: Missing senderId PSID.' };
+  }
+
+  // Prevent recording the Page itself as a recipient
+  const configuredPageId = env?.FB_PAGE_ID ? String(env.FB_PAGE_ID).trim() : '';
+  if (configuredPageId && senderId === configuredPageId) {
+    return { success: false, error: 'Ignored: Sender is configured Page ID.' };
+  }
+  if (event.isEcho) {
+    return { success: false, error: 'Ignored: Event is an outbound echo.' };
+  }
+
+  if (!db || typeof db.prepare !== 'function') {
+    return { success: false, error: 'D1 binding not available.' };
+  }
+
+  await ensureFacebookCampaignSchema(db);
+
+  const interactionTime = Number(event.timestamp) || Date.now();
+  const interactionIso = new Date(interactionTime).toISOString();
+  const recipientId = `fb_${senderId}`;
+
+  try {
+    // 1. Check if recipient already exists
+    const existing = await db
+      .prepare('SELECT id, name, metadata, phone, email, recent_order_number FROM fb_recipients WHERE psid = ? OR id = ? LIMIT 1')
+      .bind(senderId, recipientId)
+      .first<any>();
+
+    let metaObj: any = {};
+    if (existing?.metadata) {
+      try {
+        metaObj = JSON.parse(existing.metadata);
+      } catch {}
+    }
+
+    if (event.mids && event.mids.length > 0) {
+      metaObj.lastMessageMid = event.mids[0];
+    }
+    if (event.text) {
+      metaObj.lastMessageText = event.text.slice(0, 200);
+    }
+    metaObj.lastInteractionAt = interactionIso;
+    const metadataStr = JSON.stringify(metaObj);
+
+    // 2. Resolve display name (prefer existing non-default name; otherwise attempt quick Meta Graph lookup if token present)
+    let displayName = existing?.name || 'Messenger User';
+    if (
+      env?.FB_PAGE_ACCESS_TOKEN &&
+      (displayName === 'Messenger User' || displayName === 'Facebook User' || !existing)
+    ) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 1800);
+        const uResp = await fetch(
+          `https://graph.facebook.com/v21.0/${encodeURIComponent(senderId)}?fields=name,first_name,last_name`,
+          {
+            headers: { Authorization: `Bearer ${env.FB_PAGE_ACCESS_TOKEN}` },
+            signal: controller.signal,
+          }
+        );
+        clearTimeout(timeout);
+        if (uResp.ok) {
+          const uData: any = await uResp.json().catch(() => ({}));
+          if (uData?.name) {
+            displayName = String(uData.name).trim();
+          } else if (uData?.first_name) {
+            displayName = `${uData.first_name} ${uData.last_name || ''}`.trim();
+          }
+        }
+      } catch {}
+    }
+
+    if (existing) {
+      await db
+        .prepare(`
+          UPDATE fb_recipients
+          SET name = COALESCE(NULLIF(?, ''), name),
+              psid = ?,
+              last_interaction_at = ?,
+              consent_status = 'consented',
+              consent_timestamp = ?,
+              consent_source = 'incoming_message',
+              metadata = ?,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `)
+        .bind(displayName, senderId, interactionIso, interactionIso, metadataStr, existing.id)
+        .run();
+
+      return { success: true, recipientId: existing.id, isNew: false };
+    } else {
+      await db
+        .prepare(`
+          INSERT INTO fb_recipients (
+            id, audience_type, name, psid, source, consent_status,
+            consent_timestamp, consent_source, last_interaction_at, metadata, created_at, updated_at
+          ) VALUES (
+            ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+          )
+        `)
+        .bind(
+          recipientId,
+          'page_contacts',
+          displayName,
+          senderId,
+          'facebook_messenger',
+          'consented',
+          interactionIso,
+          'incoming_message',
+          interactionIso,
+          metadataStr
+        )
+        .run();
+
+      return { success: true, recipientId, isNew: true };
+    }
+  } catch (err: any) {
+    console.error('[D1 upsertFacebookRecipientFromMessage error]:', err?.message || err);
+    return { success: false, error: err?.message || 'Failed to persist recipient to D1.' };
+  }
+}
+
+/**
+ * Retrieves persisted Facebook recipients from D1 for Admin Broadcaster Directory.
+ */
+export async function getFacebookRecipientsFromD1(
+  db: D1Database,
+  audienceType?: string
+): Promise<any[]> {
+  if (!db || typeof db.prepare !== 'function') return [];
+  await ensureFacebookCampaignSchema(db);
+
+  try {
+    let query = 'SELECT * FROM fb_recipients';
+    const params: any[] = [];
+    if (audienceType && audienceType !== 'all_eligible') {
+      query += ' WHERE audience_type = ?';
+      params.push(audienceType);
+    }
+    query += ' ORDER BY last_interaction_at DESC LIMIT 500';
+
+    const prep = db.prepare(query);
+    const res = params.length > 0 ? await prep.bind(...params).all() : await prep.all();
+
+    return (res?.results || []).map((row: any) => {
+      let metaObj: any = {};
+      try {
+        if (row.metadata) metaObj = JSON.parse(row.metadata);
+      } catch {}
+
+      return {
+        id: row.id,
+        audienceType: row.audience_type || 'page_contacts',
+        name: row.name || 'Messenger User',
+        psid: row.psid,
+        phone: row.phone || null,
+        email: row.email || null,
+        source: row.source || 'facebook_messenger',
+        consentStatus: row.consent_status || 'consented',
+        consentTimestamp: row.consent_timestamp || row.created_at,
+        lastInteractionAt: row.last_interaction_at || row.updated_at || row.created_at,
+        recentOrderNumber: row.recent_order_number || null,
+        lastMessageSnippet: metaObj.lastMessageText || null,
+        metadata: metaObj,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      };
+    });
+  } catch (err: any) {
+    console.error('[D1 getFacebookRecipientsFromD1 error]:', err?.message || err);
+    return [];
+  }
+}
+
 

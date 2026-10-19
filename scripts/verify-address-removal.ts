@@ -45,10 +45,9 @@ async function runAssertions() {
     deliveryFee: 80,
     totalAmount: 1080,
     paymentMethod: 'cod',
-    paymentStatus: 'pending',
-    shippingStatus: 'pending',
+    paymentStatus: 'Pending',
+    shippingStatus: 'Pending',
     createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
   };
 
   // Test invoice with empty address

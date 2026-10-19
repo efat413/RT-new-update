@@ -278,3 +278,48 @@ export async function processFacebookCampaignNext(
   }
 }
 
+export async function fetchFacebookRecipients(
+  audienceType?: string
+): Promise<{ success: boolean; recipients?: any[]; error?: string }> {
+  try {
+    const token = getAuthToken();
+    const query = audienceType ? `?audienceType=${encodeURIComponent(audienceType)}` : '';
+    const res = await fetch(`/api/admin/facebook/recipients${query}`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      credentials: 'include',
+    });
+    const data = await res.json().catch(() => ({}));
+    return data;
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Network error fetching recipients.' };
+  }
+}
+
+export async function subscribeFacebookPage(): Promise<{
+  success: boolean;
+  status: number;
+  message?: string;
+  error?: string;
+}> {
+  try {
+    const token = getAuthToken();
+    const res = await fetch('/api/admin/facebook/subscribe-page', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      credentials: 'include',
+    });
+    const data = await res.json().catch(() => ({}));
+    return data;
+  } catch (err: any) {
+    return { success: false, status: 502, error: err.message || 'Network error subscribing page.' };
+  }
+}
+
+

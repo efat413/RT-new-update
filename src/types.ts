@@ -477,6 +477,7 @@ export interface FacebookRecipient {
   orderNumber?: string;
   eligibilityStatus: FacebookRecipientEligibility;
   eligibilityReason: string;
+  lastMessageSnippet?: string;
 }
 
 export type FacebookCampaignStatus = 'draft' | 'idle' | 'running' | 'paused' | 'completed' | 'cancelled';

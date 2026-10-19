@@ -94,7 +94,7 @@ import {
   saveReviewImageBlobInD1,
   getReviewImageBlobFromD1,
   deleteReviewImageFromD1,
-  // Facebook Campaign Engine
+  // Facebook Campaign Engine & Messenger Recipients
   createFacebookCampaignInD1,
   getFacebookCampaignsFromD1,
   getFacebookCampaignByIdFromD1,
@@ -102,6 +102,8 @@ import {
   updateFacebookCampaignDelaysInD1,
   processNextCampaignQueueItemInD1,
   recordMetaDeliveryWatermarkInD1,
+  upsertFacebookRecipientFromMessageInD1,
+  getFacebookRecipientsFromD1,
 } from './db';
 import {
   Order,
@@ -181,6 +183,7 @@ import {
   handleMetaWebhookHandshake,
   handleMetaWebhookEvent,
   testMetaConnection,
+  subscribePageToMessengerWebhooks,
 } from './facebookMessenger';
 import {
   getBodySizeLimit,
@@ -8269,7 +8272,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     return handleMetaWebhookHandshake(url, env);
   }
 
-  // 11B. Meta Webhook Inbound Delivery Receipts & Read Watermarks (POST /api/webhooks/facebook)
+  // 11B. Meta Webhook Inbound Delivery Receipts & Incoming Messages (POST /api/webhooks/facebook)
   if ((path === '/api/webhooks/facebook' || path === '/api/webhook/facebook') && method === 'POST') {
     const { buffer: rawBytes, error: bodyErr } = await readRawBodyWithLimit(request, BODY_LIMIT_WEBHOOK);
     if (bodyErr) {
@@ -8284,23 +8287,56 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
     if (env.DB && eventResult.events && eventResult.events.length > 0) {
       try {
-        await insertAuditLogInD1(env.DB, {
-          actorId: 'webhook:meta_facebook',
-          actorEmail: 'webhook@graph.facebook.com',
-          actorRole: 'webhook',
-          action: 'FACEBOOK_WEBHOOK_DELIVERY_RECEIPT',
-          targetId: 'meta_messenger',
-          targetType: 'facebook_message',
-          details: `Processed ${eventResult.events.length} Meta event(s): ${eventResult.events.map((e) => e.type).join(', ')}.`,
-        });
+        const messageEvents = eventResult.events.filter((e) => (e.type === 'message' || e.type === 'postback') && !e.isEcho);
+        const deliveryEvents = eventResult.events.filter((e) => e.type === 'delivery');
+        const readEvents = eventResult.events.filter((e) => e.type === 'read');
+        const echoEvents = eventResult.events.filter((e) => e.isEcho || e.type === 'echo');
 
-        // Update delivered status in D1 campaign queue
-        for (const ev of eventResult.events) {
-          if (ev.type === 'delivery' && ev.mids && ev.mids.length > 0) {
+        console.log(`[Meta Webhook] Received ${eventResult.events.length} event(s): ${messageEvents.length} message(s), ${deliveryEvents.length} delivery(s), ${readEvents.length} read(s), ${echoEvents.length} echo(s).`);
+
+        // 1. Process and persist authentic incoming customer messages / postbacks
+        for (const ev of messageEvents) {
+          if (ev.senderId) {
+            const persistRes = await upsertFacebookRecipientFromMessageInD1(env.DB, ev, env);
+            if (persistRes.success) {
+              console.log(`[Meta Webhook] Persisted incoming recipient PSID: ${ev.senderId.slice(0, 5)}*** (isNew: ${persistRes.isNew})`);
+            } else {
+              console.warn(`[Meta Webhook] Could not persist recipient: ${persistRes.error}`);
+            }
+
+            await insertAuditLogInD1(env.DB, {
+              actorId: `psid:${ev.senderId}`,
+              actorEmail: 'messenger@user.facebook.com',
+              actorRole: 'customer',
+              action: 'FACEBOOK_WEBHOOK_MESSAGE_RECEIVED',
+              targetId: ev.senderId,
+              targetType: 'facebook_messenger',
+              details: `Incoming Messenger message received (PSID: ${ev.senderId.slice(0, 5)}***, mid: ${ev.mids?.[0] || 'N/A'}).`,
+            });
+          }
+        }
+
+        // 2. Process delivery receipts (watermarks)
+        for (const ev of deliveryEvents) {
+          if (ev.mids && ev.mids.length > 0) {
             await recordMetaDeliveryWatermarkInD1(env.DB, ev.mids, ev.watermark || Date.now());
           }
         }
-      } catch {}
+
+        if (deliveryEvents.length > 0) {
+          await insertAuditLogInD1(env.DB, {
+            actorId: 'webhook:meta_facebook',
+            actorEmail: 'webhook@graph.facebook.com',
+            actorRole: 'webhook',
+            action: 'FACEBOOK_WEBHOOK_DELIVERY_RECEIPT',
+            targetId: 'meta_messenger',
+            targetType: 'facebook_message',
+            details: `Processed ${deliveryEvents.length} delivery watermark event(s).`,
+          });
+        }
+      } catch (err: any) {
+        console.error('[Meta Webhook D1 Persistence Error]:', err?.message || err);
+      }
     }
 
     return new Response('EVENT_RECEIVED', {
@@ -8653,6 +8689,54 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
     return jsonResponse({ success: true, campaign: res.campaign, queue: res.queue });
   }
+
+  // 11G. Get Facebook Messenger Recipients (GET /api/admin/facebook/recipients)
+  if (path === '/api/admin/facebook/recipients' && method === 'GET') {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const isAuthorized =
+      hasPermission(auth!, 'settings.manage') ||
+      Boolean(auth?.legacyPermissions?.canManageSettings) ||
+      auth?.role === 'admin' ||
+      auth?.role === 'super_admin';
+
+    if (!isAuthorized) {
+      return jsonResponse(
+        { success: false, error: 'Forbidden: Admin privileges required to inspect Facebook recipients.' },
+        403
+      );
+    }
+
+    if (!env.DB) {
+      return jsonResponse({ success: true, recipients: [] });
+    }
+
+    const audienceType = url.searchParams.get('audienceType') || undefined;
+    const recipients = await getFacebookRecipientsFromD1(env.DB, audienceType);
+    return jsonResponse({ success: true, recipients });
+  }
+
+  // 11H. Subscribe Facebook Page to Webhook Events (POST /api/admin/facebook/subscribe-page)
+  if (path === '/api/admin/facebook/subscribe-page' && method === 'POST') {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const isAuthorized =
+      hasPermission(auth!, 'settings.manage') ||
+      Boolean(auth?.legacyPermissions?.canManageSettings) ||
+      auth?.role === 'admin' ||
+      auth?.role === 'super_admin';
+
+    if (!isAuthorized) {
+      return jsonResponse(
+        { success: false, error: 'Forbidden: Admin privileges required to manage Facebook Page subscriptions.' },
+        403
+      );
+    }
+
+    const subResult = await subscribePageToMessengerWebhooks(env);
+    return jsonResponse(subResult, subResult.status);
+  }
+
 
 
     return jsonResponse({ success: false, error: 'Endpoint not found' }, 404);

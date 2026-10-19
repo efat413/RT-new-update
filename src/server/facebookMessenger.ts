@@ -44,10 +44,13 @@ export interface MetaWebhookEvent {
   senderId: string;
   recipientId: string;
   timestamp: number;
-  type: 'delivery' | 'read' | 'message' | 'optin' | 'other';
+  type: 'delivery' | 'read' | 'message' | 'optin' | 'postback' | 'echo' | 'other';
   watermark?: number;
   mids?: string[];
   text?: string;
+  isEcho?: boolean;
+  quickReplyPayload?: string;
+  postbackPayload?: string;
 }
 
 interface PageVerificationCacheEntry {
@@ -412,14 +415,15 @@ export async function handleMetaWebhookEvent(
   }
 
   const extractedEvents: MetaWebhookEvent[] = [];
+  const configuredPageId = env.FB_PAGE_ID ? String(env.FB_PAGE_ID).trim() : '';
 
   if (payload.object === 'page' && Array.isArray(payload.entry)) {
     for (const entry of payload.entry) {
       if (Array.isArray(entry.messaging)) {
         for (const item of entry.messaging) {
-          const senderId = item.sender?.id || '';
-          const recipientId = item.recipient?.id || '';
-          const timestamp = item.timestamp || Date.now();
+          const senderId = String(item.sender?.id || '').trim();
+          const recipientId = String(item.recipient?.id || '').trim();
+          const timestamp = Number(item.timestamp) || Date.now();
 
           if (item.delivery) {
             extractedEvents.push({
@@ -439,13 +443,42 @@ export async function handleMetaWebhookEvent(
               watermark: item.read.watermark,
             });
           } else if (item.message) {
+            const isEcho = Boolean(
+              item.message.is_echo ||
+              (configuredPageId && senderId === configuredPageId)
+            );
+
+            if (isEcho) {
+              extractedEvents.push({
+                senderId,
+                recipientId,
+                timestamp,
+                type: 'echo',
+                isEcho: true,
+                mids: item.message.mid ? [item.message.mid] : undefined,
+                text: item.message.text,
+              });
+            } else {
+              extractedEvents.push({
+                senderId,
+                recipientId,
+                timestamp,
+                type: 'message',
+                isEcho: false,
+                mids: item.message.mid ? [item.message.mid] : undefined,
+                text: item.message.text || (item.message.attachments ? '[Attachment]' : ''),
+                quickReplyPayload: item.message.quick_reply?.payload,
+              });
+            }
+          } else if (item.postback) {
             extractedEvents.push({
               senderId,
               recipientId,
               timestamp,
-              type: 'message',
-              mids: [item.message.mid],
-              text: item.message.text,
+              type: 'postback',
+              isEcho: false,
+              text: item.postback.title,
+              postbackPayload: item.postback.payload,
             });
           } else if (item.optin) {
             extractedEvents.push({
@@ -453,6 +486,13 @@ export async function handleMetaWebhookEvent(
               recipientId,
               timestamp,
               type: 'optin',
+            });
+          } else {
+            extractedEvents.push({
+              senderId,
+              recipientId,
+              timestamp,
+              type: 'other',
             });
           }
         }
@@ -737,3 +777,68 @@ export async function testMetaConnection(env: Env): Promise<{
     };
   }
 }
+
+/**
+ * Subscribes the Facebook Page to app webhooks via Meta Graph API /subscribed_apps.
+ * Subscribes to 'messages', 'message_deliveries', 'message_reads'.
+ */
+export async function subscribePageToMessengerWebhooks(env: Env): Promise<{
+  success: boolean;
+  status: number;
+  message?: string;
+  error?: string;
+}> {
+  const token = (env.FB_PAGE_ACCESS_TOKEN || '').trim();
+  const pageId = (env.FB_PAGE_ID || '').trim();
+
+  if (!token) {
+    return {
+      success: false,
+      status: 503,
+      error: 'FB_PAGE_ACCESS_TOKEN is not configured in environment.',
+    };
+  }
+  if (!pageId) {
+    return {
+      success: false,
+      status: 503,
+      error: 'FB_PAGE_ID is not configured in environment.',
+    };
+  }
+
+  try {
+    const endpoint = `https://graph.facebook.com/v21.0/${encodeURIComponent(pageId)}/subscribed_apps?subscribed_fields=messages,message_deliveries,message_reads`;
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'User-Agent': 'RongdhonuTrade-FacebookBroadcaster/1.0',
+      },
+    });
+
+    const data: any = await resp.json().catch(() => ({}));
+
+    if (resp.ok && data?.success) {
+      return {
+        success: true,
+        status: 200,
+        message: 'Successfully subscribed Facebook Page to Messenger webhook events (messages, deliveries, reads).',
+      };
+    }
+
+    const err = data?.error;
+    const classification = classifyMetaGraphError(err, resp.status);
+    return {
+      success: false,
+      status: resp.status >= 400 && resp.status < 500 ? resp.status : 502,
+      error: classification.userMessage || 'Failed to subscribe Page to webhook events in Meta Graph API.',
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      status: 502,
+      error: `Network error subscribing Page to webhooks: ${err?.message || err}`,
+    };
+  }
+}
+
