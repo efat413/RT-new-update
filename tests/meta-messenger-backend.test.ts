@@ -4,6 +4,7 @@ import {
   sendMetaMessengerMessage,
   handleMetaWebhookHandshake,
   handleMetaWebhookEvent,
+  testMetaConnection,
 } from '../src/server/facebookMessenger';
 import { computeHmacSha256Hex } from '../src/server/webhookAuth';
 
@@ -188,4 +189,323 @@ describe('Meta Messenger Backend Integration & Security Tests', () => {
       expect(result.error).toContain('signature');
     });
   });
+
+  describe('4. Authoritative Page ID & Optional Webhook Secrets (Scenarios 1-7)', () => {
+    const realPageId = '987654321098765';
+    const realPageName = 'Rongdhonu Trade Official';
+    const validToken = 'EAAK_valid_page_access_token_12345';
+
+    it('Scenario 1: Correct Page Access Token and matching Page ID returns real Page name and ID', async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async (url: any) => {
+        const u = String(url);
+        if (u.includes('graph.facebook.com/v21.0/me')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              id: realPageId,
+              name: realPageName,
+              category: 'Retail Company',
+            }),
+          };
+        }
+        return originalFetch(url);
+      }) as any;
+
+      try {
+        const result = await testMetaConnection({
+          FB_PAGE_ACCESS_TOKEN: validToken,
+          FB_PAGE_ID: realPageId,
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.status).toBe(200);
+        expect(result.pageId).toBe(realPageId);
+        expect(result.pageName).toBe(realPageName);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('Scenario 2: Missing Page ID reports clear configuration error without a fake ID', async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async (url: any) => {
+        const u = String(url);
+        if (u.includes('graph.facebook.com/v21.0/me')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              id: realPageId,
+              name: realPageName,
+            }),
+          };
+        }
+        return originalFetch(url);
+      }) as any;
+
+      try {
+        // Status check reports unconfigured Page ID without fake ID
+        const status = getFacebookConfigStatus({
+          FB_PAGE_ACCESS_TOKEN: validToken,
+        });
+        expect(status.hasPageId).toBe(false);
+        expect(status.pageId).toBeNull();
+        expect(status.isOutboundReady).toBe(false);
+        expect(status.outboundMissingRequirements.some((r) => r.includes('FB_PAGE_ID'))).toBe(true);
+
+        // Connection test reports missing FB_PAGE_ID configuration error clearly
+        const connResult = await testMetaConnection({
+          FB_PAGE_ACCESS_TOKEN: validToken,
+        });
+        expect(connResult.success).toBe(false);
+        expect(connResult.status).toBe(400);
+        expect(connResult.error).toContain('Facebook Page ID is not configured');
+        expect(connResult.pageId).toBe(realPageId);
+        expect(connResult.pageName).toBe(realPageName);
+
+        // Send API blocks with HTTP 503 notConfigured when FB_PAGE_ID is missing
+        const sendResult = await sendMetaMessengerMessage(
+          {
+            recipientPsid: 'psid_user_1',
+            text: 'Hello test',
+            isWithin24Hours: true,
+          },
+          {
+            FB_PAGE_ACCESS_TOKEN: validToken,
+          }
+        );
+        expect(sendResult.success).toBe(false);
+        expect(sendResult.status).toBe(503);
+        expect(sendResult.notConfigured).toBe(true);
+        expect(sendResult.error).toContain('Facebook Page ID not configured');
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('Scenario 3: Page ID mismatch blocks sending and reports the mismatch', async () => {
+      const configuredMismatchId = '111222333444555';
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async (url: any) => {
+        const u = String(url);
+        if (u.includes('graph.facebook.com/v21.0/me')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              id: realPageId,
+              name: realPageName,
+            }),
+          };
+        }
+        return originalFetch(url);
+      }) as any;
+
+      try {
+        // Connection test reports mismatch and blocks
+        const connResult = await testMetaConnection({
+          FB_PAGE_ACCESS_TOKEN: validToken,
+          FB_PAGE_ID: configuredMismatchId,
+        });
+        expect(connResult.success).toBe(false);
+        expect(connResult.status).toBe(409);
+        expect(connResult.mismatch).toBe(true);
+        expect(connResult.error).toContain('mismatch');
+        expect(connResult.error).toContain(configuredMismatchId);
+        expect(connResult.error).toContain(realPageId);
+
+        // Dispatch blocks sending to prevent messaging from the wrong Page
+        const sendResult = await sendMetaMessengerMessage(
+          {
+            recipientPsid: 'psid_user_1',
+            text: 'Hello test',
+            isWithin24Hours: true,
+          },
+          {
+            FB_PAGE_ACCESS_TOKEN: validToken,
+            FB_PAGE_ID: configuredMismatchId,
+          }
+        );
+        expect(sendResult.success).toBe(false);
+        expect(sendResult.status).toBe(409);
+        expect(sendResult.error).toContain('mismatch');
+        expect(sendResult.error).toContain(configuredMismatchId);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('Scenario 4: Missing FB_APP_SECRET leaves outbound messaging available and webhook verification fails safely', async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async (url: any) => {
+        const u = String(url);
+        if (u.includes('/messages')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              recipient_id: 'psid_user_1',
+              message_id: 'mid.success.123',
+            }),
+          };
+        }
+        if (u.includes('/me')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              id: realPageId,
+              name: realPageName,
+            }),
+          };
+        }
+        return originalFetch(url);
+      }) as any;
+
+      try {
+        const outboundEnv = {
+          FB_PAGE_ACCESS_TOKEN: validToken,
+          FB_PAGE_ID: realPageId,
+          // FB_APP_SECRET is omitted
+        };
+
+        const status = getFacebookConfigStatus(outboundEnv);
+        expect(status.isOutboundReady).toBe(true);
+        expect(status.isWebhookReady).toBe(false);
+        expect(status.isConfigured).toBe(true); // Outbound is configured!
+        expect(status.hasAppSecret).toBe(false);
+
+        // Outbound send succeeds
+        const sendResult = await sendMetaMessengerMessage(
+          {
+            recipientPsid: 'psid_user_1',
+            text: 'Outbound dispatch test',
+            isWithin24Hours: true,
+          },
+          outboundEnv
+        );
+        expect(sendResult.success).toBe(true);
+        expect(sendResult.messageId).toBe('mid.success.123');
+
+        // Webhook event fails safely without FB_APP_SECRET
+        const webhookReq = new Request('https://rongdhonutrade.com/api/webhooks/facebook', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-hub-signature-256': 'sha256=abc' },
+          body: '{}',
+        });
+        const webhookResult = await handleMetaWebhookEvent(webhookReq, '{}', outboundEnv);
+        expect(webhookResult.success).toBe(false);
+        expect(webhookResult.status).toBe(503);
+        expect(webhookResult.error).toContain('FB_APP_SECRET is not configured');
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('Scenario 5: Missing FB_WEBHOOK_VERIFY_TOKEN leaves outbound messaging available and handshake fails safely', async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async (url: any) => {
+        const u = String(url);
+        if (u.includes('/messages')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              recipient_id: 'psid_user_1',
+              message_id: 'mid.success.456',
+            }),
+          };
+        }
+        if (u.includes('/me')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              id: realPageId,
+              name: realPageName,
+            }),
+          };
+        }
+        return originalFetch(url);
+      }) as any;
+
+      try {
+        const outboundEnv = {
+          FB_PAGE_ACCESS_TOKEN: validToken,
+          FB_PAGE_ID: realPageId,
+          // FB_WEBHOOK_VERIFY_TOKEN is omitted
+        };
+
+        const status = getFacebookConfigStatus(outboundEnv);
+        expect(status.isOutboundReady).toBe(true);
+        expect(status.hasWebhookVerifyToken).toBe(false);
+
+        // Outbound send succeeds
+        const sendResult = await sendMetaMessengerMessage(
+          {
+            recipientPsid: 'psid_user_1',
+            text: 'Outbound dispatch test',
+            isWithin24Hours: true,
+          },
+          outboundEnv
+        );
+        expect(sendResult.success).toBe(true);
+        expect(sendResult.messageId).toBe('mid.success.456');
+
+        // Webhook challenge handshake fails safely with HTTP 503
+        const handshakeUrl = new URL('https://rongdhonutrade.com/api/webhooks/facebook?hub.mode=subscribe&hub.verify_token=token&hub.challenge=ch1');
+        const handshakeRes = handleMetaWebhookHandshake(handshakeUrl, outboundEnv);
+        expect(handshakeRes.status).toBe(503);
+        const text = await handshakeRes.text();
+        expect(text).toContain('Webhook verify token is not configured');
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('Scenario 6: Invalid or expired Page Access Token shows clear connection failure', async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async (url: any) => {
+        const u = String(url);
+        if (u.includes('graph.facebook.com')) {
+          return {
+            ok: false,
+            status: 401,
+            json: async () => ({
+              error: {
+                message: 'Error validating access token: Session has expired or token is invalid.',
+                type: 'OAuthException',
+                code: 190,
+              },
+            }),
+          };
+        }
+        return originalFetch(url);
+      }) as any;
+
+      try {
+        const result = await testMetaConnection({
+          FB_PAGE_ACCESS_TOKEN: 'expired_or_invalid_token',
+          FB_PAGE_ID: realPageId,
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.status).toBe(401);
+        expect(result.error).toContain('Error validating access token');
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('Scenario 7: Ensure no test Page ID or mock fallback credentials in production files', async () => {
+      const fs = await import('fs');
+      const componentContent = fs.readFileSync('src/components/AdminFacebookBroadcasterTab.tsx', 'utf-8');
+      expect(componentContent).not.toContain("'104829104820194'");
+      expect(componentContent).not.toContain('"104829104820194"');
+      expect(componentContent).toContain('Facebook Page ID not configured');
+    });
+  });
 });
+

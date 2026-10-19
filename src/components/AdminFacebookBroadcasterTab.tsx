@@ -116,7 +116,8 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
   // Audience & Tag Configuration
   const [audienceType, setAudienceType] = useState<FacebookAudienceType>('page_contacts');
   const [selectedTag, setSelectedTag] = useState<FacebookMessageTag>('NONE');
-  const [pageId, setPageId] = useState<string>(() => (settings as any)?.facebookPageId || '104829104820194');
+  const [pageId, setPageId] = useState<string | null>(() => (settings as any)?.facebookPageId || null);
+  const [pageName, setPageName] = useState<string | null>(null);
 
   // Templates & Variations
   const [selectedPresetId, setSelectedPresetId] = useState<string>('post_purchase_update');
@@ -185,10 +186,19 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
     fetchFacebookStatus().then((res) => {
       if (res.success && res.status) {
         setConfigStatus(res.status);
-        if (res.status.isConfigured) {
+        if (res.status.pageId) {
+          setPageId(res.status.pageId);
+        }
+        if (res.status.pageName) {
+          setPageName(res.status.pageName);
+        }
+        if (res.status.isOutboundReady || res.status.isConfigured) {
           addLog('success', `[BACKEND READY] Meta credentials verified on Cloudflare Worker (Page ID: ${res.status.pageId || 'Configured'}).`);
         } else {
-          addLog('warn', `[SETUP REQUIRED] Meta credentials incomplete: ${res.status.missingRequirements.length} required Worker secret(s) missing.`);
+          addLog('warn', `[SETUP REQUIRED] Meta credentials incomplete: ${res.status.outboundMissingRequirements?.length || res.status.missingRequirements?.length || 0} required configuration item(s) missing.`);
+        }
+        if (!res.status.isWebhookReady && (res.status.isOutboundReady || res.status.isConfigured)) {
+          addLog('info', '[OUTBOUND READY] Outbound broadcasting is available. Inbound webhook delivery receipts are unconfigured (optional).');
         }
       }
     }).catch(() => {});
@@ -203,11 +213,22 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
       setIsTestingConnection(false);
 
       if (res.success) {
+        if (res.pageId) {
+          setPageId(res.pageId);
+        }
+        if (res.pageName) {
+          setPageName(res.pageName);
+        }
         addLog('success', `[META CONNECTED] Authenticated as Page: "${res.pageName || res.pageId}" (ID: ${res.pageId}).`);
         showNotification('success', 'Meta API Connected', `Connected to Facebook Page: ${res.pageName || res.pageId}`);
       } else {
-        addLog('error', `[META CONNECTION FAILED] ${res.error || 'Check FB_PAGE_ACCESS_TOKEN'}`);
-        showNotification('error', 'Connection Test Failed', res.error || 'Failed to authenticate with Meta Graph API.');
+        if (res.mismatch) {
+          addLog('error', `[PAGE ID MISMATCH] ${res.error}`);
+          showNotification('error', 'Page ID Mismatch', res.error || 'Configured FB_PAGE_ID does not match authenticated Page ID.');
+        } else {
+          addLog('error', `[META CONNECTION FAILED] ${res.error || 'Check FB_PAGE_ACCESS_TOKEN and FB_PAGE_ID'}`);
+          showNotification('error', 'Connection Test Failed', res.error || 'Failed to authenticate with Meta Graph API.');
+        }
       }
     } catch (err: any) {
       setIsTestingConnection(false);
@@ -215,7 +236,8 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
     }
   };
 
-  const consoleBottomRef = useRef<HTMLDivElement>(null);
+  const consoleContainerRef = useRef<HTMLDivElement>(null);
+  const isInitialMountRef = useRef<boolean>(true);
   const [autoScroll, setAutoScroll] = useState<boolean>(true);
 
   // Refs for tracking mutable run-state inside interval loops
@@ -450,10 +472,16 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
     ]);
   };
 
-  // Auto scroll console
+  // Auto scroll strictly inside the dedicated console container without moving the document
   useEffect(() => {
-    if (autoScroll && consoleBottomRef.current) {
-      consoleBottomRef.current.scrollIntoView({ behavior: 'smooth' });
+    if (isInitialMountRef.current) {
+      isInitialMountRef.current = false;
+      return;
+    }
+
+    if (autoScroll && consoleContainerRef.current) {
+      const container = consoleContainerRef.current;
+      container.scrollTop = container.scrollHeight;
     }
   }, [logs, autoScroll]);
 
@@ -777,9 +805,18 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
         {/* Integration Status Badges & Cloudflare Secrets Guide Toggle */}
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold">
-            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+            <span className={`w-2.5 h-2.5 rounded-full ${pageId ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
             <span className="text-slate-700">Page ID:</span>
-            <code className="font-mono text-slate-900 font-bold">{pageId}</code>
+            {pageId ? (
+              <div className="flex items-center gap-1.5">
+                <code className="font-mono text-slate-900 font-bold">{pageId}</code>
+                {pageName && (
+                  <span className="text-[11px] text-slate-500 font-normal">({pageName})</span>
+                )}
+              </div>
+            ) : (
+              <span className="font-semibold text-amber-700">Facebook Page ID not configured</span>
+            )}
           </div>
 
           <button
@@ -816,7 +853,7 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
                 Meta Messenger API & Cloudflare Worker Secrets Architecture
               </h4>
               <p className="text-xs text-slate-400">
-                In strict adherence to enterprise security guidelines, Page Access Tokens and App Secrets are never stored in browser storage or client bundles. They must be set as Cloudflare Worker secrets.
+                In strict adherence to enterprise security guidelines, Page Access Tokens and App Secrets are never stored in browser storage or client bundles. They must be set as Cloudflare Worker secrets. Outbound broadcasting requires only a valid Page Access Token and Page ID.
               </p>
             </div>
             <button
@@ -830,25 +867,25 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 font-mono text-xs">
             <div className="p-3 bg-slate-800/80 rounded-xl border border-slate-700 space-y-1">
               <span className="text-slate-400 block text-[10px] font-sans font-bold uppercase tracking-wider">
-                1. Set Page Access Token:
+                1. Set Page Access Token (Required for Outbound):
               </span>
               <code className="text-emerald-400 block break-all">npx wrangler secret put FB_PAGE_ACCESS_TOKEN</code>
             </div>
             <div className="p-3 bg-slate-800/80 rounded-xl border border-slate-700 space-y-1">
               <span className="text-slate-400 block text-[10px] font-sans font-bold uppercase tracking-wider">
-                2. Set Meta App Secret (Webhook Signing):
-              </span>
-              <code className="text-emerald-400 block break-all">npx wrangler secret put FB_APP_SECRET</code>
-            </div>
-            <div className="p-3 bg-slate-800/80 rounded-xl border border-slate-700 space-y-1">
-              <span className="text-slate-400 block text-[10px] font-sans font-bold uppercase tracking-wider">
-                3. Set Authoritative Facebook Page ID:
+                2. Set Authoritative Facebook Page ID (Required for Outbound):
               </span>
               <code className="text-emerald-400 block break-all">npx wrangler secret put FB_PAGE_ID</code>
             </div>
             <div className="p-3 bg-slate-800/80 rounded-xl border border-slate-700 space-y-1">
               <span className="text-slate-400 block text-[10px] font-sans font-bold uppercase tracking-wider">
-                4. Set Webhook Verification Token:
+                3. Set Meta App Secret (Optional - Webhook Signatures):
+              </span>
+              <code className="text-emerald-400 block break-all">npx wrangler secret put FB_APP_SECRET</code>
+            </div>
+            <div className="p-3 bg-slate-800/80 rounded-xl border border-slate-700 space-y-1">
+              <span className="text-slate-400 block text-[10px] font-sans font-bold uppercase tracking-wider">
+                4. Set Webhook Verification Token (Optional - Webhook Handshake):
               </span>
               <code className="text-emerald-400 block break-all">npx wrangler secret put FB_WEBHOOK_VERIFY_TOKEN</code>
             </div>
@@ -1353,7 +1390,10 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
             </div>
 
             {/* LOG FEED */}
-            <div className="flex-1 p-4 font-mono text-[11px] leading-relaxed overflow-y-auto space-y-1.5 bg-[#0b1120]">
+            <div
+              ref={consoleContainerRef}
+              className="flex-1 p-4 font-mono text-[11px] leading-relaxed overflow-y-auto space-y-1.5 bg-[#0b1120]"
+            >
               {logs.map((log) => {
                 let badgeClass = 'text-slate-400';
                 if (log.level === 'warn') badgeClass = 'text-amber-400';
@@ -1370,7 +1410,6 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
                   </div>
                 );
               })}
-              <div ref={consoleBottomRef} />
             </div>
 
             {/* CONSOLE FOOTER CONTROLS */}

@@ -29,6 +29,7 @@ export async function testFacebookConnection(): Promise<{
   pageName?: string;
   category?: string;
   error?: string;
+  mismatch?: boolean;
 }> {
   try {
     const token = getAuthToken();

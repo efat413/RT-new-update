@@ -9,8 +9,13 @@ export interface FacebookConfigStatus {
   hasPageId: boolean;
   hasWebhookVerifyToken: boolean;
   pageId: string | null;
+  pageName?: string | null;
   isConfigured: boolean;
+  isOutboundReady: boolean;
+  isWebhookReady: boolean;
   missingRequirements: string[];
+  outboundMissingRequirements: string[];
+  webhookMissingRequirements: string[];
   permissionsNeeded: string[];
   policyNotes: string[];
 }
@@ -45,9 +50,21 @@ export interface MetaWebhookEvent {
   text?: string;
 }
 
+interface PageVerificationCacheEntry {
+  pageId: string;
+  pageName: string;
+  verifiedAt: number;
+}
+const pageVerificationCache = new Map<string, PageVerificationCacheEntry>();
+
+export function clearMetaPageVerificationCache(): void {
+  pageVerificationCache.clear();
+}
+
 /**
  * Returns the non-sensitive configuration and security readiness status of the Meta Messenger integration.
  * Protects secrets: tokens and secrets are never returned in plaintext.
+ * Distinguishes outbound messaging readiness from optional inbound webhook readiness.
  */
 export function getFacebookConfigStatus(env: Env): FacebookConfigStatus {
   const hasPageAccessToken = Boolean(env.FB_PAGE_ACCESS_TOKEN && env.FB_PAGE_ACCESS_TOKEN.trim().length > 10);
@@ -55,30 +72,47 @@ export function getFacebookConfigStatus(env: Env): FacebookConfigStatus {
   const hasPageId = Boolean(env.FB_PAGE_ID && env.FB_PAGE_ID.trim().length > 0);
   const hasWebhookVerifyToken = Boolean(env.FB_WEBHOOK_VERIFY_TOKEN && env.FB_WEBHOOK_VERIFY_TOKEN.trim().length > 5);
 
-  const missingRequirements: string[] = [];
+  const outboundMissingRequirements: string[] = [];
   if (!hasPageAccessToken) {
-    missingRequirements.push('Set FB_PAGE_ACCESS_TOKEN secret via: npx wrangler secret put FB_PAGE_ACCESS_TOKEN');
-  }
-  if (!hasAppSecret) {
-    missingRequirements.push('Set FB_APP_SECRET secret via: npx wrangler secret put FB_APP_SECRET');
+    outboundMissingRequirements.push('Set FB_PAGE_ACCESS_TOKEN secret via: npx wrangler secret put FB_PAGE_ACCESS_TOKEN');
   }
   if (!hasPageId) {
-    missingRequirements.push('Set FB_PAGE_ID secret/var via: npx wrangler secret put FB_PAGE_ID');
-  }
-  if (!hasWebhookVerifyToken) {
-    missingRequirements.push('Set FB_WEBHOOK_VERIFY_TOKEN secret via: npx wrangler secret put FB_WEBHOOK_VERIFY_TOKEN');
+    outboundMissingRequirements.push('Set FB_PAGE_ID secret/var via: npx wrangler secret put FB_PAGE_ID');
   }
 
-  const isConfigured = hasPageAccessToken && hasAppSecret && hasPageId;
+  const webhookMissingRequirements: string[] = [];
+  if (!hasAppSecret) {
+    webhookMissingRequirements.push('Set FB_APP_SECRET secret (optional, for webhook signature verification) via: npx wrangler secret put FB_APP_SECRET');
+  }
+  if (!hasWebhookVerifyToken) {
+    webhookMissingRequirements.push('Set FB_WEBHOOK_VERIFY_TOKEN secret (optional, for webhook challenge handshake) via: npx wrangler secret put FB_WEBHOOK_VERIFY_TOKEN');
+  }
+
+  const isOutboundReady = hasPageAccessToken && hasPageId;
+  const isWebhookReady = hasAppSecret && hasWebhookVerifyToken;
+
+  // Outbound readiness is authoritative for outbound broadcasting
+  const isConfigured = isOutboundReady;
+
+  // Combined missing requirements
+  const missingRequirements: string[] = [...outboundMissingRequirements, ...webhookMissingRequirements];
+
+  const pageId = env.FB_PAGE_ID ? String(env.FB_PAGE_ID).trim() : null;
+  const verified = env.FB_PAGE_ACCESS_TOKEN ? pageVerificationCache.get(env.FB_PAGE_ACCESS_TOKEN.trim()) : undefined;
 
   return {
     hasPageAccessToken,
     hasAppSecret,
     hasPageId,
     hasWebhookVerifyToken,
-    pageId: env.FB_PAGE_ID ? String(env.FB_PAGE_ID).trim() : null,
+    pageId,
+    pageName: verified?.pageName || null,
     isConfigured,
+    isOutboundReady,
+    isWebhookReady,
     missingRequirements,
+    outboundMissingRequirements,
+    webhookMissingRequirements,
     permissionsNeeded: [
       'pages_messaging (Required to send and receive Messenger messages)',
       'pages_manage_metadata (Required to subscribe webhooks to Facebook Page)',
@@ -96,6 +130,7 @@ export function getFacebookConfigStatus(env: Env): FacebookConfigStatus {
 /**
  * Dispatches a message to Meta Graph API Send API (v21.0).
  * Strictly enforces Meta 24-Hour Policy and Message Tags.
+ * Validates FB_PAGE_ACCESS_TOKEN and FB_PAGE_ID to ensure messages are not sent from/to the wrong Page.
  */
 export async function sendMetaMessengerMessage(
   params: SendMetaMessageParams,
@@ -142,7 +177,7 @@ export async function sendMetaMessengerMessage(
     };
   }
 
-  // 3. Worker Secret Availability Check
+  // 3. Worker Secret Availability Check: Page Access Token
   const accessToken = (env.FB_PAGE_ACCESS_TOKEN || '').trim();
   if (!accessToken) {
     return {
@@ -154,7 +189,55 @@ export async function sendMetaMessengerMessage(
     };
   }
 
-  // 4. Build Meta Graph API Payload
+  // 4. Cloudflare Worker Page ID Check: Authoritative Page ID must be configured
+  const configuredPageId = env.FB_PAGE_ID ? String(env.FB_PAGE_ID).trim() : '';
+  if (!configuredPageId) {
+    return {
+      success: false,
+      status: 503,
+      notConfigured: true,
+      error:
+        'Facebook Page ID not configured. FB_PAGE_ID must be set in Cloudflare Worker environment before sending messages.',
+    };
+  }
+
+  // 5. Page ID Mismatch Guard: Prevent sending from the wrong Page
+  let verifiedPage = pageVerificationCache.get(accessToken);
+  const now = Date.now();
+  if (!verifiedPage || now - verifiedPage.verifiedAt > 5 * 60 * 1000) {
+    try {
+      const verifyResp = await fetch('https://graph.facebook.com/v21.0/me?fields=id,name', {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const verifyData: any = await verifyResp.json().catch(() => ({}));
+      if (verifyResp.ok && verifyData?.id) {
+        verifiedPage = {
+          pageId: verifyData.id,
+          pageName: verifyData.name || '',
+          verifiedAt: now,
+        };
+        pageVerificationCache.set(accessToken, verifiedPage);
+      } else if (verifyData?.error) {
+        return {
+          success: false,
+          status: verifyResp.status === 401 ? 401 : 502,
+          error: `Meta Authentication Error: ${verifyData.error.message || 'Invalid or expired Page Access Token.'}`,
+        };
+      }
+    } catch {
+      // In case of transient network verification issue, let the endpoint call proceed
+    }
+  }
+
+  if (verifiedPage && verifiedPage.pageId !== configuredPageId) {
+    return {
+      success: false,
+      status: 409,
+      error: `Facebook Page ID mismatch: Configured FB_PAGE_ID (${configuredPageId}) does not match authenticated Page ID (${verifiedPage.pageId} - "${verifiedPage.pageName}"). Sending blocked to prevent messaging from the wrong Page.`,
+    };
+  }
+
+  // 6. Build Meta Graph API Payload
   const requestBody: Record<string, any> = {
     recipient: {
       id: psid,
@@ -171,8 +254,8 @@ export async function sendMetaMessengerMessage(
     requestBody.messaging_type = 'RESPONSE';
   }
 
-  // 5. Secure Outbound Request to Meta Graph API
-  const metaGraphEndpoint = 'https://graph.facebook.com/v21.0/me/messages';
+  // 7. Secure Outbound Request to Meta Graph API
+  const metaGraphEndpoint = `https://graph.facebook.com/v21.0/${encodeURIComponent(configuredPageId || 'me')}/messages`;
 
   try {
     const controller = new AbortController();
@@ -394,13 +477,14 @@ export async function testMetaConnection(env: Env): Promise<{
   pageName?: string;
   category?: string;
   error?: string;
+  mismatch?: boolean;
 }> {
   const token = (env.FB_PAGE_ACCESS_TOKEN || '').trim();
   if (!token) {
     return {
       success: false,
       status: 503,
-      error: 'FB_PAGE_ACCESS_TOKEN is not configured.',
+      error: 'FB_PAGE_ACCESS_TOKEN is not configured. Please set the FB_PAGE_ACCESS_TOKEN Cloudflare Worker secret.',
     };
   }
 
@@ -413,6 +497,41 @@ export async function testMetaConnection(env: Env): Promise<{
 
     const data: any = await resp.json().catch(() => ({}));
     if (resp.ok && data.id) {
+      const configuredPageId = env.FB_PAGE_ID ? String(env.FB_PAGE_ID).trim() : null;
+
+      // Cache verified page credentials for token
+      pageVerificationCache.set(token, {
+        pageId: data.id,
+        pageName: data.name || '',
+        verifiedAt: Date.now(),
+      });
+
+      // 1. Missing Page ID: Report clear configuration error without a fake ID
+      if (!configuredPageId) {
+        return {
+          success: false,
+          status: 400,
+          pageId: data.id,
+          pageName: data.name,
+          category: data.category,
+          error: `Facebook Page ID is not configured. Authenticated as "${data.name}" (ID: ${data.id}), but FB_PAGE_ID is missing from the environment. Please configure FB_PAGE_ID=${data.id}.`,
+        };
+      }
+
+      // 2. Page ID mismatch: Block sending and report the mismatch
+      if (configuredPageId !== data.id) {
+        return {
+          success: false,
+          status: 409,
+          mismatch: true,
+          pageId: data.id,
+          pageName: data.name,
+          category: data.category,
+          error: `Facebook Page ID mismatch: Configured FB_PAGE_ID (${configuredPageId}) does not match authenticated Page ID (${data.id} - "${data.name}"). Sending blocked to prevent messaging from the wrong Page.`,
+        };
+      }
+
+      // 3. Fully valid connection with matching Page ID
       return {
         success: true,
         status: 200,
@@ -422,16 +541,17 @@ export async function testMetaConnection(env: Env): Promise<{
       };
     }
 
+    const metaError = data.error || {};
     return {
       success: false,
-      status: resp.status,
-      error: data.error?.message || 'Meta connection test failed.',
+      status: resp.status >= 400 && resp.status < 500 ? resp.status : 502,
+      error: metaError.message || 'Meta connection test failed: Invalid or expired Page Access Token.',
     };
   } catch (err: any) {
     return {
       success: false,
       status: 502,
-      error: `Network error connecting to Meta: ${err.message}`,
+      error: `Network error connecting to Meta Graph API: ${err.message || 'Connection failed'}`,
     };
   }
 }
