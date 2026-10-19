@@ -309,52 +309,10 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
   const allCandidates: FacebookRecipient[] = useMemo(() => {
     const list: FacebookRecipient[] = [];
     const now = Date.now();
-    const twentyFourHoursMs = 24 * 60 * 60 * 1000;
 
-    // 1. Synthetic Page Contacts with simulated recent Facebook Messenger conversations
-    const pageContactsSample: Array<{ name: string; psid: string; hoursAgo: number; consent: boolean }> = [
-      { name: 'Tanvir Ahmed', psid: 'psid_fb_84920491029', hoursAgo: 3.5, consent: true },
-      { name: 'Nusrat Jahan', psid: 'psid_fb_73910394812', hoursAgo: 11.2, consent: true },
-      { name: 'Kazi Mahbub', psid: 'psid_fb_92840192849', hoursAgo: 22.0, consent: true },
-      { name: 'Sadia Rahman', psid: 'psid_fb_54920194820', hoursAgo: 34.0, consent: true }, // Outside 24h
-      { name: 'Rakibul Islam', psid: 'psid_fb_63910294811', hoursAgo: 56.0, consent: false }, // Outside 24h & no consent
-      { name: 'Farhana Akter', psid: 'psid_fb_41920394819', hoursAgo: 2.1, consent: true },
-    ];
-
-    pageContactsSample.forEach((pc, idx) => {
-      const interactionTime = new Date(now - pc.hoursAgo * 60 * 60 * 1000).toISOString();
-      const isWithin24 = pc.hoursAgo <= 24;
-
-      let status: FacebookRecipient['eligibilityStatus'] = 'ineligible_no_psid';
-      let reason = '';
-
-      if (isWithin24) {
-        status = 'eligible_24h';
-        reason = `Within 24h standard window (${pc.hoursAgo.toFixed(1)}h ago)`;
-      } else if (selectedTag !== 'NONE') {
-        status = 'eligible_tag';
-        reason = `Outside 24h window, eligible via approved Tag [${selectedTag}]`;
-      } else {
-        status = 'requires_consent';
-        reason = `Outside 24h window (${pc.hoursAgo.toFixed(1)}h ago). Requires approved Message Tag or OTN.`;
-      }
-
-      list.push({
-        id: `fb-contact-${idx + 1}`,
-        name: pc.name,
-        psid: pc.psid,
-        source: 'facebook_messenger',
-        lastInteraction: interactionTime,
-        isWithin24Hours: isWithin24,
-        hasMarketingConsent: pc.consent,
-        eligibilityStatus: status,
-        eligibilityReason: reason,
-      });
-    });
-
-    // 2. Add real Store Customers / Orders
+    // 1. Add real Store Customers / Orders with authentic PSIDs
     const seenPhones = new Set<string>();
-    orders.slice(0, 15).forEach((order) => {
+    orders.forEach((order) => {
       const phone = order.customer?.phone || '';
       if (!phone || seenPhones.has(phone)) return;
       seenPhones.add(phone);
@@ -363,9 +321,13 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
       const diffHours = (now - orderTime) / (60 * 60 * 1000);
       const isWithin24 = diffHours <= 24;
 
-      // Website customers only have PSIDs if linked via Messenger plugin or Facebook Login
-      const hasSimulatedPsid = phone.endsWith('8') || phone.endsWith('1') || phone.endsWith('3');
-      const psid = hasSimulatedPsid ? `psid_cust_${phone.replace(/\D/g, '').slice(-8)}` : undefined;
+      // Extract authentic PSID if attached to order/customer record (never fabricate simulated IDs)
+      const realPsid =
+        (order as any).psid ||
+        (order as any).facebookPsid ||
+        (order.customer as any)?.psid ||
+        (order.customer as any)?.facebookPsid;
+      const psid = realPsid ? String(realPsid).trim() : undefined;
 
       let status: FacebookRecipient['eligibilityStatus'] = 'ineligible_no_psid';
       let reason = '';
@@ -403,8 +365,49 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
       });
     });
 
+    // 2. Add real Registered Users with authentic PSIDs if available
+    users.forEach((user) => {
+      const realPsid = (user as any).psid || (user as any).facebookPsid;
+      if (!realPsid) return;
+      const phone = user.phone || '';
+      if (phone && seenPhones.has(phone)) return;
+      if (phone) seenPhones.add(phone);
+
+      const userTime = new Date(user.createdAt || now).getTime();
+      const diffHours = (now - userTime) / (60 * 60 * 1000);
+      const isWithin24 = diffHours <= 24;
+
+      let status: FacebookRecipient['eligibilityStatus'] = 'ineligible_no_psid';
+      let reason = '';
+
+      if (isWithin24) {
+        status = 'eligible_24h';
+        reason = `Active within 24h (${diffHours.toFixed(1)}h ago)`;
+      } else if (selectedTag !== 'NONE') {
+        status = 'eligible_tag';
+        reason = `Eligible under tag [${selectedTag}]`;
+      } else {
+        status = 'requires_consent';
+        reason = 'Outside 24h window without Meta Message Tag';
+      }
+
+      list.push({
+        id: `user-${user.id}`,
+        name: user.name || 'Registered Customer',
+        phone,
+        email: user.email,
+        psid: String(realPsid).trim(),
+        source: 'facebook_messenger',
+        lastInteraction: user.createdAt || new Date(now).toISOString(),
+        isWithin24Hours: isWithin24,
+        hasMarketingConsent: true,
+        eligibilityStatus: status,
+        eligibilityReason: reason,
+      });
+    });
+
     return list;
-  }, [orders, selectedTag]);
+  }, [orders, users, selectedTag]);
 
   // Filter candidates according to selected audience type
   const audienceCandidates = useMemo(() => {
@@ -427,11 +430,18 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
     );
   }, [audienceCandidates]);
 
-  // Auto-select eligible candidates when audience or tag changes
-  useEffect(() => {
-    const eligibleIds = new Set(eligibleCandidates.map((r) => r.id));
-    setSelectedRecipientIds(eligibleIds);
-  }, [eligibleCandidates]);
+  // Filtered audience candidates for the inspector drawer
+  const filteredAudienceCandidates = useMemo(() => {
+    return audienceCandidates.filter((r) => {
+      if (recipientFilter === 'eligible') {
+        return r.eligibilityStatus === 'eligible_24h' || r.eligibilityStatus === 'eligible_tag';
+      }
+      if (recipientFilter === 'ineligible') {
+        return r.eligibilityStatus !== 'eligible_24h' && r.eligibilityStatus !== 'eligible_tag';
+      }
+      return true;
+    });
+  }, [audienceCandidates, recipientFilter]);
 
   // Parse message variations (supports either '---' line breaks or '|' delimiter)
   const parsedVariations = useMemo(() => {
@@ -521,9 +531,15 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
   };
 
   const handleSelectAllEligible = () => {
+    if (eligibleCandidates.length === 0) {
+      setSelectedRecipientIds(new Set());
+      showNotification('info', 'No Eligible Recipients', 'No eligible recipients found.');
+      addLog('warn', 'No eligible recipients found.');
+      return;
+    }
     const eligibleIds = new Set(eligibleCandidates.map((r) => r.id));
     setSelectedRecipientIds(eligibleIds);
-    addLog('info', `Selected all ${eligibleIds.size} eligible recipients.`);
+    addLog('info', `Selected all ${eligibleIds.size} eligible recipient(s).`);
   };
 
   const handleDeselectAll = () => {
@@ -1028,17 +1044,22 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
                 </div>
 
                 <div className="max-h-60 overflow-y-auto divide-y divide-slate-100 text-xs bg-white">
-                  {audienceCandidates
-                    .filter((r) => {
-                      if (recipientFilter === 'eligible') {
-                        return r.eligibilityStatus === 'eligible_24h' || r.eligibilityStatus === 'eligible_tag';
-                      }
-                      if (recipientFilter === 'ineligible') {
-                        return r.eligibilityStatus !== 'eligible_24h' && r.eligibilityStatus !== 'eligible_tag';
-                      }
-                      return true;
-                    })
-                    .map((r) => {
+                  {filteredAudienceCandidates.length === 0 ? (
+                    <div className="p-6 text-center text-slate-500">
+                      <Users className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                      <p className="font-bold text-slate-700">
+                        {recipientFilter === 'eligible'
+                          ? 'No eligible recipients found'
+                          : 'No recipients found'}
+                      </p>
+                      <p className="text-[11px] text-slate-400 mt-1 max-w-sm mx-auto">
+                        {recipientFilter === 'eligible'
+                          ? 'No customer records in this audience currently meet Meta 24-hour messaging window or Tag criteria with a verified PSID.'
+                          : 'No customer records available for the selected audience.'}
+                      </p>
+                    </div>
+                  ) : (
+                    filteredAudienceCandidates.map((r) => {
                       const isSelected = selectedRecipientIds.has(r.id);
                       const isEligible = r.eligibilityStatus === 'eligible_24h' || r.eligibilityStatus === 'eligible_tag';
 
@@ -1091,7 +1112,8 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
                           </div>
                         </div>
                       );
-                    })}
+                    })
+                  )}
                 </div>
               </div>
             )}

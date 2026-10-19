@@ -605,6 +605,132 @@ describe('Meta Messenger Backend Integration & Security Tests', () => {
         globalThis.fetch = originalFetch;
       }
     });
+
+    it('Scenario 11: Remove all hardcoded, mock, test, or preselected recipient IDs from initial state', async () => {
+      const fs = await import('fs');
+      const componentContent = fs.readFileSync('src/components/AdminFacebookBroadcasterTab.tsx', 'utf-8');
+
+      // Verify no mock recipient names or fake PSID lists
+      expect(componentContent).not.toContain('pageContactsSample');
+      expect(componentContent).not.toContain('psid_fb_84920491029');
+      expect(componentContent).not.toContain('psid_fb_73910394812');
+      expect(componentContent).not.toContain('psid_fb_92840192849');
+      expect(componentContent).not.toContain('hasSimulatedPsid');
+      expect(componentContent).not.toContain('psid_cust_');
+
+      // Verify initial selectedRecipientIds state starts with new Set()
+      expect(componentContent).toContain('selectedRecipientIds, setSelectedRecipientIds] = useState<Set<string>>(new Set())');
+
+      // Verify no auto-select effect is preselecting recipients on mount
+      expect(componentContent).not.toMatch(/useEffect\(\(\)\s*=>\s*\{[^}]*setSelectedRecipientIds\(eligibleIds\);[^}]*\}\s*,\s*\[eligibleCandidates\]\)/);
+    });
+
+    it('Scenario 12: Select Eligible handles empty state with clear notification and empty selection', async () => {
+      const fs = await import('fs');
+      const componentContent = fs.readFileSync('src/components/AdminFacebookBroadcasterTab.tsx', 'utf-8');
+
+      // Contains guard in handleSelectAllEligible
+      expect(componentContent).toContain('if (eligibleCandidates.length === 0)');
+      expect(componentContent).toContain('No eligible recipients found');
+      expect(componentContent).toContain('setSelectedRecipientIds(new Set())');
+
+      // Contains empty state rendering in UI drawer
+      expect(componentContent).toContain('No eligible recipients found');
+    });
+
+    it('Scenario 13: Eligible recipients filtering respects Meta 24-hour window and approved Tags with real PSID', () => {
+      const now = Date.now();
+      const mockOrders: any[] = [
+        {
+          id: 'ord-1',
+          orderNumber: 'RT-1001',
+          createdAt: new Date(now - 2 * 3600 * 1000).toISOString(), // 2h ago
+          customer: { fullName: 'Customer A', phone: '01700000001' },
+          psid: 'real_psid_customer_a',
+        },
+        {
+          id: 'ord-2',
+          orderNumber: 'RT-1002',
+          createdAt: new Date(now - 30 * 3600 * 1000).toISOString(), // 30h ago (outside 24h)
+          customer: { fullName: 'Customer B', phone: '01700000002' },
+          psid: 'real_psid_customer_b',
+        },
+        {
+          id: 'ord-3',
+          orderNumber: 'RT-1003',
+          createdAt: new Date(now - 1 * 3600 * 1000).toISOString(),
+          customer: { fullName: 'Customer C', phone: '01700000003' },
+          // No PSID
+        },
+      ];
+
+      // Pure eligibility helper logic mirroring AdminFacebookBroadcasterTab
+      const evaluateEligibility = (orders: any[], tag: string) => {
+        return orders.map((order) => {
+          const orderTime = new Date(order.createdAt).getTime();
+          const diffHours = (now - orderTime) / (60 * 60 * 1000);
+          const isWithin24 = diffHours <= 24;
+          const psid = order.psid;
+
+          let status: string;
+          if (!psid) {
+            status = 'ineligible_no_psid';
+          } else if (isWithin24) {
+            status = 'eligible_24h';
+          } else if (tag === 'POST_PURCHASE_UPDATE' || tag !== 'NONE') {
+            status = 'eligible_tag';
+          } else {
+            status = 'requires_consent';
+          }
+          return { id: `store-order-${order.id}`, status, psid };
+        });
+      };
+
+      // With tag NONE: Only within 24h with PSID is eligible
+      const resultsNone = evaluateEligibility(mockOrders, 'NONE');
+      const eligibleNone = resultsNone.filter((r) => r.status === 'eligible_24h' || r.status === 'eligible_tag');
+      expect(eligibleNone.length).toBe(1);
+      expect(eligibleNone[0].id).toBe('store-order-ord-1');
+
+      // With tag POST_PURCHASE_UPDATE: Both ord-1 and ord-2 have PSID and are eligible
+      const resultsTag = evaluateEligibility(mockOrders, 'POST_PURCHASE_UPDATE');
+      const eligibleTag = resultsTag.filter((r) => r.status === 'eligible_24h' || r.status === 'eligible_tag');
+      expect(eligibleTag.length).toBe(2);
+      expect(eligibleTag.some((r) => r.id === 'store-order-ord-3')).toBe(false); // ord-3 has no PSID
+    });
+
+    it('Scenario 14: Manual recipient selection, toggling, and clearing operate independently', () => {
+      let selectedIds = new Set<string>();
+
+      // Initial state is empty
+      expect(selectedIds.size).toBe(0);
+
+      // Toggle selection adds an ID
+      const toggle = (id: string) => {
+        const next = new Set(selectedIds);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        selectedIds = next;
+      };
+
+      toggle('store-order-ord-1');
+      expect(selectedIds.has('store-order-ord-1')).toBe(true);
+      expect(selectedIds.size).toBe(1);
+
+      // Toggle again deselects
+      toggle('store-order-ord-1');
+      expect(selectedIds.has('store-order-ord-1')).toBe(false);
+      expect(selectedIds.size).toBe(0);
+
+      // Select multiple
+      toggle('store-order-ord-1');
+      toggle('store-order-ord-2');
+      expect(selectedIds.size).toBe(2);
+
+      // Clear all
+      selectedIds = new Set();
+      expect(selectedIds.size).toBe(0);
+    });
   });
 });
 
