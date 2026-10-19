@@ -472,6 +472,8 @@ export interface FacebookRecipient {
   email?: string;
   source: 'facebook_messenger' | 'website_order' | 'website_account';
   lastInteraction: string;
+  lastIncomingMessageAt?: string;
+  pageId?: string;
   isWithin24Hours: boolean;
   hasMarketingConsent: boolean;
   orderNumber?: string;

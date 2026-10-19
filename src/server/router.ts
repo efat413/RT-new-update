@@ -8712,7 +8712,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     }
 
     const audienceType = url.searchParams.get('audienceType') || undefined;
-    const recipients = await getFacebookRecipientsFromD1(env.DB, audienceType);
+    const pageId = url.searchParams.get('pageId') || (env.FB_PAGE_ID ? String(env.FB_PAGE_ID).trim() : undefined);
+    const filter = url.searchParams.get('filter') || undefined;
+    const recipients = await getFacebookRecipientsFromD1(env.DB, audienceType, { pageId, filter });
     return jsonResponse({ success: true, recipients });
   }
 

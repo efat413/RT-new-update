@@ -279,12 +279,20 @@ export async function processFacebookCampaignNext(
 }
 
 export async function fetchFacebookRecipients(
-  audienceType?: string
+  audienceType?: string,
+  options?: {
+    pageId?: string;
+    filter?: string;
+  }
 ): Promise<{ success: boolean; recipients?: any[]; error?: string }> {
   try {
     const token = getAuthToken();
-    const query = audienceType ? `?audienceType=${encodeURIComponent(audienceType)}` : '';
-    const res = await fetch(`/api/admin/facebook/recipients${query}`, {
+    const params = new URLSearchParams();
+    if (audienceType) params.set('audienceType', audienceType);
+    if (options?.pageId) params.set('pageId', options.pageId);
+    if (options?.filter) params.set('filter', options.filter);
+    const queryString = params.toString() ? `?${params.toString()}` : '';
+    const res = await fetch(`/api/admin/facebook/recipients${queryString}`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',

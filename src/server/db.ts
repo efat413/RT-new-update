@@ -43,6 +43,7 @@ import {
 } from './permissions';
 import { sanitizeReviewImageReference } from './imageSecurity';
 import { sendMetaMessengerMessage } from './facebookMessenger';
+import { validateIncomingMessage24HourWindow, isRecipientEligibleFor24HourFilter } from '../utils/facebookPolicy';
 
 
 export const REQUIRED_TABLES = [
@@ -5410,7 +5411,7 @@ export async function checkAndRecordWebhookFingerprint(
 export async function ensureFacebookCampaignSchema(db: D1Database): Promise<void> {
   if (!db || typeof db.prepare !== 'function') return;
   try {
-    // 1. Facebook Page & Messenger Recipients Table (Migration 0024 parity)
+    // 1. Facebook Page & Messenger Recipients Table (Migration 0024 & 0027 parity)
     await db.prepare(`
       CREATE TABLE IF NOT EXISTS fb_recipients (
         id TEXT PRIMARY KEY,
@@ -5424,6 +5425,8 @@ export async function ensureFacebookCampaignSchema(db: D1Database): Promise<void
         consent_timestamp TEXT,
         consent_source TEXT,
         last_interaction_at TEXT NOT NULL,
+        last_incoming_message_at TEXT,
+        page_id TEXT,
         recent_order_number TEXT,
         metadata TEXT,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -5431,10 +5434,27 @@ export async function ensureFacebookCampaignSchema(db: D1Database): Promise<void
       )
     `).run();
 
+    // Migration 0027 self-healing: Ensure columns exist on legacy databases
+    try {
+      const colPrep = db.prepare("SELECT name FROM pragma_table_info('fb_recipients')");
+      if (colPrep && typeof colPrep.all === 'function') {
+        const colRes = await colPrep.all<{ name: string }>();
+        const existingCols = new Set((colRes?.results || []).map((r) => r.name.toLowerCase()));
+        if (existingCols.size > 0 && !existingCols.has('last_incoming_message_at')) {
+          await db.prepare('ALTER TABLE fb_recipients ADD COLUMN last_incoming_message_at TEXT').run().catch(() => {});
+        }
+        if (existingCols.size > 0 && !existingCols.has('page_id')) {
+          await db.prepare('ALTER TABLE fb_recipients ADD COLUMN page_id TEXT').run().catch(() => {});
+        }
+      }
+    } catch {}
+
     await db.prepare(`CREATE INDEX IF NOT EXISTS idx_fb_recipients_audience ON fb_recipients(audience_type)`).run();
     await db.prepare(`CREATE INDEX IF NOT EXISTS idx_fb_recipients_psid ON fb_recipients(psid)`).run();
     await db.prepare(`CREATE INDEX IF NOT EXISTS idx_fb_recipients_consent ON fb_recipients(consent_status)`).run();
     await db.prepare(`CREATE INDEX IF NOT EXISTS idx_fb_recipients_last_interaction ON fb_recipients(last_interaction_at)`).run();
+    await db.prepare(`CREATE INDEX IF NOT EXISTS idx_fb_recipients_incoming_time ON fb_recipients(last_incoming_message_at)`).run();
+    await db.prepare(`CREATE INDEX IF NOT EXISTS idx_fb_recipients_page_id ON fb_recipients(page_id)`).run();
 
     // 2. Facebook Campaigns Table
     await db.prepare(`
@@ -5561,6 +5581,7 @@ export async function createFacebookCampaignInD1(
     name: string;
     psid?: string;
     phone?: string;
+    source?: string;
     isWithin24Hours?: boolean;
     hasMarketingConsent?: boolean;
     orderNumber?: string;
@@ -5632,11 +5653,35 @@ export async function createFacebookCampaignInD1(
     campaign.createdBy || 'admin'
   ).run();
 
-  // Populate queue with deduplication guard
+  // Populate queue with deduplication guard and server-side eligibility revalidation
   let insertedCount = 0;
   for (const r of uniqueRecipients) {
     const queueItemId = `fbq-${campaignId}-${r.id}`;
     const text = r.personalizedText || campaign.messageTemplate || '';
+
+    // Revalidate 24h eligibility against authoritative D1 records
+    let isWithin24Server = r.isWithin24Hours !== false;
+    let hasConsentServer = r.hasMarketingConsent !== false;
+
+    try {
+      const recCheck = await db
+        .prepare('SELECT id, psid, consent_status, last_incoming_message_at, page_id FROM fb_recipients WHERE id = ? OR psid = ? LIMIT 1')
+        .bind(r.id, r.psid || r.id)
+        .first<any>();
+
+      if (recCheck) {
+        if (recCheck.consent_status === 'opted_out') {
+          hasConsentServer = false;
+        }
+        if (recCheck.last_incoming_message_at) {
+          const windowCheck = validateIncomingMessage24HourWindow(recCheck.last_incoming_message_at);
+          isWithin24Server = windowCheck.isWithin24Hours;
+        } else if (r.source === 'facebook_messenger' || !r.orderNumber) {
+          isWithin24Server = false;
+        }
+      }
+    } catch {}
+
     try {
       await db.prepare(`
         INSERT OR IGNORE INTO fb_campaign_queue (
@@ -5651,8 +5696,8 @@ export async function createFacebookCampaignInD1(
         r.name || 'Customer',
         r.psid || null,
         r.phone || null,
-        r.isWithin24Hours !== false ? 1 : 0,
-        r.hasMarketingConsent !== false ? 1 : 0,
+        isWithin24Server ? 1 : 0,
+        hasConsentServer ? 1 : 0,
         text
       ).run();
       insertedCount++;
@@ -5892,8 +5937,25 @@ export async function processNextCampaignQueueItemInD1(
     };
   }
 
-  // Policy Guard 2: Meta 24-Hour Messaging Policy
-  if (!isWithin24 && tag === 'NONE') {
+  // Policy Guard 2: Meta 24-Hour Messaging Policy with real-time revalidation
+  let isWithin24Effective = isWithin24;
+  if (tag === 'NONE' && isWithin24Effective) {
+    try {
+      const recCheck = await db
+        .prepare('SELECT last_incoming_message_at FROM fb_recipients WHERE id = ? OR psid = ? LIMIT 1')
+        .bind(nextPending.recipient_id, psid)
+        .first<any>();
+
+      if (recCheck?.last_incoming_message_at) {
+        const windowCheck = validateIncomingMessage24HourWindow(recCheck.last_incoming_message_at);
+        if (!windowCheck.isWithin24Hours) {
+          isWithin24Effective = false;
+        }
+      }
+    } catch {}
+  }
+
+  if (!isWithin24Effective && tag === 'NONE') {
     const reason = 'Outside 24-hour messaging window without approved Meta Message Tag';
     await db.prepare(`
       UPDATE fb_campaign_queue
@@ -6073,9 +6135,10 @@ export async function upsertFacebookRecipientFromMessageInD1(
     text?: string;
     mids?: string[];
     isEcho?: boolean;
+    pageId?: string;
   },
   env?: Env
-): Promise<{ success: boolean; recipientId?: string; isNew?: boolean; error?: string }> {
+): Promise<{ success: boolean; recipientId?: string; isNew?: boolean; isDuplicate?: boolean; error?: string }> {
   const senderId = String(event.senderId || '').trim();
   if (!senderId) {
     return { success: false, error: 'Cannot persist recipient: Missing senderId PSID.' };
@@ -6096,14 +6159,18 @@ export async function upsertFacebookRecipientFromMessageInD1(
 
   await ensureFacebookCampaignSchema(db);
 
-  const interactionTime = Number(event.timestamp) || Date.now();
+  const rawTime = Number(event.timestamp) || Date.now();
+  const now = Date.now();
+  // Reject or clamp future timestamps beyond clock drift tolerance (60s)
+  const interactionTime = rawTime > now + 60000 ? now : rawTime;
   const interactionIso = new Date(interactionTime).toISOString();
   const recipientId = `fb_${senderId}`;
+  const targetPageId = event.recipientId || event.pageId || configuredPageId || null;
 
   try {
     // 1. Check if recipient already exists
     const existing = await db
-      .prepare('SELECT id, name, metadata, phone, email, recent_order_number FROM fb_recipients WHERE psid = ? OR id = ? LIMIT 1')
+      .prepare('SELECT id, name, metadata, phone, email, recent_order_number, last_incoming_message_at, page_id FROM fb_recipients WHERE psid = ? OR id = ? LIMIT 1')
       .bind(senderId, recipientId)
       .first<any>();
 
@@ -6114,14 +6181,30 @@ export async function upsertFacebookRecipientFromMessageInD1(
       } catch {}
     }
 
-    if (event.mids && event.mids.length > 0) {
-      metaObj.lastMessageMid = event.mids[0];
+    const currentMid = event.mids?.[0];
+    const isDuplicateWebhook = Boolean(currentMid && metaObj.lastMessageMid === currentMid);
+
+    if (currentMid) {
+      metaObj.lastMessageMid = currentMid;
     }
     if (event.text) {
       metaObj.lastMessageText = event.text.slice(0, 200);
     }
     metaObj.lastInteractionAt = interactionIso;
+    metaObj.lastIncomingMessageAt = interactionIso;
+    if (targetPageId) {
+      metaObj.pageId = targetPageId;
+    }
     const metadataStr = JSON.stringify(metaObj);
+
+    // Prevent older out-of-order retries from regressing newer last_incoming_message_at
+    let newIncomingIso = interactionIso;
+    if (existing?.last_incoming_message_at) {
+      const existingIncomingTime = new Date(existing.last_incoming_message_at).getTime();
+      if (!isNaN(existingIncomingTime) && interactionTime < existingIncomingTime) {
+        newIncomingIso = existing.last_incoming_message_at;
+      }
+    }
 
     // 2. Resolve display name (prefer existing non-default name; otherwise attempt quick Meta Graph lookup if token present)
     let displayName = existing?.name || 'Messenger User';
@@ -6158,6 +6241,8 @@ export async function upsertFacebookRecipientFromMessageInD1(
           SET name = COALESCE(NULLIF(?, ''), name),
               psid = ?,
               last_interaction_at = ?,
+              last_incoming_message_at = ?,
+              page_id = COALESCE(?, page_id),
               consent_status = 'consented',
               consent_timestamp = ?,
               consent_source = 'incoming_message',
@@ -6165,19 +6250,20 @@ export async function upsertFacebookRecipientFromMessageInD1(
               updated_at = CURRENT_TIMESTAMP
           WHERE id = ?
         `)
-        .bind(displayName, senderId, interactionIso, interactionIso, metadataStr, existing.id)
+        .bind(displayName, senderId, interactionIso, newIncomingIso, targetPageId, interactionIso, metadataStr, existing.id)
         .run();
 
-      return { success: true, recipientId: existing.id, isNew: false };
+      return { success: true, recipientId: existing.id, isNew: false, isDuplicate: isDuplicateWebhook };
     } else {
       await db
         .prepare(`
           INSERT INTO fb_recipients (
             id, audience_type, name, psid, source, consent_status,
-            consent_timestamp, consent_source, last_interaction_at, metadata, created_at, updated_at
+            consent_timestamp, consent_source, last_interaction_at,
+            last_incoming_message_at, page_id, metadata, created_at, updated_at
           ) VALUES (
             ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
           )
         `)
         .bind(
@@ -6190,11 +6276,13 @@ export async function upsertFacebookRecipientFromMessageInD1(
           interactionIso,
           'incoming_message',
           interactionIso,
+          newIncomingIso,
+          targetPageId,
           metadataStr
         )
         .run();
 
-      return { success: true, recipientId, isNew: true };
+      return { success: true, recipientId, isNew: true, isDuplicate: false };
     }
   } catch (err: any) {
     console.error('[D1 upsertFacebookRecipientFromMessage error]:', err?.message || err);
@@ -6204,22 +6292,55 @@ export async function upsertFacebookRecipientFromMessageInD1(
 
 /**
  * Retrieves persisted Facebook recipients from D1 for Admin Broadcaster Directory.
+ * Supports page scoping and server-side "Last 24 Hours" filtering.
  */
 export async function getFacebookRecipientsFromD1(
   db: D1Database,
-  audienceType?: string
+  audienceType?: string,
+  options?: {
+    pageId?: string;
+    filter?: string;
+  }
 ): Promise<any[]> {
   if (!db || typeof db.prepare !== 'function') return [];
   await ensureFacebookCampaignSchema(db);
 
   try {
     let query = 'SELECT * FROM fb_recipients';
+    const conditions: string[] = [];
     const params: any[] = [];
+
     if (audienceType && audienceType !== 'all_eligible') {
-      query += ' WHERE audience_type = ?';
+      conditions.push('audience_type = ?');
       params.push(audienceType);
     }
-    query += ' ORDER BY last_interaction_at DESC LIMIT 500';
+
+    // Page scoping: isolate recipients by Facebook Page ID
+    if (options?.pageId) {
+      conditions.push('(page_id = ? OR (page_id IS NULL AND source = ?))');
+      params.push(options.pageId, 'facebook_messenger');
+    }
+
+    // Server-side "Last 24 Hours" incoming message filter
+    if (options?.filter === 'last_24_hours') {
+      const now = Date.now();
+      const twentyFourHoursAgoIso = new Date(now - 24 * 60 * 60 * 1000).toISOString();
+      const nowIso = new Date(now + 60 * 1000).toISOString();
+
+      conditions.push("psid IS NOT NULL AND trim(psid) != ''");
+      conditions.push("consent_status != 'opted_out'");
+      conditions.push("last_incoming_message_at IS NOT NULL AND last_incoming_message_at != ''");
+      conditions.push("last_incoming_message_at >= ?");
+      params.push(twentyFourHoursAgoIso);
+      conditions.push("last_incoming_message_at <= ?");
+      params.push(nowIso);
+    }
+
+    if (conditions.length > 0) {
+      query += ' WHERE ' + conditions.join(' AND ');
+    }
+
+    query += ' ORDER BY COALESCE(last_incoming_message_at, last_interaction_at) DESC LIMIT 500';
 
     const prep = db.prepare(query);
     const res = params.length > 0 ? await prep.bind(...params).all() : await prep.all();
@@ -6241,6 +6362,8 @@ export async function getFacebookRecipientsFromD1(
         consentStatus: row.consent_status || 'consented',
         consentTimestamp: row.consent_timestamp || row.created_at,
         lastInteractionAt: row.last_interaction_at || row.updated_at || row.created_at,
+        lastIncomingMessageAt: row.last_incoming_message_at || null,
+        pageId: row.page_id || null,
         recentOrderNumber: row.recent_order_number || null,
         lastMessageSnippet: metaObj.lastMessageText || null,
         metadata: metaObj,

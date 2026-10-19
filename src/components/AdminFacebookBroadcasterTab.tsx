@@ -57,6 +57,10 @@ import {
   subscribeFacebookPage,
 } from '../services/facebookApi';
 import { FacebookConfigStatus } from '../server/facebookMessenger';
+import {
+  validateIncomingMessage24HourWindow,
+  isRecipientEligibleFor24HourFilter,
+} from '../utils/facebookPolicy';
 
 // Pre-defined high-conversion Bangladeshi e-commerce message templates
 interface MessagePreset {
@@ -138,7 +142,7 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
   const timeoutTimerRef = useRef<any>(null);
 
   // Recipient Selection & Filtering
-  const [recipientFilter, setRecipientFilter] = useState<'all' | 'eligible' | 'ineligible'>('all');
+  const [recipientFilter, setRecipientFilter] = useState<'all' | 'last_24_hours' | 'eligible' | 'ineligible'>('all');
   const [selectedRecipientIds, setSelectedRecipientIds] = useState<Set<string>>(new Set());
   const [showRecipientInspector, setShowRecipientInspector] = useState<boolean>(false);
   const [showSecretsGuide, setShowSecretsGuide] = useState<boolean>(false);
@@ -447,14 +451,32 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
       if (!psid || seenPsids.has(psid)) return;
       seenPsids.add(psid);
 
+      // Page ID Isolation: if pageId is configured/selected, do not mix contacts belonging to a different Page
+      if (pageId && contact.pageId && contact.pageId.trim() !== pageId.trim()) {
+        return;
+      }
+
+      // Check genuine incoming message timestamp
+      const incomingCheck = validateIncomingMessage24HourWindow(contact.lastIncomingMessageAt, now);
+      const isWithin24Incoming = incomingCheck.isWithin24Hours;
+
+      // Fallback interaction time for general non-window activity
       const interactionTime = new Date(contact.lastInteractionAt || contact.createdAt || now).getTime();
       const diffHours = (now - interactionTime) / (60 * 60 * 1000);
-      const isWithin24 = diffHours <= 24;
+      const isWithin24 = isWithin24Incoming || (!contact.lastIncomingMessageAt && diffHours <= 24);
 
       let status: FacebookRecipient['eligibilityStatus'] = 'ineligible_no_psid';
       let reason = '';
 
-      if (isWithin24) {
+      if (contact.consentStatus === 'opted_out') {
+        status = 'opted_out';
+        reason = 'Customer opted out / unsubscribed';
+      } else if (isWithin24Incoming) {
+        status = 'eligible_24h';
+        reason = incomingCheck.diffHours !== undefined
+          ? `Incoming message ${incomingCheck.diffHours}h ago (within 24h)`
+          : 'Incoming message within 24h';
+      } else if (isWithin24) {
         status = 'eligible_24h';
         reason = `Active within 24h (${diffHours.toFixed(1)}h ago)`;
       } else if (selectedTag !== 'NONE') {
@@ -473,6 +495,8 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
         psid,
         source: 'facebook_messenger',
         lastInteraction: contact.lastInteractionAt || contact.createdAt || new Date(now).toISOString(),
+        lastIncomingMessageAt: contact.lastIncomingMessageAt || undefined,
+        pageId: contact.pageId || undefined,
         isWithin24Hours: isWithin24,
         hasMarketingConsent: contact.consentStatus === 'consented' || isWithin24,
         eligibilityStatus: status,
@@ -482,7 +506,7 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
     });
 
     return list;
-  }, [orders, users, persistedRecipients, selectedTag]);
+  }, [orders, users, persistedRecipients, selectedTag, pageId]);
 
   // Filter candidates according to selected audience type
   const audienceCandidates = useMemo(() => {
@@ -498,6 +522,17 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
     return allCandidates;
   }, [allCandidates, audienceType]);
 
+  // Candidates matching the "Last 24 Hours" incoming message filter
+  const last24hCandidates = useMemo(() => {
+    return audienceCandidates.filter((r) => {
+      if (r.source !== 'facebook_messenger' || !r.psid) return false;
+      if (pageId && r.pageId && r.pageId.trim() !== pageId.trim()) return false;
+      if (!r.lastIncomingMessageAt) return false;
+      const res = isRecipientEligibleFor24HourFilter(r, pageId, Date.now());
+      return res.eligible;
+    });
+  }, [audienceCandidates, pageId]);
+
   // Selected candidates based on user selection or defaults
   const eligibleCandidates = useMemo(() => {
     return audienceCandidates.filter(
@@ -508,6 +543,13 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
   // Filtered audience candidates for the inspector drawer
   const filteredAudienceCandidates = useMemo(() => {
     return audienceCandidates.filter((r) => {
+      if (recipientFilter === 'last_24_hours') {
+        if (r.source !== 'facebook_messenger' || !r.psid) return false;
+        if (pageId && r.pageId && r.pageId.trim() !== pageId.trim()) return false;
+        if (!r.lastIncomingMessageAt) return false;
+        const res = isRecipientEligibleFor24HourFilter(r, pageId, Date.now());
+        return res.eligible;
+      }
       if (recipientFilter === 'eligible') {
         return r.eligibilityStatus === 'eligible_24h' || r.eligibilityStatus === 'eligible_tag';
       }
@@ -516,7 +558,7 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
       }
       return true;
     });
-  }, [audienceCandidates, recipientFilter]);
+  }, [audienceCandidates, recipientFilter, pageId]);
 
   // Parse message variations (supports either '---' line breaks or '|' delimiter)
   const parsedVariations = useMemo(() => {
@@ -603,6 +645,46 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
       }
       return next;
     });
+  };
+
+  // Requirement 14: Clear selections when switching filters so recipients from another filter cannot accidentally enter the campaign
+  const handleFilterChange = (newFilter: 'all' | 'last_24_hours' | 'eligible' | 'ineligible') => {
+    if (newFilter === recipientFilter) return;
+    setRecipientFilter(newFilter);
+    setSelectedRecipientIds(new Set());
+    const filterName =
+      newFilter === 'last_24_hours'
+        ? 'Last 24 Hours'
+        : newFilter === 'eligible'
+        ? 'Eligible'
+        : newFilter === 'ineligible'
+        ? 'Ineligible'
+        : 'All';
+    addLog('info', `Switched filter to "${filterName}". Selected recipients cleared to prevent cross-filter dispatches.`);
+  };
+
+  // Requirement 13: Select All action that selects only the recipients returned by the active Last 24 Hours filter
+  const handleSelectAllLast24Hours = () => {
+    if (last24hCandidates.length === 0) {
+      setSelectedRecipientIds(new Set());
+      showNotification('info', 'No Last 24 Hours Senders', 'No contacts sent an incoming message within the last 24 hours.');
+      addLog('warn', 'No recipients matching Last 24 Hours incoming message filter.');
+      return;
+    }
+    const ids = new Set(last24hCandidates.map((r) => r.id));
+    setSelectedRecipientIds(ids);
+    addLog('info', `Selected all ${ids.size} recipient(s) from Last 24 Hours filter.`);
+  };
+
+  const handleSelectAllInActiveFilter = () => {
+    if (filteredAudienceCandidates.length === 0) {
+      setSelectedRecipientIds(new Set());
+      showNotification('info', 'No Matching Recipients', 'No recipients found for the active filter.');
+      return;
+    }
+    const ids = new Set(filteredAudienceCandidates.map((r) => r.id));
+    setSelectedRecipientIds(ids);
+    addLog('info', `Selected all ${ids.size} recipient(s) in active filter view.`);
   };
 
   const handleSelectAllEligible = () => {
@@ -1061,7 +1143,7 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
 
             {/* Audience Summary Metrics */}
             <div className="p-3.5 bg-blue-50/70 border border-blue-200 rounded-xl flex flex-wrap items-center justify-between gap-3 text-xs">
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-wrap">
                 <span className="font-semibold text-blue-950">
                   Total in Group: <strong>{audienceCandidates.length}</strong>
                 </span>
@@ -1070,11 +1152,30 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
                   Policy Eligible: <strong>{eligibleCandidates.length}</strong>
                 </span>
                 <span className="text-slate-300">•</span>
+                <span className="font-semibold text-indigo-700">
+                  Last 24 Hours: <strong>{last24hCandidates.length}</strong>
+                </span>
+                <span className="text-slate-300">•</span>
                 <span className="font-semibold text-blue-700">
                   Selected for Queue: <strong>{selectedRecipientIds.size}</strong>
                 </span>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleFilterChange('last_24_hours');
+                    setShowRecipientInspector(true);
+                    if (last24hCandidates.length > 0) {
+                      setSelectedRecipientIds(new Set(last24hCandidates.map((r) => r.id)));
+                      addLog('info', `Selected all ${last24hCandidates.length} Last 24 Hours contact(s).`);
+                    }
+                  }}
+                  className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[11px] cursor-pointer shadow-2xs flex items-center gap-1"
+                >
+                  <Clock3 className="w-3 h-3" />
+                  <span>Select Last 24 Hours ({last24hCandidates.length})</span>
+                </button>
                 <button
                   type="button"
                   onClick={handleSelectAllEligible}
@@ -1104,43 +1205,92 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
             {/* RECIPIENT INSPECTOR DRAWER / TABLE */}
             {showRecipientInspector && (
               <div className="mt-3 border border-slate-200 rounded-xl overflow-hidden animate-in fade-in duration-150">
-                <div className="bg-slate-100/80 px-4 py-2.5 flex items-center justify-between border-b border-slate-200 text-xs">
-                  <div className="font-bold text-slate-700">Audience Recipient Directory</div>
-                  <div className="flex items-center gap-1.5">
+                <div className="bg-slate-100/80 px-4 py-2.5 flex items-center justify-between border-b border-slate-200 text-xs flex-wrap gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-slate-700">Audience Recipient Directory</span>
+                    {recipientFilter === 'last_24_hours' && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                        <Clock3 className="w-3 h-3 text-indigo-600" />
+                        Last 24 Hours — {last24hCandidates.length} {last24hCandidates.length === 1 ? 'contact' : 'contacts'}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-wrap">
                     <Filter className="w-3.5 h-3.5 text-slate-500" />
                     <button
-                      onClick={() => setRecipientFilter('all')}
-                      className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                        recipientFilter === 'all' ? 'bg-slate-800 text-white' : 'bg-white text-slate-700'
+                      type="button"
+                      onClick={() => handleFilterChange('all')}
+                      className={`px-2 py-0.5 rounded text-[10px] font-bold cursor-pointer ${
+                        recipientFilter === 'all' ? 'bg-slate-800 text-white' : 'bg-white text-slate-700 hover:bg-slate-200'
                       }`}
                     >
                       All ({audienceCandidates.length})
                     </button>
                     <button
-                      onClick={() => setRecipientFilter('eligible')}
-                      className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                        recipientFilter === 'eligible' ? 'bg-emerald-600 text-white' : 'bg-white text-emerald-800'
+                      type="button"
+                      onClick={() => handleFilterChange('last_24_hours')}
+                      className={`px-2.5 py-0.5 rounded text-[10px] font-bold cursor-pointer flex items-center gap-1 ${
+                        recipientFilter === 'last_24_hours'
+                          ? 'bg-indigo-600 text-white shadow-2xs'
+                          : 'bg-white text-indigo-700 border border-indigo-200 hover:bg-indigo-50'
+                      }`}
+                    >
+                      <Clock3 className="w-3 h-3" />
+                      <span>Last 24 Hours ({last24hCandidates.length})</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleFilterChange('eligible')}
+                      className={`px-2 py-0.5 rounded text-[10px] font-bold cursor-pointer ${
+                        recipientFilter === 'eligible' ? 'bg-emerald-600 text-white' : 'bg-white text-emerald-800 hover:bg-emerald-50'
                       }`}
                     >
                       Eligible ({eligibleCandidates.length})
                     </button>
+                    {recipientFilter === 'last_24_hours' && (
+                      <button
+                        type="button"
+                        onClick={handleSelectAllLast24Hours}
+                        className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-800 hover:bg-indigo-200 cursor-pointer border border-indigo-300 ml-1"
+                        title="Select only recipients matching the active Last 24 Hours filter"
+                      >
+                        Select All ({last24hCandidates.length})
+                      </button>
+                    )}
                   </div>
                 </div>
 
                 <div className="max-h-60 overflow-y-auto divide-y divide-slate-100 text-xs bg-white">
                   {filteredAudienceCandidates.length === 0 ? (
-                    <div className="p-6 text-center text-slate-500">
-                      <Users className="w-8 h-8 text-slate-300 mx-auto mb-2" />
-                      <p className="font-bold text-slate-700">
-                        {recipientFilter === 'eligible'
-                          ? 'No eligible recipients found'
-                          : 'No recipients found'}
-                      </p>
-                      <p className="text-[11px] text-slate-400 mt-1 max-w-sm mx-auto">
-                        {recipientFilter === 'eligible'
-                          ? 'No customer records in this audience currently meet Meta 24-hour messaging window or Tag criteria with a verified PSID.'
-                          : 'No customer records available for the selected audience.'}
-                      </p>
+                    <div className="p-8 text-center text-slate-500">
+                      {recipientFilter === 'last_24_hours' ? (
+                        <div className="space-y-2">
+                          <Clock3 className="w-10 h-10 text-indigo-300 mx-auto mb-1 animate-pulse" />
+                          <p className="font-bold text-slate-800 text-sm">
+                            No Recent Message Senders Found
+                          </p>
+                          <p className="text-[11px] text-slate-500 max-w-md mx-auto leading-relaxed">
+                            No contacts sent an incoming message to this Facebook Page within the last 24 hours, or previous contact timestamps have exceeded the 24-hour Meta messaging window.
+                          </p>
+                          <p className="text-[10px] text-indigo-600 font-semibold mt-2">
+                            Tip: To message contacts outside the 24-hour window, use an approved Message Tag like POST_PURCHASE_UPDATE.
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="space-y-1">
+                          <Users className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                          <p className="font-bold text-slate-700">
+                            {recipientFilter === 'eligible'
+                              ? 'No eligible recipients found'
+                              : 'No recipients found'}
+                          </p>
+                          <p className="text-[11px] text-slate-400 mt-1 max-w-sm mx-auto">
+                            {recipientFilter === 'eligible'
+                              ? 'No customer records in this audience currently meet Meta 24-hour messaging window or Tag criteria with a verified PSID.'
+                              : 'No customer records available for the selected audience.'}
+                          </p>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     filteredAudienceCandidates.map((r) => {
@@ -1176,16 +1326,23 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
                                   "{r.lastMessageSnippet}"
                                 </div>
                               )}
-                              <div className="text-[11px] text-slate-500 flex items-center gap-2 mt-0.5">
+                              <div className="text-[11px] text-slate-500 flex items-center gap-2 mt-0.5 flex-wrap">
                                 <span>PSID: <code className="font-mono">{r.psid ? `${r.psid.slice(0, 12)}...` : 'None'}</code></span>
                                 <span>•</span>
                                 <span>{r.source === 'facebook_messenger' ? 'Messenger' : 'Website Order'}</span>
-                                {r.lastInteraction && (
+                                {r.lastIncomingMessageAt ? (
                                   <>
                                     <span>•</span>
-                                    <span>{new Date(r.lastInteraction).toLocaleString('en-GB')}</span>
+                                    <span className="text-indigo-600 font-medium">
+                                      Incoming: {new Date(r.lastIncomingMessageAt).toLocaleString('en-GB')}
+                                    </span>
                                   </>
-                                )}
+                                ) : r.lastInteraction ? (
+                                  <>
+                                    <span>•</span>
+                                    <span>Activity: {new Date(r.lastInteraction).toLocaleString('en-GB')}</span>
+                                  </>
+                                ) : null}
                               </div>
                             </div>
                           </div>

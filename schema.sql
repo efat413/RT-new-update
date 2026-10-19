@@ -420,5 +420,35 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_fb_queue_campaign_rec ON fb_campaign_queue
 CREATE INDEX IF NOT EXISTS idx_fb_queue_campaign_status ON fb_campaign_queue(campaign_id, status);
 CREATE INDEX IF NOT EXISTS idx_fb_queue_meta_msg_id ON fb_campaign_queue(meta_message_id);
 
+-- ==============================================================
+-- 20. FACEBOOK RECIPIENTS TABLE (Audience, PSID & 24h Window Tracking)
+-- ==============================================================
+CREATE TABLE IF NOT EXISTS fb_recipients (
+  id TEXT PRIMARY KEY,
+  audience_type TEXT NOT NULL DEFAULT 'page_contacts',
+  name TEXT NOT NULL,
+  psid TEXT,
+  phone TEXT,
+  email TEXT,
+  source TEXT NOT NULL DEFAULT 'facebook_messenger',
+  consent_status TEXT NOT NULL DEFAULT 'consented',
+  consent_timestamp TEXT,
+  consent_source TEXT,
+  last_interaction_at TEXT NOT NULL,
+  last_incoming_message_at TEXT,
+  page_id TEXT,
+  recent_order_number TEXT,
+  metadata TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_fb_recipients_audience ON fb_recipients(audience_type);
+CREATE INDEX IF NOT EXISTS idx_fb_recipients_psid ON fb_recipients(psid);
+CREATE INDEX IF NOT EXISTS idx_fb_recipients_consent ON fb_recipients(consent_status);
+CREATE INDEX IF NOT EXISTS idx_fb_recipients_last_interaction ON fb_recipients(last_interaction_at);
+CREATE INDEX IF NOT EXISTS idx_fb_recipients_incoming_time ON fb_recipients(last_incoming_message_at);
+CREATE INDEX IF NOT EXISTS idx_fb_recipients_page_id ON fb_recipients(page_id);
+
 
 

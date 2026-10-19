@@ -7149,17 +7149,33 @@ function localApiDevPlugin(): Plugin {
                 for (const ev of eventResult.events) {
                   if ((ev.type === 'message' || ev.type === 'postback') && !ev.isEcho && ev.senderId) {
                     const existingIdx = devFacebookRecipients.findIndex((r) => r.psid === ev.senderId || r.id === `fb_${ev.senderId}`);
-                    const interactionIso = new Date(ev.timestamp || Date.now()).toISOString();
+                    const rawTime = Number(ev.timestamp) || Date.now();
+                    const now = Date.now();
+                    const safeTime = rawTime > now + 60000 ? now : rawTime;
+                    const interactionIso = new Date(safeTime).toISOString();
+                    const targetPageId = ev.recipientId || process.env.FB_PAGE_ID || null;
                     const metadata = {
                       lastMessageText: ev.text ? ev.text.slice(0, 200) : '',
                       lastMessageMid: ev.mids?.[0],
                       lastInteractionAt: interactionIso,
+                      lastIncomingMessageAt: interactionIso,
+                      pageId: targetPageId,
                     };
 
                     if (existingIdx >= 0) {
+                      const existing = devFacebookRecipients[existingIdx];
+                      let newIncomingIso = interactionIso;
+                      if (existing.lastIncomingMessageAt) {
+                        const existingTime = new Date(existing.lastIncomingMessageAt).getTime();
+                        if (!isNaN(existingTime) && safeTime < existingTime) {
+                          newIncomingIso = existing.lastIncomingMessageAt;
+                        }
+                      }
                       devFacebookRecipients[existingIdx] = {
-                        ...devFacebookRecipients[existingIdx],
+                        ...existing,
                         lastInteractionAt: interactionIso,
+                        lastIncomingMessageAt: newIncomingIso,
+                        pageId: targetPageId || existing.pageId,
                         consentStatus: 'consented',
                         consentTimestamp: interactionIso,
                         lastMessageSnippet: metadata.lastMessageText,
@@ -7178,6 +7194,8 @@ function localApiDevPlugin(): Plugin {
                         consentStatus: 'consented',
                         consentTimestamp: interactionIso,
                         lastInteractionAt: interactionIso,
+                        lastIncomingMessageAt: interactionIso,
+                        pageId: targetPageId,
                         recentOrderNumber: null,
                         lastMessageSnippet: metadata.lastMessageText,
                         metadata,
@@ -7500,9 +7518,30 @@ function localApiDevPlugin(): Plugin {
         if (url.pathname === '/api/admin/facebook/recipients' && req.method === 'GET') {
           const authResult = requireDevAuth(req);
           if (authResult.error) return sendDevError(res, authResult.error);
+          const audienceType = url.searchParams.get('audienceType');
+          const pageId = url.searchParams.get('pageId') || process.env.FB_PAGE_ID;
+          const filter = url.searchParams.get('filter');
+          const now = Date.now();
+
+          let list = [...devFacebookRecipients];
+          if (audienceType && audienceType !== 'all_eligible') {
+            list = list.filter((r) => r.audienceType === audienceType);
+          }
+          if (pageId) {
+            list = list.filter((r) => !r.pageId || r.pageId === pageId);
+          }
+          if (filter === 'last_24_hours') {
+            list = list.filter((r) => {
+              if (!r.psid || r.consentStatus === 'opted_out') return false;
+              if (!r.lastIncomingMessageAt) return false;
+              const time = new Date(r.lastIncomingMessageAt).getTime();
+              if (isNaN(time) || time <= 0 || time > now) return false;
+              return (now - time) <= 24 * 60 * 60 * 1000;
+            });
+          }
           res.statusCode = 200;
           res.setHeader('Content-Type', 'application/json');
-          return res.end(JSON.stringify({ success: true, recipients: devFacebookRecipients }));
+          return res.end(JSON.stringify({ success: true, recipients: list }));
         }
 
         if (url.pathname === '/api/admin/facebook/subscribe-page' && req.method === 'POST') {
