@@ -5447,6 +5447,13 @@ export async function ensureFacebookCampaignSchema(db: D1Database): Promise<void
         if (existingCols.size > 0 && !existingCols.has('page_id')) {
           await db.prepare('ALTER TABLE fb_recipients ADD COLUMN page_id TEXT').run().catch(() => {});
         }
+        // Self-heal: Backfill last_incoming_message_at from last_interaction_at for existing Messenger contacts
+        await db.prepare(`
+          UPDATE fb_recipients
+          SET last_incoming_message_at = last_interaction_at
+          WHERE (last_incoming_message_at IS NULL OR last_incoming_message_at = '')
+            AND last_interaction_at IS NOT NULL
+        `).run().catch(() => {});
       }
     } catch {}
 
@@ -5666,7 +5673,7 @@ export async function createFacebookCampaignInD1(
 
     try {
       const recCheck = await db
-        .prepare('SELECT id, psid, consent_status, last_incoming_message_at, page_id FROM fb_recipients WHERE id = ? OR psid = ? LIMIT 1')
+        .prepare('SELECT id, psid, consent_status, last_incoming_message_at, last_interaction_at, page_id FROM fb_recipients WHERE id = ? OR psid = ? LIMIT 1')
         .bind(r.id, r.psid || r.id)
         .first<any>();
 
@@ -5674,8 +5681,9 @@ export async function createFacebookCampaignInD1(
         if (recCheck.consent_status === 'opted_out') {
           hasConsentServer = false;
         }
-        if (recCheck.last_incoming_message_at) {
-          const windowCheck = validateIncomingMessage24HourWindow(recCheck.last_incoming_message_at);
+        const incomingTime = recCheck.last_incoming_message_at || recCheck.last_interaction_at;
+        if (incomingTime) {
+          const windowCheck = validateIncomingMessage24HourWindow(incomingTime);
           isWithin24Server = windowCheck.isWithin24Hours;
         } else if (r.source === 'facebook_messenger' || !r.orderNumber) {
           isWithin24Server = false;
@@ -5943,12 +5951,13 @@ export async function processNextCampaignQueueItemInD1(
   if (tag === 'NONE' && isWithin24Effective) {
     try {
       const recCheck = await db
-        .prepare('SELECT last_incoming_message_at FROM fb_recipients WHERE id = ? OR psid = ? LIMIT 1')
+        .prepare('SELECT last_incoming_message_at, last_interaction_at FROM fb_recipients WHERE id = ? OR psid = ? LIMIT 1')
         .bind(nextPending.recipient_id, psid)
         .first<any>();
 
-      if (recCheck?.last_incoming_message_at) {
-        const windowCheck = validateIncomingMessage24HourWindow(recCheck.last_incoming_message_at);
+      const checkTime = recCheck?.last_incoming_message_at || recCheck?.last_interaction_at;
+      if (checkTime) {
+        const windowCheck = validateIncomingMessage24HourWindow(checkTime);
         if (!windowCheck.isWithin24Hours) {
           isWithin24Effective = false;
         }
@@ -6160,7 +6169,11 @@ export async function upsertFacebookRecipientFromMessageInD1(
 
   await ensureFacebookCampaignSchema(db);
 
-  const rawTime = Number(event.timestamp) || Date.now();
+  let rawTime = Number(event.timestamp) || Date.now();
+  // Normalize 10-digit Unix timestamp (seconds) to 13-digit milliseconds
+  if (rawTime > 0 && rawTime < 10000000000) {
+    rawTime *= 1000;
+  }
   const now = Date.now();
   // Reject or clamp future timestamps beyond clock drift tolerance (60s)
   const interactionTime = rawTime > now + 60000 ? now : rawTime;
@@ -6207,11 +6220,12 @@ export async function upsertFacebookRecipientFromMessageInD1(
       }
     }
 
-    // 2. Resolve display name (prefer existing non-default name; otherwise attempt quick Meta Graph lookup if token present)
-    let displayName = existing?.name || 'Messenger User';
+    // 2. Resolve display name (prefer existing non-default name or provided name; otherwise attempt quick Meta Graph lookup if token present)
+    let displayName = existing?.name || (event as any).senderName || 'Messenger User';
     if (
       env?.FB_PAGE_ACCESS_TOKEN &&
-      (displayName === 'Messenger User' || displayName === 'Facebook User' || !existing)
+      (displayName === 'Messenger User' || displayName === 'Facebook User' || !existing) &&
+      !(event as any).senderName
     ) {
       try {
         const controller = new AbortController();
@@ -6330,10 +6344,10 @@ export async function getFacebookRecipientsFromD1(
 
       conditions.push("psid IS NOT NULL AND trim(psid) != ''");
       conditions.push("consent_status != 'opted_out'");
-      conditions.push("last_incoming_message_at IS NOT NULL AND last_incoming_message_at != ''");
-      conditions.push("last_incoming_message_at >= ?");
+      conditions.push("(last_incoming_message_at IS NOT NULL AND last_incoming_message_at != '' OR last_interaction_at IS NOT NULL)");
+      conditions.push("COALESCE(NULLIF(last_incoming_message_at, ''), last_interaction_at) >= ?");
       params.push(twentyFourHoursAgoIso);
-      conditions.push("last_incoming_message_at <= ?");
+      conditions.push("COALESCE(NULLIF(last_incoming_message_at, ''), last_interaction_at) <= ?");
       params.push(nowIso);
     }
 
@@ -6352,6 +6366,8 @@ export async function getFacebookRecipientsFromD1(
         if (row.metadata) metaObj = JSON.parse(row.metadata);
       } catch {}
 
+      const effectiveIncoming = row.last_incoming_message_at || row.last_interaction_at || null;
+
       return {
         id: row.id,
         audienceType: row.audience_type || 'page_contacts',
@@ -6363,7 +6379,7 @@ export async function getFacebookRecipientsFromD1(
         consentStatus: row.consent_status || 'consented',
         consentTimestamp: row.consent_timestamp || row.created_at,
         lastInteractionAt: row.last_interaction_at || row.updated_at || row.created_at,
-        lastIncomingMessageAt: row.last_incoming_message_at || null,
+        lastIncomingMessageAt: effectiveIncoming,
         pageId: row.page_id || null,
         recentOrderNumber: row.recent_order_number || null,
         lastMessageSnippet: metaObj.lastMessageText || null,

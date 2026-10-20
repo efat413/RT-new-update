@@ -12,6 +12,7 @@ import {
   createFacebookCampaignInD1,
   processNextCampaignQueueItemInD1,
 } from '../src/server/db';
+import { syncMetaConversations } from '../src/server/facebookMessenger';
 
 // In-memory SQLite D1 Mock for comprehensive testing
 class MockD1PreparedStatement {
@@ -707,6 +708,89 @@ describe('Facebook Broadcaster: "Last 24 Hours" Recipient Filter Suite', () => {
       expect(processRes.success).toBe(true);
       // Under POST_PURCHASE_UPDATE tag, message is accepted (or processed) without 24h restriction
       expect(processRes.item?.status).not.toBe('skipped');
+    });
+  });
+
+  // ==========================================
+  // 5. DIRECT FACEBOOK PAGE CONVERSATION SYNC & 24H SENDER RECOVERY
+  // ==========================================
+  describe('5. Direct Facebook Page Conversation Synchronization & 24h Sender Recovery', () => {
+    it('14. syncMetaConversations isolates Page ID and recovers authentic 24h senders from conversation history', async () => {
+      const pageId = '104829104820194';
+      const userPsid = '209384729104820';
+      const now = Date.now();
+      const messageTimeIso = new Date(now - 30 * 60 * 1000).toISOString(); // 30 minutes ago
+
+      // Mock global fetch for Graph API /conversations endpoint
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async (input: any, init?: any) => {
+        const urlStr = typeof input === 'string' ? input : input.url;
+        if (urlStr.includes('/me?fields=id,name')) {
+          return new Response(JSON.stringify({ id: pageId, name: 'Rongdhonu Trade' }), { status: 200 });
+        }
+        if (urlStr.includes('/conversations')) {
+          return new Response(
+            JSON.stringify({
+              data: [
+                {
+                  id: 't_12345',
+                  updated_time: messageTimeIso,
+                  participants: {
+                    data: [
+                      { id: pageId, name: 'Rongdhonu Trade' },
+                      { id: userPsid, name: 'Shahriar Kabir' },
+                    ],
+                  },
+                  messages: {
+                    data: [
+                      {
+                        id: 'm_out_1',
+                        created_time: messageTimeIso,
+                        from: { id: pageId, name: 'Rongdhonu Trade' },
+                        message: 'Hello, how can we help?',
+                      },
+                      {
+                        id: 'm_in_1',
+                        created_time: messageTimeIso,
+                        from: { id: userPsid, name: 'Shahriar Kabir' },
+                        message: 'Do you have size L available?',
+                      },
+                    ],
+                  },
+                },
+              ],
+            }),
+            { status: 200 }
+          );
+        }
+        return originalFetch(input, init);
+      };
+
+      try {
+        const syncRes = await syncMetaConversations(
+          { ...mockEnv, FB_PAGE_ID: pageId },
+          async (ev) => {
+            await upsertFacebookRecipientFromMessageInD1(mockDb as any, ev, { ...mockEnv, FB_PAGE_ID: pageId });
+          }
+        );
+
+        expect(syncRes.success).toBe(true);
+        expect(syncRes.syncedCount).toBe(1);
+        expect(syncRes.within24hCount).toBe(1);
+        expect(syncRes.recipients[0].psid).toBe(userPsid);
+        expect(syncRes.recipients[0].name).toBe('Shahriar Kabir');
+        expect(syncRes.recipients[0].isWithin24Hours).toBe(true);
+        expect(syncRes.recipients[0].lastMessageSnippet).toBe('Do you have size L available?');
+
+        // Verify recipient was persisted into D1 and is returned by 24h filter
+        const d1Recipients = await getFacebookRecipientsFromD1(mockDb as any, 'page_contacts', {
+          pageId,
+          filter: 'last_24_hours',
+        });
+        expect(d1Recipients.some((r) => r.psid === userPsid)).toBe(true);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
     });
   });
 });

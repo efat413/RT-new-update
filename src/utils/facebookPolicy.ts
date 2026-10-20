@@ -101,6 +101,8 @@ export function isRecipientEligibleFor24HourFilter(
   recipient: {
     psid?: string | null;
     lastIncomingMessageAt?: string | null;
+    lastInteractionAt?: string | null;
+    lastInteraction?: string | null;
     pageId?: string | null;
     consentStatus?: string | null;
   },
@@ -133,7 +135,13 @@ export function isRecipientEligibleFor24HourFilter(
     };
   }
 
-  const windowCheck = validateIncomingMessage24HourWindow(recipient.lastIncomingMessageAt, nowMs);
+  const incomingTimestamp =
+    recipient.lastIncomingMessageAt ||
+    recipient.lastInteractionAt ||
+    recipient.lastInteraction ||
+    null;
+
+  const windowCheck = validateIncomingMessage24HourWindow(incomingTimestamp, nowMs);
   if (!windowCheck.isWithin24Hours) {
     return {
       eligible: false,

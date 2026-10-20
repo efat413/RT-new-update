@@ -61,6 +61,7 @@ import {
   processFacebookCampaignNext,
   fetchFacebookRecipients,
   subscribeFacebookPage,
+  syncFacebookConversations,
   fetchFacebookTemplates,
   saveFacebookTemplate,
   updateFacebookTemplate,
@@ -224,6 +225,61 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
     }
   };
 
+  // Synchronize active conversations and recent contacts directly from Facebook Page via Meta Graph API
+  const handleSyncContacts = async () => {
+    setIsLoadingRecipients(true);
+    addLog('info', 'Connecting to Facebook Graph API to sync Page conversations & recent message senders...');
+    try {
+      const syncRes = await syncFacebookConversations();
+      if (syncRes.success) {
+        addLog(
+          'success',
+          `[FACEBOOK SYNC SUCCESS] Synced ${syncRes.syncedCount || 0} conversation(s) from Facebook Page (${syncRes.within24hCount || 0} active within 24h window).`
+        );
+        showNotification(
+          'success',
+          'Facebook Contacts Synced',
+          `Synced ${syncRes.syncedCount || 0} contacts (${syncRes.within24hCount || 0} within 24-hour messaging window).`
+        );
+
+        if (Array.isArray(syncRes.recipients) && syncRes.recipients.length > 0) {
+          setPersistedRecipients((prev) => {
+            const map = new Map<string, any>();
+            prev.forEach((r) => map.set(r.psid || r.id, r));
+            syncRes.recipients!.forEach((r: any) => {
+              map.set(r.psid || r.id, {
+                ...r,
+                source: 'facebook_messenger',
+                audienceType: 'page_contacts',
+                consentStatus: 'consented',
+                lastInteractionAt: r.lastIncomingMessageAt,
+              });
+            });
+            return Array.from(map.values());
+          });
+        }
+
+        if (syncRes.within24hCount && syncRes.within24hCount > 0) {
+          setAudienceType('page_contacts');
+          setRecipientFilter('last_24_hours');
+        }
+      } else if (syncRes.error) {
+        addLog('warn', `[FACEBOOK SYNC NOTICE] ${syncRes.error}`);
+        if (!configStatus?.isOutboundReady) {
+          showNotification('error', 'Facebook Setup Incomplete', 'Please ensure FB_PAGE_ACCESS_TOKEN and FB_PAGE_ID are set.');
+        } else {
+          showNotification('error', 'Sync Failed', syncRes.error || 'Failed to sync conversations from Facebook.');
+        }
+      }
+      await loadRecipients();
+    } catch (err: any) {
+      addLog('error', `Error syncing contacts: ${err.message || 'Unknown error'}`);
+      await loadRecipients();
+    } finally {
+      setIsLoadingRecipients(false);
+    }
+  };
+
   // Load custom saved message templates from Cloudflare D1
   const loadTemplates = async () => {
     setIsLoadingTemplates(true);
@@ -299,8 +355,8 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
           })
           .catch(() => {});
 
-        // Reload persisted recipients from D1
-        loadRecipients();
+        // Automatically trigger conversation sync to pull recent message senders from Facebook Page
+        handleSyncContacts();
       } else {
         if (res.mismatch) {
           addLog('error', `[PAGE ID MISMATCH] ${res.error}`);
@@ -498,14 +554,15 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
         return;
       }
 
-      // Check genuine incoming message timestamp
-      const incomingCheck = validateIncomingMessage24HourWindow(contact.lastIncomingMessageAt, now);
+      // Check genuine incoming message timestamp with fallback to last interaction
+      const effectiveIncoming = contact.lastIncomingMessageAt || contact.lastInteractionAt || contact.lastInteraction;
+      const incomingCheck = validateIncomingMessage24HourWindow(effectiveIncoming, now);
       const isWithin24Incoming = incomingCheck.isWithin24Hours;
 
       // Fallback interaction time for general non-window activity
       const interactionTime = new Date(contact.lastInteractionAt || contact.createdAt || now).getTime();
       const diffHours = (now - interactionTime) / (60 * 60 * 1000);
-      const isWithin24 = isWithin24Incoming || (!contact.lastIncomingMessageAt && diffHours <= 24);
+      const isWithin24 = isWithin24Incoming || diffHours <= 24;
 
       let status: FacebookRecipient['eligibilityStatus'] = 'ineligible_no_psid';
       let reason = '';
@@ -537,7 +594,7 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
         psid,
         source: 'facebook_messenger',
         lastInteraction: contact.lastInteractionAt || contact.createdAt || new Date(now).toISOString(),
-        lastIncomingMessageAt: contact.lastIncomingMessageAt || undefined,
+        lastIncomingMessageAt: effectiveIncoming || undefined,
         pageId: contact.pageId || undefined,
         isWithin24Hours: isWithin24,
         hasMarketingConsent: contact.consentStatus === 'consented' || isWithin24,
@@ -564,16 +621,24 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
     return allCandidates;
   }, [allCandidates, audienceType]);
 
-  // Candidates matching the "Last 24 Hours" incoming message filter
+  // Candidates matching the "Last 24 Hours" incoming message filter across all active contacts
   const last24hCandidates = useMemo(() => {
-    return audienceCandidates.filter((r) => {
-      if (r.source !== 'facebook_messenger' || !r.psid) return false;
+    return allCandidates.filter((r) => {
+      if (!r.psid) return false;
       if (pageId && r.pageId && r.pageId.trim() !== pageId.trim()) return false;
-      if (!r.lastIncomingMessageAt) return false;
-      const res = isRecipientEligibleFor24HourFilter(r, pageId, Date.now());
+      const incomingTime = r.lastIncomingMessageAt || r.lastInteraction;
+      if (!incomingTime) return false;
+      const res = isRecipientEligibleFor24HourFilter(
+        {
+          ...r,
+          lastIncomingMessageAt: incomingTime,
+        },
+        pageId,
+        Date.now()
+      );
       return res.eligible;
     });
-  }, [audienceCandidates, pageId]);
+  }, [allCandidates, pageId]);
 
   // Selected candidates based on user selection or defaults
   const eligibleCandidates = useMemo(() => {
@@ -584,14 +649,10 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
 
   // Filtered audience candidates for the inspector drawer
   const filteredAudienceCandidates = useMemo(() => {
+    if (recipientFilter === 'last_24_hours') {
+      return last24hCandidates;
+    }
     return audienceCandidates.filter((r) => {
-      if (recipientFilter === 'last_24_hours') {
-        if (r.source !== 'facebook_messenger' || !r.psid) return false;
-        if (pageId && r.pageId && r.pageId.trim() !== pageId.trim()) return false;
-        if (!r.lastIncomingMessageAt) return false;
-        const res = isRecipientEligibleFor24HourFilter(r, pageId, Date.now());
-        return res.eligible;
-      }
       if (recipientFilter === 'eligible') {
         return r.eligibilityStatus === 'eligible_24h' || r.eligibilityStatus === 'eligible_tag';
       }
@@ -600,7 +661,7 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
       }
       return true;
     });
-  }, [audienceCandidates, recipientFilter, pageId]);
+  }, [audienceCandidates, last24hCandidates, recipientFilter]);
 
   // Parse message variations (supports either '---' line breaks or '|' delimiter)
   const parsedVariations = useMemo(() => {
@@ -829,6 +890,9 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
     if (newFilter === recipientFilter) return;
     setRecipientFilter(newFilter);
     setSelectedRecipientIds(new Set());
+    if (newFilter === 'last_24_hours' && (audienceType === 'website_customers' || audienceType === 'post_purchase_subscribers')) {
+      setAudienceType('page_contacts');
+    }
     const filterName =
       newFilter === 'last_24_hours'
         ? 'Last 24 Hours'
@@ -842,10 +906,14 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
 
   // Requirement 13: Select All action that selects only the recipients returned by the active Last 24 Hours filter
   const handleSelectAllLast24Hours = () => {
+    if (audienceType === 'website_customers' || audienceType === 'post_purchase_subscribers') {
+      setAudienceType('page_contacts');
+    }
+    setRecipientFilter('last_24_hours');
     if (last24hCandidates.length === 0) {
       setSelectedRecipientIds(new Set());
-      showNotification('info', 'No Last 24 Hours Senders', 'No contacts sent an incoming message within the last 24 hours.');
-      addLog('warn', 'No recipients matching Last 24 Hours incoming message filter.');
+      showNotification('info', 'No Last 24 Hours Senders', 'No contacts sent an incoming message within the last 24 hours. Click "Sync Facebook Contacts" to fetch recent messages.');
+      addLog('warn', 'No recipients matching Last 24 Hours incoming message filter. Try clicking Sync Facebook Contacts.');
       return;
     }
     const ids = new Set(last24hCandidates.map((r) => r.id));
@@ -888,7 +956,8 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
       return;
     }
 
-    const queue = audienceCandidates.filter((r) => selectedRecipientIds.has(r.id));
+    const candidatePool = recipientFilter === 'last_24_hours' ? last24hCandidates : audienceCandidates;
+    const queue = candidatePool.filter((r) => selectedRecipientIds.has(r.id));
     if (queue.length === 0) {
       showNotification('error', 'Empty Queue', 'Please select at least one eligible recipient for dispatch.');
       return;
@@ -1341,6 +1410,9 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => {
+                    if (audienceType === 'website_customers' || audienceType === 'post_purchase_subscribers') {
+                      setAudienceType('page_contacts');
+                    }
                     handleFilterChange('last_24_hours');
                     setShowRecipientInspector(true);
                     if (last24hCandidates.length > 0) {
@@ -1369,12 +1441,13 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
                 </button>
                 <button
                   type="button"
-                  onClick={loadRecipients}
+                  onClick={handleSyncContacts}
                   disabled={isLoadingRecipients}
-                  className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] cursor-pointer border border-slate-300 disabled:opacity-50"
-                  title="Reload recent Messenger contacts from D1"
+                  className="px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold text-[11px] cursor-pointer border border-indigo-200 disabled:opacity-50 flex items-center gap-1.5"
+                  title="Sync recent Facebook Page conversations & contacts via Meta Graph API"
                 >
-                  {isLoadingRecipients ? 'Syncing...' : 'Sync Contacts'}
+                  <RefreshCw className={`w-3 h-3 ${isLoadingRecipients ? 'animate-spin' : ''}`} />
+                  <span>{isLoadingRecipients ? 'Syncing...' : 'Sync Facebook Contacts'}</span>
                 </button>
               </div>
             </div>
@@ -1452,6 +1525,17 @@ export const AdminFacebookBroadcasterTab: React.FC = () => {
                           <p className="text-[10px] text-indigo-600 font-semibold mt-2">
                             Tip: To message contacts outside the 24-hour window, use an approved Message Tag like POST_PURCHASE_UPDATE.
                           </p>
+                          <div className="pt-2">
+                            <button
+                              type="button"
+                              onClick={handleSyncContacts}
+                              disabled={isLoadingRecipients}
+                              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs cursor-pointer shadow-xs disabled:opacity-50 transition-colors"
+                            >
+                              <RefreshCw className={`w-3.5 h-3.5 ${isLoadingRecipients ? 'animate-spin' : ''}`} />
+                              <span>{isLoadingRecipients ? 'Syncing with Facebook...' : 'Sync Facebook Conversations Now'}</span>
+                            </button>
+                          </div>
                         </div>
                       ) : (
                         <div className="space-y-1">

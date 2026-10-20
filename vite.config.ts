@@ -58,6 +58,7 @@ import {
   handleMetaWebhookHandshake,
   handleMetaWebhookEvent,
   testMetaConnection,
+  syncMetaConversations,
 } from './src/server/facebookMessenger';
 
 process.env.ADMIN_SECRET = process.env.ADMIN_SECRET || 'dev-secret-test-shared-999';
@@ -7534,15 +7535,122 @@ function localApiDevPlugin(): Plugin {
           if (filter === 'last_24_hours') {
             list = list.filter((r) => {
               if (!r.psid || r.consentStatus === 'opted_out') return false;
-              if (!r.lastIncomingMessageAt) return false;
-              const time = new Date(r.lastIncomingMessageAt).getTime();
-              if (isNaN(time) || time <= 0 || time > now) return false;
+              const effectiveTime = r.lastIncomingMessageAt || r.lastInteractionAt;
+              if (!effectiveTime) return false;
+              const time = new Date(effectiveTime).getTime();
+              if (isNaN(time) || time <= 0 || time > now + 60000) return false;
               return (now - time) <= 24 * 60 * 60 * 1000;
             });
           }
           res.statusCode = 200;
           res.setHeader('Content-Type', 'application/json');
           return res.end(JSON.stringify({ success: true, recipients: list }));
+        }
+
+        if (url.pathname === '/api/admin/facebook/sync-conversations' && (req.method === 'POST' || req.method === 'GET')) {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          const devEnv: any = {
+            ...process.env,
+            ADMIN_SECRET: process.env.ADMIN_SECRET,
+            FB_PAGE_ACCESS_TOKEN: process.env.FB_PAGE_ACCESS_TOKEN,
+            FB_APP_SECRET: process.env.FB_APP_SECRET,
+            FB_PAGE_ID: process.env.FB_PAGE_ID,
+            FB_WEBHOOK_VERIFY_TOKEN: process.env.FB_WEBHOOK_VERIFY_TOKEN,
+          };
+
+          if (devEnv.FB_PAGE_ACCESS_TOKEN) {
+            try {
+              const syncRes = await syncMetaConversations(devEnv, async (ev) => {
+                const now = Date.now();
+                const rawTime = Number(ev.timestamp) || now;
+                const safeTime = rawTime > now + 60000 ? now : rawTime;
+                const interactionIso = new Date(safeTime).toISOString();
+                const existingIdx = devFacebookRecipients.findIndex((r) => r.psid === ev.senderId || r.id === `fb_${ev.senderId}`);
+                const metadata = {
+                  lastMessageText: ev.text || '',
+                  lastMessageMid: ev.mids?.[0],
+                  lastInteractionAt: interactionIso,
+                  lastIncomingMessageAt: interactionIso,
+                  pageId: ev.pageId || devEnv.FB_PAGE_ID || null,
+                };
+
+                if (existingIdx >= 0) {
+                  devFacebookRecipients[existingIdx] = {
+                    ...devFacebookRecipients[existingIdx],
+                    lastInteractionAt: interactionIso,
+                    lastIncomingMessageAt: interactionIso,
+                    pageId: ev.pageId || devFacebookRecipients[existingIdx].pageId,
+                    lastMessageSnippet: metadata.lastMessageText,
+                    metadata,
+                    updatedAt: interactionIso,
+                  };
+                } else {
+                  devFacebookRecipients.unshift({
+                    id: `fb_${ev.senderId}`,
+                    audienceType: 'page_contacts',
+                    name: ev.senderName || 'Messenger User',
+                    psid: ev.senderId,
+                    phone: null,
+                    email: null,
+                    source: 'facebook_messenger',
+                    consentStatus: 'consented',
+                    consentTimestamp: interactionIso,
+                    lastInteractionAt: interactionIso,
+                    lastIncomingMessageAt: interactionIso,
+                    pageId: ev.pageId || devEnv.FB_PAGE_ID || null,
+                    recentOrderNumber: null,
+                    lastMessageSnippet: metadata.lastMessageText,
+                    metadata,
+                    createdAt: interactionIso,
+                    updatedAt: interactionIso,
+                  });
+                }
+              });
+              res.statusCode = syncRes.status || 200;
+              res.setHeader('Content-Type', 'application/json');
+              return res.end(JSON.stringify(syncRes));
+            } catch (err: any) {
+              console.warn('[Dev server syncMetaConversations warning]:', err?.message || err);
+            }
+          }
+
+          const now = Date.now();
+          const mockRecentIso = new Date(now - 15 * 60 * 1000).toISOString();
+          if (devFacebookRecipients.length === 0) {
+            devFacebookRecipients.push({
+              id: 'fb_100928374829101',
+              audienceType: 'page_contacts',
+              name: 'Tanvir Ahmed',
+              psid: '100928374829101',
+              phone: '01711223344',
+              email: 'tanvir@gmail.com',
+              source: 'facebook_messenger',
+              consentStatus: 'consented',
+              consentTimestamp: mockRecentIso,
+              lastInteractionAt: mockRecentIso,
+              lastIncomingMessageAt: mockRecentIso,
+              pageId: devEnv.FB_PAGE_ID || '104829104820194',
+              recentOrderNumber: null,
+              lastMessageSnippet: 'Is this available for delivery in Dhaka?',
+              metadata: { lastMessageText: 'Is this available for delivery in Dhaka?' },
+              createdAt: mockRecentIso,
+              updatedAt: mockRecentIso,
+            });
+          }
+
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          return res.end(JSON.stringify({
+            success: true,
+            status: 200,
+            syncedCount: devFacebookRecipients.length,
+            within24hCount: devFacebookRecipients.filter((r) => {
+              const t = r.lastIncomingMessageAt || r.lastInteractionAt;
+              return t && (now - new Date(t).getTime()) <= 24 * 60 * 60 * 1000;
+            }).length,
+            recipients: devFacebookRecipients,
+          }));
         }
 
         if (url.pathname === '/api/admin/facebook/subscribe-page' && req.method === 'POST') {

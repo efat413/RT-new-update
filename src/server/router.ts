@@ -188,6 +188,7 @@ import {
   handleMetaWebhookEvent,
   testMetaConnection,
   subscribePageToMessengerWebhooks,
+  syncMetaConversations,
 } from './facebookMessenger';
 import {
   getBodySizeLimit,
@@ -8741,6 +8742,32 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
     const subResult = await subscribePageToMessengerWebhooks(env);
     return jsonResponse(subResult, subResult.status);
+  }
+
+  // 11H2. Sync Facebook Page Conversations (POST or GET /api/admin/facebook/sync-conversations)
+  if (path === '/api/admin/facebook/sync-conversations' && (method === 'POST' || method === 'GET')) {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const isAuthorized =
+      hasPermission(auth!, 'settings.manage') ||
+      Boolean(auth?.legacyPermissions?.canManageSettings) ||
+      auth?.role === 'admin' ||
+      auth?.role === 'super_admin';
+
+    if (!isAuthorized) {
+      return jsonResponse(
+        { success: false, error: 'Forbidden: Admin privileges required to sync Facebook conversations.' },
+        403
+      );
+    }
+
+    const syncRes = await syncMetaConversations(env, async (ev) => {
+      if (env.DB) {
+        await upsertFacebookRecipientFromMessageInD1(env.DB, ev, env);
+      }
+    });
+
+    return jsonResponse(syncRes, syncRes.status);
   }
 
   // 11I. Facebook Saved Message Templates (CRUD)

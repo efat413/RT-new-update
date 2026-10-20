@@ -419,59 +419,68 @@ export async function handleMetaWebhookEvent(
 
   if (payload.object === 'page' && Array.isArray(payload.entry)) {
     for (const entry of payload.entry) {
-      if (Array.isArray(entry.messaging)) {
-        for (const item of entry.messaging) {
-          const senderId = String(item.sender?.id || '').trim();
-          const recipientId = String(item.recipient?.id || '').trim();
-          const timestamp = Number(item.timestamp) || Date.now();
+      const entryPageId = entry.id ? String(entry.id).trim() : '';
+      const messagingItems = Array.isArray(entry.messaging)
+        ? entry.messaging
+        : (Array.isArray(entry.standby) ? entry.standby : []);
 
-          if (item.delivery) {
+      for (const item of messagingItems) {
+        const senderId = String(item.sender?.id || '').trim();
+        const recipientId = String(item.recipient?.id || entryPageId || configuredPageId || '').trim();
+        let timestamp = Number(item.timestamp) || Date.now();
+        // Normalize 10-digit Unix timestamp (seconds) to 13-digit milliseconds
+        if (timestamp > 0 && timestamp < 10000000000) {
+          timestamp *= 1000;
+        }
+
+        if (item.delivery) {
+          extractedEvents.push({
+            senderId,
+            recipientId,
+            timestamp,
+            type: 'delivery',
+            watermark: item.delivery.watermark,
+            mids: item.delivery.mids,
+          });
+        } else if (item.read) {
+          extractedEvents.push({
+            senderId,
+            recipientId,
+            timestamp,
+            type: 'read',
+            watermark: item.read.watermark,
+          });
+        } else if (item.message) {
+          const isEcho = Boolean(
+            item.message.is_echo ||
+            (configuredPageId && senderId === configuredPageId) ||
+            (entryPageId && senderId === entryPageId)
+          );
+
+          if (isEcho) {
             extractedEvents.push({
               senderId,
               recipientId,
               timestamp,
-              type: 'delivery',
-              watermark: item.delivery.watermark,
-              mids: item.delivery.mids,
+              type: 'echo',
+              isEcho: true,
+              mids: item.message.mid ? [item.message.mid] : undefined,
+              text: item.message.text,
             });
-          } else if (item.read) {
+          } else {
             extractedEvents.push({
               senderId,
               recipientId,
               timestamp,
-              type: 'read',
-              watermark: item.read.watermark,
+              type: 'message',
+              isEcho: false,
+              mids: item.message.mid ? [item.message.mid] : undefined,
+              text: item.message.text || (item.message.attachments ? '[Attachment]' : ''),
+              quickReplyPayload: item.message.quick_reply?.payload,
             });
-          } else if (item.message) {
-            const isEcho = Boolean(
-              item.message.is_echo ||
-              (configuredPageId && senderId === configuredPageId)
-            );
-
-            if (isEcho) {
-              extractedEvents.push({
-                senderId,
-                recipientId,
-                timestamp,
-                type: 'echo',
-                isEcho: true,
-                mids: item.message.mid ? [item.message.mid] : undefined,
-                text: item.message.text,
-              });
-            } else {
-              extractedEvents.push({
-                senderId,
-                recipientId,
-                timestamp,
-                type: 'message',
-                isEcho: false,
-                mids: item.message.mid ? [item.message.mid] : undefined,
-                text: item.message.text || (item.message.attachments ? '[Attachment]' : ''),
-                quickReplyPayload: item.message.quick_reply?.payload,
-              });
-            }
-          } else if (item.postback) {
-            extractedEvents.push({
+          }
+        } else if (item.postback) {
+          extractedEvents.push({
               senderId,
               recipientId,
               timestamp,
@@ -498,7 +507,6 @@ export async function handleMetaWebhookEvent(
         }
       }
     }
-  }
 
   return {
     success: true,
@@ -838,6 +846,192 @@ export async function subscribePageToMessengerWebhooks(env: Env): Promise<{
       success: false,
       status: 502,
       error: `Network error subscribing Page to webhooks: ${err?.message || err}`,
+    };
+  }
+}
+
+/**
+ * Synchronizes recent Messenger conversations and contacts directly from Meta Graph API.
+ * Pulls thread history, participant PSIDs, customer names, and latest message timestamps.
+ * Directly solves the problem when users messaged the page before webhook sync or when locating 24h contacts.
+ */
+export async function syncMetaConversations(
+  env: Env,
+  onRecipientDiscovered?: (recipientData: {
+    senderId: string;
+    recipientId?: string;
+    pageId?: string;
+    timestamp: number;
+    text?: string;
+    mids?: string[];
+    senderName?: string;
+  }) => Promise<any>
+): Promise<{
+  success: boolean;
+  status: number;
+  syncedCount: number;
+  within24hCount: number;
+  recipients: Array<{
+    id: string;
+    name: string;
+    psid: string;
+    lastIncomingMessageAt: string;
+    isWithin24Hours: boolean;
+    lastMessageSnippet?: string;
+  }>;
+  error?: string;
+}> {
+  const token = (env.FB_PAGE_ACCESS_TOKEN || '').trim();
+  const configuredPageId = env.FB_PAGE_ID ? String(env.FB_PAGE_ID).trim() : '';
+
+  if (!token) {
+    return {
+      success: false,
+      status: 503,
+      syncedCount: 0,
+      within24hCount: 0,
+      recipients: [],
+      error: 'FB_PAGE_ACCESS_TOKEN is not configured.',
+    };
+  }
+
+  let authoritativePageId = configuredPageId;
+  if (!authoritativePageId) {
+    try {
+      const meResp = await fetch('https://graph.facebook.com/v21.0/me?fields=id,name', {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'User-Agent': 'RongdhonuTrade-FacebookBroadcaster/1.0',
+        },
+      });
+      const meData: any = await meResp.json().catch(() => ({}));
+      if (meResp.ok && meData?.id) {
+        authoritativePageId = String(meData.id).trim();
+      }
+    } catch {}
+  }
+
+  const pageEndpoint = authoritativePageId ? encodeURIComponent(authoritativePageId) : 'me';
+  const url = `https://graph.facebook.com/v21.0/${pageEndpoint}/conversations?fields=id,updated_time,participants,senders,messages.limit(10){id,created_time,from,to,message}&limit=100`;
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
+
+    const resp = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'User-Agent': 'RongdhonuTrade-FacebookBroadcaster/1.0',
+      },
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    const data: any = await resp.json().catch(() => ({}));
+
+    if (!resp.ok) {
+      const err = data?.error;
+      const classification = classifyMetaGraphError(err, resp.status);
+      return {
+        success: false,
+        status: resp.status >= 400 && resp.status < 500 ? resp.status : 502,
+        syncedCount: 0,
+        within24hCount: 0,
+        recipients: [],
+        error: classification.userMessage || 'Failed to sync conversations from Meta Graph API.',
+      };
+    }
+
+    const conversations = Array.isArray(data?.data) ? data.data : [];
+    const now = Date.now();
+    const syncedRecipients: Array<{
+      id: string;
+      name: string;
+      psid: string;
+      pageId?: string;
+      lastIncomingMessageAt: string;
+      isWithin24Hours: boolean;
+      lastMessageSnippet?: string;
+    }> = [];
+    let within24hCount = 0;
+
+    for (const conv of conversations) {
+      // Find the customer participant (exclude Page ID)
+      const participants = Array.isArray(conv.participants?.data)
+        ? conv.participants.data
+        : (Array.isArray(conv.senders?.data) ? conv.senders.data : []);
+
+      const customer = participants.find((p: any) => {
+        const pid = String(p.id || '').trim();
+        return pid && pid !== authoritativePageId;
+      });
+
+      if (!customer?.id || (authoritativePageId && customer.id === authoritativePageId)) {
+        continue;
+      }
+
+      const psid = String(customer.id).trim();
+      const customerName = String(customer.name || 'Messenger User').trim();
+
+      // Find the latest incoming message specifically from customer
+      const messages = Array.isArray(conv.messages?.data) ? conv.messages.data : [];
+      const customerMsgs = messages.filter((m: any) => {
+        const fromId = String(m.from?.id || '').trim();
+        return fromId && (fromId === psid || (authoritativePageId && fromId !== authoritativePageId));
+      });
+      const latestCustomerMsg = customerMsgs[0];
+
+      let msgTime = latestCustomerMsg?.created_time
+        ? new Date(latestCustomerMsg.created_time).getTime()
+        : (conv.updated_time ? new Date(conv.updated_time).getTime() : now);
+
+      if (isNaN(msgTime) || msgTime <= 0) msgTime = now;
+      if (msgTime > now + 60000) msgTime = now;
+
+      const incomingIso = new Date(msgTime).toISOString();
+      const isWithin24 = (now - msgTime) <= 24 * 60 * 60 * 1000;
+      if (isWithin24) within24hCount++;
+
+      const eventPayload = {
+        senderId: psid,
+        recipientId: authoritativePageId || configuredPageId,
+        pageId: authoritativePageId || configuredPageId,
+        timestamp: msgTime,
+        text: latestCustomerMsg?.message || '',
+        mids: latestCustomerMsg?.id ? [latestCustomerMsg.id] : undefined,
+        senderName: customerName,
+      };
+
+      if (onRecipientDiscovered) {
+        await onRecipientDiscovered(eventPayload);
+      }
+
+      syncedRecipients.push({
+        id: `fb_${psid}`,
+        name: customerName,
+        psid,
+        pageId: authoritativePageId || configuredPageId || undefined,
+        lastIncomingMessageAt: incomingIso,
+        isWithin24Hours: isWithin24,
+        lastMessageSnippet: latestCustomerMsg?.message || undefined,
+      });
+    }
+
+    return {
+      success: true,
+      status: 200,
+      syncedCount: syncedRecipients.length,
+      within24hCount,
+      recipients: syncedRecipients,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      status: 502,
+      syncedCount: 0,
+      within24hCount: 0,
+      recipients: [],
+      error: `Network error syncing Facebook conversations: ${err.message || 'Connection failed'}`,
     };
   }
 }

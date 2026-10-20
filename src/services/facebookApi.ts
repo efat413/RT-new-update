@@ -331,6 +331,31 @@ export async function subscribeFacebookPage(): Promise<{
   }
 }
 
+export async function syncFacebookConversations(): Promise<{
+  success: boolean;
+  status: number;
+  syncedCount?: number;
+  within24hCount?: number;
+  recipients?: any[];
+  error?: string;
+}> {
+  try {
+    const token = getAuthToken();
+    const res = await fetch('/api/admin/facebook/sync-conversations', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      credentials: 'include',
+    });
+    const data = await res.json().catch(() => ({}));
+    return data;
+  } catch (err: any) {
+    return { success: false, status: 502, error: err.message || 'Network error syncing Facebook conversations.' };
+  }
+}
+
 export async function fetchFacebookTemplates(): Promise<{
   success: boolean;
   templates?: FacebookMessageTemplate[];
