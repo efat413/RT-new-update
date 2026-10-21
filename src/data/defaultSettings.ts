@@ -27,7 +27,6 @@ export const DEFAULT_STORE_SETTINGS: StoreSettings = {
       '',
   },
   antiSpamEnabled: true,
-  maxOrdersPerPhonePerDay: 3,
   blockedPhoneNumbers: [],
   // Marketing Pixels & Tracking Settings
   trackingEnabled: true,

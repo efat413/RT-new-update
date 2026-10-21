@@ -490,6 +490,12 @@ export async function safeParseJson<T = any>(
 
   const { buffer, error } = await readRawBodyWithLimit(request, maxBytes);
   if (error) {
+    if (error.status === 413) {
+      try {
+        const parsedUrl = new URL(request.url);
+        console.warn(`[Payload Size Limit Exceeded]: ${request.method} ${parsedUrl.pathname} exceeded allowable limit of ${maxBytes} bytes.`);
+      } catch {}
+    }
     return {
       data: null,
       errorResponse: jsonResponse(
@@ -1471,7 +1477,6 @@ function maskSettings(
       currencySymbol: settings.currencySymbol,
       dbblBank: settings.dbblBank,
       antiSpamEnabled: settings.antiSpamEnabled,
-      maxOrdersPerPhonePerDay: settings.maxOrdersPerPhonePerDay,
       trackingEnabled: settings.trackingEnabled,
       fbPixelId: settings.fbPixelId,
       fbTestEventCode: settings.fbTestEventCode,
@@ -7029,10 +7034,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
               quantity: qty,
               product: {
                 ...d1Prod,
-                ...(it.product || {}),
                 id: d1Prod.id,
                 title: d1Prod.title,
                 price: unitSellingPrice,
+                imageUrl: (it.product && (it.product as any).imageUrl) || d1Prod.imageUrl || '',
               },
               sellingPriceSnapshot: unitSellingPrice,
               buyingPriceSnapshot: authoritativeBuyingPrice,

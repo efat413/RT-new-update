@@ -8,6 +8,7 @@
 // Route-specific size thresholds
 export const BODY_LIMIT_AUTH = 64 * 1024; // 64 KB: Credentials, password reset tokens, auth profile
 export const BODY_LIMIT_ORDER = 256 * 1024; // 256 KB: Checkout orders, address, item arrays, customization metadata, advance payments
+export const BODY_LIMIT_ORDER_UPDATE = 1024 * 1024; // 1 MB: Admin order modifications, line item revisions, and multi-product updates
 export const BODY_LIMIT_COURIER_DISPATCH = 16 * 1024; // 16 KB: Strict dedicated limit for minimal courier dispatch DTO
 export const BODY_LIMIT_WEBHOOK = 64 * 1024; // 64 KB: Courier status updates and delivery lifecycle events
 export const BODY_LIMIT_REVIEW_UPLOAD = 12 * 1024 * 1024; // 12 MB: Up to 5 photos (8 MB aggregate decoded binary + 33% base64 expansion + envelope)

@@ -2144,6 +2144,7 @@ const AdminPanelContent: React.FC = () => {
 
     let totalCost = 0;
     const enrichedItems = editOrderItems.map((it) => {
+      const prodId = String(it.product?.id || (it as any).productId || '').trim();
       const unitPrice =
         it.sellingPriceSnapshot != null && !isNaN(Number(it.sellingPriceSnapshot))
           ? Number(it.sellingPriceSnapshot)
@@ -2159,16 +2160,23 @@ const AdminPanelContent: React.FC = () => {
       const itemProfit = (unitPrice - buyingPrice) * qty;
       totalCost += itemCost;
       return {
-        ...it,
+        productId: prodId,
         quantity: qty,
-        product: {
-          ...it.product,
-          price: unitPrice,
-        },
         sellingPriceSnapshot: unitPrice,
         buyingPriceSnapshot: buyingPrice,
         productCost: itemCost,
         productGrossProfit: itemProfit,
+        selectedColor: it.selectedColor || undefined,
+        selectedSize: it.selectedSize || undefined,
+        selectedVariant: (it as any).selectedVariant || undefined,
+        customization: (it as any).customization || undefined,
+        overrideReason: (it as any).overrideReason || undefined,
+        product: {
+          id: prodId,
+          title: it.product?.title || '',
+          price: unitPrice,
+          imageUrl: it.product?.imageUrl || '',
+        },
       };
     });
     // Requirement 6: Do NOT clamp loss with Math.max(0, ...)

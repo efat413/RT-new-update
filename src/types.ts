@@ -346,7 +346,6 @@ export interface StoreSettings {
   dbblBank?: DbblBankSettings;
   // Anti-Spam & Fraud Protection Settings
   antiSpamEnabled?: boolean;
-  maxOrdersPerPhonePerDay?: number;
   blockedPhoneNumbers?: string[];
   // Dynamic Customizable Footer & Policies
   footer?: FooterSettings;

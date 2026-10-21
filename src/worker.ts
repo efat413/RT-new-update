@@ -87,6 +87,7 @@ export default {
       if (url.pathname.startsWith('/api/')) {
         const routeLimit = getBodySizeLimit(url.pathname, request.method);
         if (parsedLen > routeLimit) {
+          console.warn(`[Worker Payload Size Guard]: ${request.method} ${url.pathname} Content-Length (${parsedLen} bytes) exceeded route limit of ${routeLimit} bytes.`);
           return new Response(
             JSON.stringify({ success: false, error: 'Payload too large: Request body exceeds maximum allowed size.' }),
             {

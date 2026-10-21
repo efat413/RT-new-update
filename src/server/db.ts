@@ -4409,18 +4409,6 @@ export async function insertOrder(
     }
   }
 
-  if (storeSettings.antiSpamEnabled) {
-    const maxPerDay = Number(storeSettings.maxOrdersPerPhonePerDay) || 3;
-    const phoneSuffix = cleanCustomerPhone.slice(-11);
-    const recentCheck = await db
-      .prepare("SELECT COUNT(*) as count FROM orders WHERE customer_phone LIKE ? AND created_at >= datetime('now', '-1 day')")
-      .bind(`%${phoneSuffix}%`)
-      .first<{ count: number }>();
-    if (recentCheck && recentCheck.count >= maxPerDay) {
-      throw new Error(`Daily order limit (${maxPerDay} orders/day) reached for this phone number. Please contact customer support for bulk orders.`);
-    }
-  }
-
   // 4. Validate items & prevent negative / zero / fractional quantities
   if (!Array.isArray(order.items) || order.items.length === 0) {
     throw new Error('Order must contain at least one item.');
