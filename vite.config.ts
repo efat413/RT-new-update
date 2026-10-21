@@ -517,7 +517,56 @@ function localApiDevPlugin(): Plugin {
   let devExpenses: any[] = [];
   let devCourierWebhooks: any[] = Array.isArray(devSettings.courierWebhooks) ? devSettings.courierWebhooks : [];
   let devCourierWebhookLogs: any[] = [];
-  const devPasswordResetTokens = new Map<string, { id: string; userId: string; tokenHash: string; expiresAt: number; usedAt: number | null; createdAt: number }>();
+
+  const RESET_TOKENS_FILE = path.resolve(import.meta.dirname || '.', '.dev-password-reset-tokens.json');
+  const loadDevPasswordResetTokens = (): Map<string, { id: string; userId: string; tokenHash: string; expiresAt: number; usedAt: number | null; createdAt: number }> => {
+    const map = new Map<string, { id: string; userId: string; tokenHash: string; expiresAt: number; usedAt: number | null; createdAt: number }>();
+    try {
+      if (fs.existsSync(RESET_TOKENS_FILE)) {
+        const raw = fs.readFileSync(RESET_TOKENS_FILE, 'utf-8');
+        const list = JSON.parse(raw);
+        if (Array.isArray(list)) {
+          for (const item of list) {
+            if (item && item.tokenHash) {
+              map.set(item.tokenHash, item);
+            }
+          }
+        }
+      }
+    } catch {}
+    return map;
+  };
+
+  const devPasswordResetTokens = loadDevPasswordResetTokens();
+
+  const persistDevPasswordResetTokens = () => {
+    try {
+      const arr = Array.from(devPasswordResetTokens.values());
+      fs.writeFileSync(RESET_TOKENS_FILE, JSON.stringify(arr, null, 2), 'utf-8');
+    } catch {}
+  };
+
+  const sanitizeResetTokenDev = (input: unknown): string => {
+    if (!input || typeof input !== 'string') return '';
+    let token = input.trim();
+    token = token.replace(/^[<"'\s]+|[>"'\s]+$/g, '');
+    if (token.includes('token=') || token.includes('resetToken=')) {
+      try {
+        const u = new URL(token.startsWith('http') ? token : `http://localhost/${token.replace(/^\/+/, '')}`);
+        const p = u.searchParams.get('token') || u.searchParams.get('resetToken') || u.searchParams.get('t');
+        if (p) token = p;
+      } catch {
+        const match = token.match(/[?&](?:token|resetToken|t)=([a-zA-Z0-9_-]+)/);
+        if (match) token = match[1];
+      }
+    }
+    try {
+      token = decodeURIComponent(token);
+    } catch {}
+    token = token.replace(/^[<"'\s]+|[>"'\s.,;:!?]+$/g, '');
+    return token.trim();
+  };
+
   const devRateLimits = new Map<string, { count: number; resetAt: number }>();
   const devOrderIdempotencyMap = new Map<string, { order: any; payload?: any; timestamp: number }>();
   const devWebhookReplays = new Map<string, { createdAt: number; expiresAt: number }>();
@@ -1595,8 +1644,9 @@ function localApiDevPlugin(): Plugin {
           !(method === 'POST' && (req.url === '/' || req.url === '/index.html'))
         ) {
           const pathname = url.pathname;
+          const normalizedPathname = pathname.replace(/\/+$/, '') || '/';
           const VALID_SPA_PATHS = new Set(['/', '/admin', '/reset-password', '/tracking', '/account', '/checkout', '/cart']);
-          const isKnownSpa = VALID_SPA_PATHS.has(pathname) || pathname.startsWith('/admin/');
+          const isKnownSpa = VALID_SPA_PATHS.has(normalizedPathname) || normalizedPathname.startsWith('/admin/') || normalizedPathname.startsWith('/reset-password/');
           const isVitePath =
             pathname.startsWith('/@') ||
             pathname.startsWith('/src/') ||
@@ -2101,7 +2151,6 @@ function localApiDevPlugin(): Plugin {
               const dummyTokenHash = bufferToHex(dummyHashBuf);
               void dummyTokenHash;
             } else {
-              // Case 1 — Account exists
               // Invalidate any previous unused reset tokens for this user
               for (const [, existingToken] of devPasswordResetTokens.entries()) {
                 if (existingToken.userId === found.id && existingToken.usedAt == null) {
@@ -2123,12 +2172,27 @@ function localApiDevPlugin(): Plugin {
                 usedAt: null,
                 createdAt: Date.now(),
               });
+              persistDevPasswordResetTokens();
+
+              // Derive authoritative base URL from host / origin headers so local & preview environments generate working links
+              const originHeader = (req.headers['origin'] || req.headers['referer']) as string | undefined;
+              let derivedOrigin = '';
+              if (originHeader && typeof originHeader === 'string') {
+                try {
+                  derivedOrigin = new URL(originHeader).origin;
+                } catch {}
+              }
+              if (!derivedOrigin && req.headers['host']) {
+                const reqHost = req.headers['x-forwarded-host'] || req.headers['host'];
+                const reqProto = req.headers['x-forwarded-proto'] || ((req.socket as any)?.encrypted ? 'https' : 'http');
+                derivedOrigin = `${reqProto}://${reqHost}`;
+              }
 
               let rawAppUrl = (process.env.APP_URL || '').trim().replace(/\/+$/, '');
               if (rawAppUrl && !rawAppUrl.startsWith('http://') && !rawAppUrl.startsWith('https://')) {
                 rawAppUrl = `https://${rawAppUrl}`;
               }
-              const baseUrl = rawAppUrl || 'https://rongdhonutrade.com';
+              const baseUrl = derivedOrigin || rawAppUrl || 'https://rongdhonutrade.com';
               const resetUrl = `${baseUrl}/reset-password?token=${encodeURIComponent(rawToken)}`;
               const resendApiKey = (process.env.RESEND_API_KEY || '').trim();
 
@@ -2177,7 +2241,7 @@ function localApiDevPlugin(): Plugin {
 
         if (url.pathname === '/api/auth/reset-password' && method === 'POST') {
           return readBody(async (body) => {
-            const rawToken = String(body?.token || '').trim();
+            const rawToken = sanitizeResetTokenDev(body?.token);
             const newPassword = String(body?.newPassword || '').trim();
 
             if (!rawToken) {
@@ -2269,6 +2333,7 @@ function localApiDevPlugin(): Plugin {
 
             // Atomically mark token as used prior to modifying credentials
             tokenRecord.usedAt = now;
+            persistDevPasswordResetTokens();
             const newHashed = await hashPassword(newPassword);
             devUserPasswordHashes.set(targetUser.email.toLowerCase(), newHashed);
             if (targetUser.role === 'super_admin' || devSuperAdminEmails.includes(targetUser.email?.toLowerCase())) {

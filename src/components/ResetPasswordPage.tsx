@@ -30,6 +30,22 @@ export const ResetPasswordPage: React.FC = () => {
   const [successMessage, setSuccessMessage] = useState('');
   const [tokenMissing, setTokenMissing] = useState(false);
 
+  const extractAndCleanToken = (val: string): string => {
+    let t = val.trim();
+    if (t.includes('token=') || t.includes('resetToken=')) {
+      try {
+        const u = new URL(t.startsWith('http') ? t : `https://example.com/${t}`);
+        const p = u.searchParams.get('token') || u.searchParams.get('resetToken') || u.searchParams.get('t');
+        if (p) t = p;
+      } catch {}
+    }
+    try {
+      t = decodeURIComponent(t);
+    } catch {}
+    // Strip leading/trailing non-hex characters like quotes, angle brackets, periods, commas, or spaces
+    return t.replace(/^[^a-fA-F0-9]+|[^a-fA-F0-9]+$/g, '').trim();
+  };
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
@@ -46,12 +62,21 @@ export const ResetPasswordPage: React.FC = () => {
         hashParams.get('t') ||
         '';
 
-      const decodedToken = decodeURIComponent(rawUrlToken).trim();
-      if (!decodedToken) {
+      let candidateToken = rawUrlToken;
+      if (!candidateToken) {
+        // Support path-based tokens e.g. /reset-password/<token>
+        const pathPart = window.location.pathname.replace(/^\/reset-password\/?/, '').trim();
+        if (pathPart && /^[a-fA-F0-9]{32,64}$/.test(pathPart)) {
+          candidateToken = pathPart;
+        }
+      }
+
+      const cleanToken = extractAndCleanToken(candidateToken);
+      if (!cleanToken) {
         setTokenMissing(true);
-        setErrorMessage('No password reset token was found in the link. Please request a new password reset.');
+        setErrorMessage('No password reset token was found in the link. Please paste your reset link or token below, or request a new one.');
       } else {
-        setToken(decodedToken);
+        setToken(cleanToken);
         setTokenMissing(false);
       }
     } catch {
@@ -65,9 +90,10 @@ export const ResetPasswordPage: React.FC = () => {
     setErrorMessage('');
     setSuccessMessage('');
 
-    const cleanToken = token.trim();
+    const cleanToken = extractAndCleanToken(token);
     if (!cleanToken) {
-      setErrorMessage('Invalid or missing password reset token. Please request a new reset link.');
+      setErrorMessage('Invalid or missing password reset token. Please request a new reset link or paste the token from your email.');
+      setTokenMissing(true);
       return;
     }
 
@@ -191,6 +217,37 @@ export const ResetPasswordPage: React.FC = () => {
                 </div>
               ) : (
                 <form onSubmit={handleSubmit} className="space-y-4">
+                  {/* Optional/Fallback Token input when link opened without token */}
+                  {tokenMissing && (
+                    <div className="space-y-1.5 p-3 rounded-2xl bg-amber-50/70 border border-amber-200">
+                      <label className="block text-xs font-bold text-amber-900">
+                        Reset Link or Token from Email <span className="text-rose-500">*</span>
+                      </label>
+                      <div className="relative">
+                        <KeyRound className="w-4 h-4 text-amber-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                        <input
+                          id="manual-token-input"
+                          type="text"
+                          value={token}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            const cleaned = extractAndCleanToken(val);
+                            setToken(cleaned || val);
+                            if (cleaned) {
+                              setTokenMissing(false);
+                              setErrorMessage('');
+                            }
+                          }}
+                          placeholder="Paste the reset link or token here"
+                          className="w-full pl-10 pr-3 py-2.5 rounded-xl border border-amber-300 bg-white text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+                        />
+                      </div>
+                      <p className="text-[11px] text-amber-700">
+                        Paste the full link from your email or just the token code.
+                      </p>
+                    </div>
+                  )}
+
                   {/* New Password Input */}
                   <div className="space-y-1.5">
                     <label className="block text-xs font-bold text-slate-700">
@@ -206,7 +263,7 @@ export const ResetPasswordPage: React.FC = () => {
                         placeholder="At least 8 characters"
                         required
                         minLength={MIN_PASSWORD_LENGTH}
-                        disabled={isLoading || tokenMissing}
+                        disabled={isLoading || (tokenMissing && !token.trim())}
                         className="w-full pl-10 pr-10 py-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 disabled:bg-slate-100 disabled:text-slate-400"
                       />
                       <button
@@ -235,7 +292,7 @@ export const ResetPasswordPage: React.FC = () => {
                         placeholder="Re-enter your new password"
                         required
                         minLength={MIN_PASSWORD_LENGTH}
-                        disabled={isLoading || tokenMissing}
+                        disabled={isLoading || (tokenMissing && !token.trim())}
                         className="w-full pl-10 pr-10 py-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 disabled:bg-slate-100 disabled:text-slate-400"
                       />
                       <button
@@ -253,7 +310,7 @@ export const ResetPasswordPage: React.FC = () => {
                   <button
                     id="submit-reset-password-btn"
                     type="submit"
-                    disabled={isLoading || tokenMissing || !newPassword.trim() || !confirmPassword.trim()}
+                    disabled={isLoading || (tokenMissing && !token.trim()) || !newPassword.trim() || !confirmPassword.trim()}
                     className="w-full py-3 px-4 rounded-xl bg-slate-900 hover:bg-black text-white font-bold text-sm shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed mt-2"
                   >
                     {isLoading ? (

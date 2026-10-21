@@ -1558,6 +1558,22 @@ export function formatResendFromEmail(rawFrom: string): string {
  * Resolves authoritative APP_URL for absolute reset links and email callbacks.
  */
 export function resolveAppUrl(env: any, requestUrl?: string): string {
+  // 1. If requestUrl is available and points to a local or preview/staging environment, use its origin
+  if (requestUrl) {
+    try {
+      const parsed = new URL(requestUrl);
+      if (
+        parsed.hostname === 'localhost' ||
+        parsed.hostname.startsWith('127.') ||
+        parsed.hostname.includes('.run.app') ||
+        parsed.hostname.includes('.aistudio.') ||
+        parsed.hostname.includes('.workers.dev') ||
+        parsed.hostname.includes('.pages.dev')
+      ) {
+        return parsed.origin;
+      }
+    } catch {}
+  }
   let appUrl = getEnvVar(env, 'APP_URL', '').replace(/\/+$/, '');
   if (appUrl) {
     if (!appUrl.startsWith('http://') && !appUrl.startsWith('https://')) {
@@ -1568,12 +1584,39 @@ export function resolveAppUrl(env: any, requestUrl?: string): string {
   if (requestUrl) {
     try {
       const parsed = new URL(requestUrl);
-      if (parsed.hostname !== 'localhost' && !parsed.hostname.startsWith('127.')) {
+      if (parsed.origin && parsed.origin !== 'null') {
         return parsed.origin;
       }
     } catch {}
   }
   return 'https://rongdhonutrade.com';
+}
+
+/**
+ * Sanitizes and extracts clean password reset token from raw input, URL, or pasted text.
+ */
+export function sanitizeResetToken(input: unknown): string {
+  if (!input || typeof input !== 'string') return '';
+  let token = input.trim();
+  // Strip enclosing quotes or angle brackets
+  token = token.replace(/^[<"'\s]+|[>"'\s]+$/g, '');
+  // If a full URL or query string was passed
+  if (token.includes('token=') || token.includes('resetToken=')) {
+    try {
+      const url = new URL(token.startsWith('http') ? token : `http://localhost/${token.replace(/^\/+/, '')}`);
+      const param = url.searchParams.get('token') || url.searchParams.get('resetToken') || url.searchParams.get('t');
+      if (param) token = param;
+    } catch {
+      const match = token.match(/[?&](?:token|resetToken|t)=([a-zA-Z0-9_-]+)/);
+      if (match) token = match[1];
+    }
+  }
+  try {
+    token = decodeURIComponent(token);
+  } catch {}
+  // Strip trailing punctuation like period, comma, colon, semicolon, etc. often appended by email clients
+  token = token.replace(/^[<"'\s]+|[>"'\s.,;:!?]+$/g, '');
+  return token.trim();
 }
 
 /**
@@ -2529,7 +2572,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     if (jsonErr) return jsonErr;
 
     try {
-      const rawToken = String(body?.token || '').trim();
+      const rawToken = sanitizeResetToken(body?.token);
       const newPassword = String(body?.newPassword || '').trim();
 
       if (!rawToken) {

@@ -380,7 +380,13 @@ const StoreContent: React.FC = () => {
     setInvalidNotice(null);
   }, [categories, isStoreInitializing]);
 
-  if (currentView === 'reset-password' || (typeof window !== 'undefined' && window.location.pathname === '/reset-password')) {
+  if (
+    currentView === 'reset-password' ||
+    (typeof window !== 'undefined' &&
+      (window.location.pathname === '/reset-password' ||
+        window.location.pathname === '/reset-password/' ||
+        window.location.pathname.startsWith('/reset-password/')))
+  ) {
     return (
       <>
         <ErrorBoundary fallbackTitle="Password Reset Unavailable" fallbackMessage="Could not load the password reset form. Please try again.">

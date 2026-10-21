@@ -58,8 +58,9 @@ const VALID_SPA_ROUTES = new Set([
 ]);
 
 function isValidSpaRoute(pathname: string): boolean {
-  if (VALID_SPA_ROUTES.has(pathname)) return true;
-  if (pathname.startsWith('/admin/')) return true;
+  const normalized = pathname.replace(/\/+$/, '') || '/';
+  if (VALID_SPA_ROUTES.has(normalized)) return true;
+  if (normalized.startsWith('/admin/') || normalized.startsWith('/reset-password/')) return true;
   return false;
 }
 
