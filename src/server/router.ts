@@ -1600,15 +1600,17 @@ export function sanitizeResetToken(input: unknown): string {
   let token = input.trim();
   // Strip enclosing quotes or angle brackets
   token = token.replace(/^[<"'\s]+|[>"'\s]+$/g, '');
-  // If a full URL or query string was passed
-  if (token.includes('token=') || token.includes('resetToken=')) {
-    try {
-      const url = new URL(token.startsWith('http') ? token : `http://localhost/${token.replace(/^\/+/, '')}`);
-      const param = url.searchParams.get('token') || url.searchParams.get('resetToken') || url.searchParams.get('t');
-      if (param) token = param;
-    } catch {
-      const match = token.match(/[?&](?:token|resetToken|t)=([a-zA-Z0-9_-]+)/);
-      if (match) token = match[1];
+  // If a full URL, query string, or token= parameter was passed
+  if (token.includes('token=') || token.includes('resetToken=') || token.includes('t=')) {
+    const match = token.match(/(?:^|[?&#])(?:token|resetToken|t)=([a-zA-Z0-9_-]+)/i);
+    if (match && match[1]) {
+      token = match[1];
+    } else {
+      try {
+        const url = new URL(token.startsWith('http') ? token : `http://localhost/?${token.replace(/^[?&/]+/, '')}`);
+        const param = url.searchParams.get('token') || url.searchParams.get('resetToken') || url.searchParams.get('t');
+        if (param) token = param;
+      } catch {}
     }
   }
   try {
@@ -2626,6 +2628,19 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalizedToken));
       const tokenHash = bufferToHex(hashBuffer).toLowerCase();
 
+      // Guard DB availability
+      if (!env.DB || typeof env.DB.prepare !== 'function') {
+        return jsonResponse(
+          {
+            success: false,
+            status: 'SERVICE_DEGRADED',
+            message: 'Password reset service temporarily degraded. Please try again shortly.',
+            error: 'Password reset service temporarily degraded. Please try again shortly.',
+          },
+          503
+        );
+      }
+
       // Check existing reset token before claiming
       const existingToken = await getPasswordResetToken(env.DB, tokenHash);
       const now = Date.now();
@@ -2725,11 +2740,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       return jsonResponse(
         {
           success: false,
-          status: 'INTERNAL_ERROR',
-          message: 'Failed to reset password. Please try again later.',
-          error: 'Failed to reset password. Please try again later.',
+          status: 'SERVICE_DEGRADED',
+          message: 'Password reset service temporarily degraded. Please try again shortly.',
+          error: 'Password reset service temporarily degraded. Please try again shortly.',
         },
-        500
+        503
       );
     }
   }

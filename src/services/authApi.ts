@@ -483,6 +483,16 @@ export const authApi = {
         };
       }
 
+      if (res.status === 500 || res.status === 502 || res.status === 503 || status === 'INTERNAL_ERROR' || status === 'SERVICE_DEGRADED' || data.error === 'Internal server error.') {
+        const friendlyMsg = 'Unable to complete password reset at this time. Please request a new reset link or try again shortly.';
+        return {
+          success: false,
+          status: status || 'SERVICE_UNAVAILABLE',
+          error: friendlyMsg,
+          message: friendlyMsg,
+        };
+      }
+
       if (!res.ok || !data.success) {
         let msg = data.message || data.error || 'Invalid or expired password reset link. Please request a new one.';
         if (status === 'TOKEN_ALREADY_USED') {
@@ -491,6 +501,8 @@ export const authApi = {
           msg = data.message || data.error || 'This password reset link has expired (valid for 60 minutes). Please request a new one.';
         } else if (status === 'INVALID_PASSWORD') {
           msg = data.message || data.error || 'New password must be at least 8 characters long.';
+        } else if (data.error === 'Internal server error.') {
+          msg = 'Unable to complete password reset at this time. Please request a new reset link or try again shortly.';
         }
         return {
           success: false,

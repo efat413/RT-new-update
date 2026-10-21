@@ -506,7 +506,21 @@ export const AuthModal: React.FC = () => {
                 )}
               </button>
 
-              <div className="text-center pt-2">
+              <div className="flex flex-col items-center gap-2 pt-2 text-xs">
+                <button
+                  id="go-to-reset-token-btn"
+                  type="button"
+                  onClick={() => {
+                    handleClose();
+                    setCurrentView('reset-password');
+                    if (typeof window !== 'undefined') {
+                      window.history.pushState({}, '', '/reset-password');
+                    }
+                  }}
+                  className="font-semibold text-rose-600 hover:text-rose-700 hover:underline cursor-pointer"
+                >
+                  Already have a reset token or link? Enter it here →
+                </button>
                 <button
                   id="back-to-signin-btn"
                   type="button"
@@ -515,7 +529,7 @@ export const AuthModal: React.FC = () => {
                     setErrorMessage('');
                     setSuccessMessage('');
                   }}
-                  className="text-xs font-bold text-slate-600 hover:text-slate-900 hover:underline cursor-pointer"
+                  className="font-bold text-slate-600 hover:text-slate-900 hover:underline cursor-pointer"
                 >
                   ← Back to Sign In
                 </button>

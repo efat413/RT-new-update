@@ -31,10 +31,15 @@ export const ResetPasswordPage: React.FC = () => {
   const [tokenMissing, setTokenMissing] = useState(false);
 
   const extractAndCleanToken = (val: string): string => {
-    let t = val.trim();
-    if (t.includes('token=') || t.includes('resetToken=')) {
+    let t = (val || '').trim();
+    if (!t) return '';
+    // If the input contains a URL query param or assignment like token=... or t=...
+    const match = t.match(/(?:^|[?&#])(?:token|resetToken|t)=([a-fA-F0-9_-]+)/i);
+    if (match && match[1]) {
+      t = match[1];
+    } else if (t.includes('://')) {
       try {
-        const u = new URL(t.startsWith('http') ? t : `https://example.com/${t}`);
+        const u = new URL(t);
         const p = u.searchParams.get('token') || u.searchParams.get('resetToken') || u.searchParams.get('t');
         if (p) t = p;
       } catch {}
@@ -118,7 +123,12 @@ export const ResetPasswordPage: React.FC = () => {
         setNewPassword('');
         setConfirmPassword('');
       } else {
-        setErrorMessage(res.message || res.error || 'Failed to reset password. The link may have expired or already been used.');
+        const rawErr = res.message || res.error || '';
+        const displayErr =
+          rawErr === 'Internal server error.'
+            ? 'Unable to complete password reset at this time. Please request a new reset link or try again shortly.'
+            : rawErr || 'Failed to reset password. The link may have expired or already been used.';
+        setErrorMessage(displayErr);
       }
     } catch (err: any) {
       setErrorMessage(err?.message || 'A network error occurred while resetting your password. Please try again.');

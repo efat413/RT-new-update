@@ -550,14 +550,16 @@ function localApiDevPlugin(): Plugin {
     if (!input || typeof input !== 'string') return '';
     let token = input.trim();
     token = token.replace(/^[<"'\s]+|[>"'\s]+$/g, '');
-    if (token.includes('token=') || token.includes('resetToken=')) {
-      try {
-        const u = new URL(token.startsWith('http') ? token : `http://localhost/${token.replace(/^\/+/, '')}`);
-        const p = u.searchParams.get('token') || u.searchParams.get('resetToken') || u.searchParams.get('t');
-        if (p) token = p;
-      } catch {
-        const match = token.match(/[?&](?:token|resetToken|t)=([a-zA-Z0-9_-]+)/);
-        if (match) token = match[1];
+    if (token.includes('token=') || token.includes('resetToken=') || token.includes('t=')) {
+      const match = token.match(/(?:^|[?&#])(?:token|resetToken|t)=([a-zA-Z0-9_-]+)/i);
+      if (match && match[1]) {
+        token = match[1];
+      } else {
+        try {
+          const u = new URL(token.startsWith('http') ? token : `http://localhost/?${token.replace(/^[?&/]+/, '')}`);
+          const p = u.searchParams.get('token') || u.searchParams.get('resetToken') || u.searchParams.get('t');
+          if (p) token = p;
+        } catch {}
       }
     }
     try {
@@ -1769,7 +1771,7 @@ function localApiDevPlugin(): Plugin {
         }
 
         // Helper to read JSON request body
-        const readBody = (callback: (body: any) => void) => {
+        const readBody = (callback: (body: any) => any) => {
           let raw = '';
           req.on('data', (chunk) => { raw += chunk; });
           req.on('end', () => {
@@ -1788,7 +1790,36 @@ function localApiDevPlugin(): Plugin {
             } else {
               parsed = {};
             }
-            callback(parsed ?? {});
+            try {
+              const resPromise = callback(parsed ?? {});
+              if (resPromise && typeof (resPromise as any).catch === 'function') {
+                (resPromise as any).catch((err: any) => {
+                  console.error('[Dev Server readBody error]:', err);
+                  if (!res.headersSent) {
+                    res.statusCode = 500;
+                    res.setHeader('Content-Type', 'application/json');
+                    res.end(JSON.stringify({
+                      success: false,
+                      status: 'INTERNAL_ERROR',
+                      message: 'Internal server error.',
+                      error: 'Internal server error.',
+                    }));
+                  }
+                });
+              }
+            } catch (err) {
+              console.error('[Dev Server readBody sync error]:', err);
+              if (!res.headersSent) {
+                res.statusCode = 500;
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({
+                  success: false,
+                  status: 'INTERNAL_ERROR',
+                  message: 'Internal server error.',
+                  error: 'Internal server error.',
+                }));
+              }
+            }
           });
         };
 
@@ -2241,115 +2272,135 @@ function localApiDevPlugin(): Plugin {
 
         if (url.pathname === '/api/auth/reset-password' && method === 'POST') {
           return readBody(async (body) => {
-            const rawToken = sanitizeResetTokenDev(body?.token);
-            const newPassword = String(body?.newPassword || '').trim();
+            try {
+              const rawToken = sanitizeResetTokenDev(body?.token);
+              const newPassword = String(body?.newPassword || '').trim();
 
-            if (!rawToken) {
-              res.statusCode = 400;
+              if (!rawToken) {
+                res.statusCode = 400;
+                return res.end(JSON.stringify({
+                  success: false,
+                  status: 'INVALID_TOKEN',
+                  message: 'Password reset token is required.',
+                  error: 'Password reset token is required.',
+                }));
+              }
+              if (!newPassword || newPassword.length < MIN_PASSWORD_LENGTH) {
+                res.statusCode = 400;
+                return res.end(JSON.stringify({
+                  success: false,
+                  status: 'INVALID_PASSWORD',
+                  message: 'New password must be at least 8 characters long.',
+                  error: 'New password must be at least 8 characters long.',
+                }));
+              }
+
+              const forwardedFor = req.headers['x-forwarded-for'];
+              const clientIp = (
+                (typeof forwardedFor === 'string' ? forwardedFor.split(',')[0] : '') ||
+                req.headers['cf-connecting-ip'] ||
+                req.socket?.remoteAddress ||
+                'default-ip'
+              ).toString().trim();
+              const verifyRateKey = `pwd-reset-verify:${clientIp}`;
+              if (!checkDevRateLimit(verifyRateKey, 10, 900)) {
+                res.statusCode = 429;
+                return res.end(JSON.stringify({
+                  success: false,
+                  status: 'RATE_LIMITED',
+                  message: 'Too many password reset attempts. Please try again later.',
+                  error: 'Too many password reset attempts. Please try again later.',
+                }));
+              }
+
+              const normalizedToken = rawToken.toLowerCase();
+              const hashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalizedToken));
+              const tokenHash = bufferToHex(hashBuf).toLowerCase();
+              let tokenRecord = devPasswordResetTokens.get(tokenHash);
+              if (!tokenRecord) {
+                const reloaded = loadDevPasswordResetTokens();
+                for (const [k, v] of reloaded.entries()) {
+                  devPasswordResetTokens.set(k, v);
+                }
+                tokenRecord = devPasswordResetTokens.get(tokenHash);
+              }
+              const now = Date.now();
+
+              if (!tokenRecord) {
+                recordDevRateAttempt(verifyRateKey, 900);
+                res.statusCode = 400;
+                return res.end(JSON.stringify({
+                  success: false,
+                  status: 'INVALID_TOKEN',
+                  message: 'Invalid or expired password reset link. Please request a new one.',
+                  error: 'Invalid or expired password reset link. Please request a new one.',
+                }));
+              }
+
+              if (tokenRecord.usedAt != null) {
+                recordDevRateAttempt(verifyRateKey, 900);
+                res.statusCode = 400;
+                return res.end(JSON.stringify({
+                  success: false,
+                  status: 'TOKEN_ALREADY_USED',
+                  message: 'This password reset link has already been used. Please request a new one.',
+                  error: 'This password reset link has already been used. Please request a new one.',
+                }));
+              }
+
+              if (tokenRecord.expiresAt <= now) {
+                recordDevRateAttempt(verifyRateKey, 900);
+                res.statusCode = 400;
+                return res.end(JSON.stringify({
+                  success: false,
+                  status: 'TOKEN_EXPIRED',
+                  message: 'This password reset link has expired (valid for 60 minutes). Please request a new one.',
+                  error: 'This password reset link has expired (valid for 60 minutes). Please request a new one.',
+                }));
+              }
+
+              const targetUser = devUsers.find((u) => u.id === tokenRecord?.userId);
+              if (!targetUser) {
+                res.statusCode = 400;
+                return res.end(JSON.stringify({
+                  success: false,
+                  status: 'INVALID_TOKEN',
+                  message: 'Associated user account not found. Please request a new reset link.',
+                  error: 'Associated user account not found. Please request a new reset link.',
+                }));
+              }
+
+              // Atomically mark token as used prior to modifying credentials
+              tokenRecord.usedAt = now;
+              persistDevPasswordResetTokens();
+              const newHashed = await hashPassword(newPassword);
+              if (targetUser.email) {
+                devUserPasswordHashes.set(targetUser.email.toLowerCase(), newHashed);
+                if (targetUser.role === 'super_admin' || devSuperAdminEmails.includes(targetUser.email.toLowerCase())) {
+                  devSuperAdminEmails.forEach((email) => {
+                    devUserPasswordHashes.set(email, newHashed);
+                  });
+                  devUserPasswordHashes.set('admin', newHashed);
+                  devUserPasswordHashes.set('superadmin', newHashed);
+                }
+              }
+
+              res.statusCode = 200;
+              return res.end(JSON.stringify({
+                success: true,
+                status: 'PASSWORD_RESET_SUCCESS',
+                message: 'Your password has been successfully reset. You can now log in with your new password.',
+              }));
+            } catch (err) {
+              console.error('[Dev Server reset-password error]:', err);
+              res.statusCode = 500;
               return res.end(JSON.stringify({
                 success: false,
-                status: 'INVALID_TOKEN',
-                message: 'Password reset token is required.',
-                error: 'Password reset token is required.',
+                status: 'INTERNAL_ERROR',
+                message: 'Unable to complete password reset at this time. Please request a new reset link or try again shortly.',
+                error: 'Unable to complete password reset at this time. Please request a new reset link or try again shortly.',
               }));
             }
-            if (!newPassword || newPassword.length < MIN_PASSWORD_LENGTH) {
-              res.statusCode = 400;
-              return res.end(JSON.stringify({
-                success: false,
-                status: 'INVALID_PASSWORD',
-                message: 'New password must be at least 8 characters long.',
-                error: 'New password must be at least 8 characters long.',
-              }));
-            }
-
-            const forwardedFor = req.headers['x-forwarded-for'];
-            const clientIp = (
-              (typeof forwardedFor === 'string' ? forwardedFor.split(',')[0] : '') ||
-              req.headers['cf-connecting-ip'] ||
-              req.socket?.remoteAddress ||
-              'default-ip'
-            ).toString().trim();
-            const verifyRateKey = `pwd-reset-verify:${clientIp}`;
-            if (!checkDevRateLimit(verifyRateKey, 10, 900)) {
-              res.statusCode = 429;
-              return res.end(JSON.stringify({
-                success: false,
-                status: 'RATE_LIMITED',
-                message: 'Too many password reset attempts. Please try again later.',
-                error: 'Too many password reset attempts. Please try again later.',
-              }));
-            }
-
-            const normalizedToken = rawToken.toLowerCase();
-            const hashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalizedToken));
-            const tokenHash = bufferToHex(hashBuf).toLowerCase();
-            const tokenRecord = devPasswordResetTokens.get(tokenHash);
-            const now = Date.now();
-
-            if (!tokenRecord) {
-              recordDevRateAttempt(verifyRateKey, 900);
-              res.statusCode = 400;
-              return res.end(JSON.stringify({
-                success: false,
-                status: 'INVALID_TOKEN',
-                message: 'Invalid or expired password reset link. Please request a new one.',
-                error: 'Invalid or expired password reset link. Please request a new one.',
-              }));
-            }
-
-            if (tokenRecord.usedAt != null) {
-              recordDevRateAttempt(verifyRateKey, 900);
-              res.statusCode = 400;
-              return res.end(JSON.stringify({
-                success: false,
-                status: 'TOKEN_ALREADY_USED',
-                message: 'This password reset link has already been used. Please request a new one.',
-                error: 'This password reset link has already been used. Please request a new one.',
-              }));
-            }
-
-            if (tokenRecord.expiresAt <= now) {
-              recordDevRateAttempt(verifyRateKey, 900);
-              res.statusCode = 400;
-              return res.end(JSON.stringify({
-                success: false,
-                status: 'TOKEN_EXPIRED',
-                message: 'This password reset link has expired (valid for 60 minutes). Please request a new one.',
-                error: 'This password reset link has expired (valid for 60 minutes). Please request a new one.',
-              }));
-            }
-
-            const targetUser = devUsers.find((u) => u.id === tokenRecord.userId);
-            if (!targetUser) {
-              res.statusCode = 400;
-              return res.end(JSON.stringify({
-                success: false,
-                status: 'INVALID_TOKEN',
-                message: 'Associated user account not found. Please request a new reset link.',
-                error: 'Associated user account not found. Please request a new reset link.',
-              }));
-            }
-
-            // Atomically mark token as used prior to modifying credentials
-            tokenRecord.usedAt = now;
-            persistDevPasswordResetTokens();
-            const newHashed = await hashPassword(newPassword);
-            devUserPasswordHashes.set(targetUser.email.toLowerCase(), newHashed);
-            if (targetUser.role === 'super_admin' || devSuperAdminEmails.includes(targetUser.email?.toLowerCase())) {
-              devSuperAdminEmails.forEach((email) => {
-                devUserPasswordHashes.set(email, newHashed);
-              });
-              devUserPasswordHashes.set('admin', newHashed);
-              devUserPasswordHashes.set('superadmin', newHashed);
-            }
-
-            res.statusCode = 200;
-            return res.end(JSON.stringify({
-              success: true,
-              status: 'PASSWORD_RESET_SUCCESS',
-              message: 'Your password has been successfully reset. You can now log in with your new password.',
-            }));
           });
         }
 
