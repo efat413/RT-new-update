@@ -65,6 +65,7 @@ import {
   claimPasswordResetToken,
   unclaimPasswordResetToken,
   markPasswordResetTokenUsed,
+  ensureRateLimitsTable,
   // Orders
   getAllOrders,
   getPaginatedOrders,
@@ -411,7 +412,7 @@ function jsonResponse(data: any, status = 200, customHeaders: Record<string, str
       // 4. Defense-in-depth for 4xx responses: Intercept any accidental SQL, D1 driver, or filesystem leaks
       const errStr = typeof payload.error === 'string' ? payload.error : '';
       const isLeakingInternals =
-        /sqlite|d1_error|no such table|syntax error|table |column |foreign key|prepare|bind|database disk|file not found|\/app\/|\/src\/|\.ts:\d+|\.js:\d+|cloudflare d1|admin_secret|resend_api_key|token|auth_token|typeerror|referenceerror|rangeerror|evalerror/i.test(errStr);
+        /sqlite|d1_error|no such table|syntax error|table\s+[a-z0-9_]+|column\s+[a-z0-9_]+|foreign key|prepare|bind|database disk|file not found|\/app\/|\/src\/|\.ts:\d+|\.js:\d+|cloudflare d1|admin_secret|resend_api_key|token_hash|auth_secret|typeerror|referenceerror|rangeerror|evalerror/i.test(errStr);
       if (isLeakingInternals) {
         console.error('[Server Internal Leak Intercepted & Masked Safely]:', errStr);
         payload = {
@@ -824,6 +825,7 @@ export async function checkRateLimit(
   // Tier 2: Check Cloudflare D1 for multi-edge persistence
   if (db) {
     try {
+      await ensureRateLimitsTable(db);
       const row = await db
         .prepare('SELECT count, reset_at FROM rate_limits WHERE key = ?')
         .bind(key)
@@ -878,6 +880,7 @@ export async function recordFailedAttempt(
   // D1 distributed atomic upsert with RETURNING count, reset_at
   if (db) {
     try {
+      await ensureRateLimitsTable(db);
       const stmt = db.prepare(
         `INSERT INTO rate_limits (key, count, reset_at)
          VALUES (?, 1, ?)
@@ -2717,7 +2720,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const updateSuccess = await updateUserPasswordInD1(env.DB, targetUser.id, newPassword);
       if (!updateSuccess) {
         // Avoid consuming the reset token unnecessarily if the password update cannot be completed in D1
-        await unclaimPasswordResetToken(env.DB, claimResult.tokenRecord.id);
+        const tokenIdToUnclaim = claimResult.tokenRecord?.id || existingToken.id;
+        if (tokenIdToUnclaim) {
+          await unclaimPasswordResetToken(env.DB, tokenIdToUnclaim);
+        }
         return jsonResponse(
           {
             success: false,
@@ -2736,7 +2742,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         status: 'PASSWORD_RESET_SUCCESS',
         message: 'Your password has been successfully reset. You can now log in with your new password.',
       });
-    } catch {
+    } catch (err: any) {
+      console.error('[Auth Diagnostics] Password reset endpoint error:', err?.message || err);
       return jsonResponse(
         {
           success: false,

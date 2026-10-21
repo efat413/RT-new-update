@@ -484,7 +484,9 @@ export const authApi = {
       }
 
       if (res.status === 500 || res.status === 502 || res.status === 503 || status === 'INTERNAL_ERROR' || status === 'SERVICE_DEGRADED' || data.error === 'Internal server error.') {
-        const friendlyMsg = 'Unable to complete password reset at this time. Please request a new reset link or try again shortly.';
+        const friendlyMsg = (data.message && data.message !== 'Internal server error.')
+          ? data.message
+          : 'Unable to complete password reset at this time. Please request a new reset link or try again shortly.';
         return {
           success: false,
           status: status || 'SERVICE_UNAVAILABLE',

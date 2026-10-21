@@ -87,7 +87,7 @@ export async function resolveAuthSecret(env?: { ADMIN_SECRET?: string; JWT_SECRE
  * - Automatic transparent re-hashing upgrades 100,000-iteration hashes to 600,000 upon successful login.
  */
 export const MIN_PASSWORD_LENGTH = 8;
-export const PBKDF2_RECOMMENDED_ITERATIONS = 600000;
+export const PBKDF2_RECOMMENDED_ITERATIONS = 100000;
 export const PBKDF2_LEGACY_ITERATIONS = 100000;
 
 export function bufferToHex(buffer: ArrayBuffer): string {
@@ -122,13 +122,16 @@ function base64UrlDecode(str: string): string {
 
 /**
  * Hashes a plaintext password using PBKDF2-HMAC-SHA256 with a random 128-bit salt
- * and modern recommended iteration count (600,000 iterations per OWASP standard).
+ * and 100,000 iterations (the maximum supported cap on Cloudflare Workers workerd runtime).
  * Returns formatted string: pbkdf2:<iterations>:<saltHex>:<hashHex>
  */
 export async function hashPassword(
   password: string,
   iterations: number = PBKDF2_RECOMMENDED_ITERATIONS
 ): Promise<string> {
+  // Cloudflare Workers (workerd) strictly enforces a maximum of 100,000 iterations
+  // for SubtleCrypto PBKDF2. Exceeding 100,000 causes an immediate fatal JS_EXCEPTION in production.
+  let targetIterations = Math.min(Math.max(1, iterations || PBKDF2_RECOMMENDED_ITERATIONS), PBKDF2_RECOMMENDED_ITERATIONS);
   const salt = new Uint8Array(16);
   crypto.getRandomValues(salt);
   const saltHex = bufferToHex(salt.buffer);
@@ -142,19 +145,38 @@ export async function hashPassword(
     ['deriveBits', 'deriveKey']
   );
 
-  const derivedBits = await crypto.subtle.deriveBits(
-    {
-      name: 'PBKDF2',
-      salt: salt,
-      iterations,
-      hash: 'SHA-256',
-    },
-    keyMaterial,
-    256
-  );
+  let derivedBits: ArrayBuffer;
+  try {
+    derivedBits = await crypto.subtle.deriveBits(
+      {
+        name: 'PBKDF2',
+        salt: salt,
+        iterations: targetIterations,
+        hash: 'SHA-256',
+      },
+      keyMaterial,
+      256
+    );
+  } catch (err: any) {
+    if (targetIterations > 100000) {
+      targetIterations = 100000;
+      derivedBits = await crypto.subtle.deriveBits(
+        {
+          name: 'PBKDF2',
+          salt: salt,
+          iterations: targetIterations,
+          hash: 'SHA-256',
+        },
+        keyMaterial,
+        256
+      );
+    } else {
+      throw err;
+    }
+  }
 
   const hashHex = bufferToHex(derivedBits);
-  return `pbkdf2:${iterations}:${saltHex}:${hashHex}`;
+  return `pbkdf2:${targetIterations}:${saltHex}:${hashHex}`;
 }
 
 /**
@@ -162,7 +184,7 @@ export async function hashPassword(
  * 
  * Backward Compatibility Strategy:
  * Dynamically inspects the iteration count embedded in the stored hash
- * (e.g., 100,000 for older accounts or 600,000 for upgraded/new accounts).
+ * (e.g., 100,000 for standard accounts).
  * Verifies the credentials securely with constant-time comparison.
  */
 export async function verifyPassword(password: string, storedHashOrPassword: string): Promise<boolean> {
@@ -187,16 +209,22 @@ export async function verifyPassword(password: string, storedHashOrPassword: str
       ['deriveBits']
     );
 
-    const derivedBits = await crypto.subtle.deriveBits(
-      {
-        name: 'PBKDF2',
-        salt: salt,
-        iterations,
-        hash: 'SHA-256',
-      },
-      keyMaterial,
-      256
-    );
+    let derivedBits: ArrayBuffer;
+    try {
+      derivedBits = await crypto.subtle.deriveBits(
+        {
+          name: 'PBKDF2',
+          salt: salt,
+          iterations,
+          hash: 'SHA-256',
+        },
+        keyMaterial,
+        256
+      );
+    } catch (err) {
+      console.warn('[Auth Diagnostics] verifyPassword deriveBits error:', err);
+      return false;
+    }
 
     const actualHashHex = bufferToHex(derivedBits);
     // Constant-time comparison
@@ -217,11 +245,7 @@ export async function verifyPassword(password: string, storedHashOrPassword: str
  * Checks if a stored password hash needs automatic re-hashing to the modern standard.
  * Returns true if:
  * 1. The stored hash is in legacy plaintext format or unknown format.
- * 2. The stored hash uses fewer PBKDF2 iterations than the recommended standard (600,000).
- * 
- * Migration Strategy:
- * When an existing user logs in with valid credentials, this check detects legacy (e.g. 100,000)
- * hashes and seamlessly re-hashes them with 600,000 iterations without requiring user action.
+ * 2. The stored hash uses fewer PBKDF2 iterations than the recommended standard (100,000).
  */
 export function needsPasswordRehash(storedHashOrPassword: string): boolean {
   if (!storedHashOrPassword) return false;

@@ -72,30 +72,30 @@ async function runTests() {
   console.log('=== STARTING PASSWORD HASHING UPGRADE AUDIT & VERIFICATION ===\n');
 
   // -------------------------------------------------------------
-  // TEST 1: Default Hashing Parameters & OWASP Standard
+  // TEST 1: Default Hashing Parameters & Cloudflare Workers Standard
   // -------------------------------------------------------------
   console.log('--- 1. Testing Default Hashing Parameters ---');
   assert.strictEqual(
     PBKDF2_RECOMMENDED_ITERATIONS,
-    600000,
-    'Modern standard must be 600,000 iterations according to OWASP guidelines'
+    100000,
+    'Cloudflare Workers runtime standard must be 100,000 iterations to stay within workerd limits'
   );
 
   const startHashTime = performance.now();
   const testPlainPassword = 'MySecretP@ssword2026!';
   const newHash = await hashPassword(testPlainPassword);
   const hashDuration = performance.now() - startHashTime;
-  console.log(`600,000 iterations hash completed in ${hashDuration.toFixed(2)}ms`);
+  console.log(`100,000 iterations hash completed in ${hashDuration.toFixed(2)}ms`);
 
-  assert(newHash.startsWith('pbkdf2:600000:'), `Hash must start with pbkdf2:600000:, got: ${newHash.slice(0, 20)}`);
+  assert(newHash.startsWith('pbkdf2:100000:'), `Hash must start with pbkdf2:100000:, got: ${newHash.slice(0, 20)}`);
   const hashParts = newHash.split(':');
   assert.strictEqual(hashParts.length, 4, 'Hash must contain 4 colon-delimited components (scheme:iterations:salt:hash)');
-  assert.strictEqual(parseInt(hashParts[1], 10), 600000, 'Iteration count in hash must be 600,000');
+  assert.strictEqual(parseInt(hashParts[1], 10), 100000, 'Iteration count in hash must be 100,000');
   assert.strictEqual(hashParts[2].length, 32, 'Salt must be 16 bytes = 32 hex characters');
   assert.strictEqual(hashParts[3].length, 64, 'SHA-256 derived key must be 32 bytes = 64 hex characters');
 
-  assert.strictEqual(needsPasswordRehash(newHash), false, 'New 600,000 iteration hash must NOT need re-hashing');
-  console.log('✅ [PASS] 1. New passwords use modern 600,000 iterations (OWASP standard)');
+  assert.strictEqual(needsPasswordRehash(newHash), false, 'New 100,000 iteration hash must NOT need re-hashing');
+  console.log('✅ [PASS] 1. New passwords use Cloudflare Workers 100,000 iterations standard');
 
   // -------------------------------------------------------------
   // TEST 2: Backward Compatibility with Existing 100,000 Iteration Hashes
@@ -113,14 +113,12 @@ async function runTests() {
   const legacyWrong = await verifyPassword('IncorrectPassword123!', legacyHash);
   assert.strictEqual(legacyWrong, false, 'Wrong password must be rejected on legacy hash');
 
-  // needsPasswordRehash must detect legacy hash
-  assert.strictEqual(needsPasswordRehash(legacyHash), true, 'Legacy 100,000 iteration hash must be detected as needing rehash');
-  console.log('✅ [PASS] 2. Existing 100,000 iteration hashes verify seamlessly and are identified for rehash');
+  console.log('✅ [PASS] 2. Existing 100,000 iteration hashes verify seamlessly');
 
   // -------------------------------------------------------------
-  // TEST 3: Automatic Re-hashing on Successful Login in D1 Server Router
+  // TEST 3: Login Verification in Server Router
   // -------------------------------------------------------------
-  console.log('\n--- 3. Testing Automatic Transparent Upgrade on Login in Server Router ---');
+  console.log('\n--- 3. Testing Login in Server Router ---');
   const mockDb = createMockD1();
   const mockEnv: Env = {
     DB: mockDb,
@@ -154,25 +152,12 @@ async function runTests() {
 
   assert.strictEqual(loginRes.status, 200, `Expected HTTP 200 OK, got ${loginRes.status}`);
   assert.strictEqual(loginData.success, true, 'Expected successful login');
-
-  // Check the stored hash in D1: IT MUST HAVE BEEN AUTOMATICALLY UPGRADED TO 600,000!
-  const updatedStoredHash = mockDb._users[userEmail].password;
-  console.log('Upgraded hash in DB:', updatedStoredHash.slice(0, 20) + '...');
-  assert(
-    updatedStoredHash.startsWith('pbkdf2:600000:'),
-    `Stored hash in D1 must be automatically upgraded to 600,000 iterations! Got: ${updatedStoredHash}`
-  );
-  assert.strictEqual(
-    needsPasswordRehash(updatedStoredHash),
-    false,
-    'Upgraded hash in D1 no longer requires rehashing'
-  );
-  console.log('✅ [PASS] 3. Existing user successfully logged in and hash was automatically upgraded to 600,000 in D1');
+  console.log('✅ [PASS] 3. Existing user successfully logged in with 100,000 iteration hash');
 
   // -------------------------------------------------------------
-  // TEST 4: Subsequent Login Verifies Against Upgraded 600,000 Hash
+  // TEST 4: Subsequent Login Verifies Against Hash
   // -------------------------------------------------------------
-  console.log('\n--- 4. Testing Subsequent Login with Upgraded Hash ---');
+  console.log('\n--- 4. Testing Subsequent Login ---');
   const secondLoginReq = new Request('https://rongdhonutrade.com/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.99' },
@@ -181,10 +166,9 @@ async function runTests() {
   const secondLoginRes = await handleApiRequest(secondLoginReq, mockEnv);
   const secondLoginData = await secondLoginRes.json();
 
-  assert.strictEqual(secondLoginRes.status, 200, 'Subsequent login with upgraded hash must succeed');
+  assert.strictEqual(secondLoginRes.status, 200, 'Subsequent login with valid hash must succeed');
   assert.strictEqual(secondLoginData.success, true);
-  assert.strictEqual(mockDb._users[userEmail].password, updatedStoredHash, 'Hash was not redundantly mutated');
-  console.log('✅ [PASS] 4. Subsequent login succeeds seamlessly with upgraded 600,000 iteration hash');
+  console.log('✅ [PASS] 4. Subsequent login succeeds seamlessly with 100,000 iteration hash');
 
   // -------------------------------------------------------------
   // TEST 5: Wrong Password Handling & Timing Attack Safety

@@ -234,10 +234,17 @@ function localApiDevPlugin(): Plugin {
     recalculateDevProductRating(p.id);
   });
 
-  // Resolve Super Admin identities server-side from environment variables
-  // Real production Super Admin identities must NEVER be hardcoded into source code fallbacks
+  // Resolve Super Admin identities server-side from environment variables or wrangler.json
+  let wranglerSuperAdminEmails = '';
+  try {
+    if (fs.existsSync('wrangler.json')) {
+      const wj = JSON.parse(fs.readFileSync('wrangler.json', 'utf-8'));
+      wranglerSuperAdminEmails = wj?.vars?.SUPER_ADMIN_EMAILS || '';
+    }
+  } catch {}
+
   const configuredSuperAdminEmails: string[] = (
-    process.env.SUPER_ADMIN_EMAILS || ''
+    process.env.SUPER_ADMIN_EMAILS || wranglerSuperAdminEmails || ''
   )
     .split(',')
     .map((e) => e.trim().toLowerCase())
@@ -2374,6 +2381,7 @@ function localApiDevPlugin(): Plugin {
               tokenRecord.usedAt = now;
               persistDevPasswordResetTokens();
               const newHashed = await hashPassword(newPassword);
+              targetUser.password = newHashed;
               if (targetUser.email) {
                 devUserPasswordHashes.set(targetUser.email.toLowerCase(), newHashed);
                 if (targetUser.role === 'super_admin' || devSuperAdminEmails.includes(targetUser.email.toLowerCase())) {
