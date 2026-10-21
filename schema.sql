@@ -188,6 +188,7 @@ CREATE TABLE IF NOT EXISTS orders (
   advance_payment_note TEXT,
   advance_payment_updated_at TEXT,
   advance_payment_updated_by TEXT,
+  ip_address TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -200,6 +201,7 @@ CREATE INDEX IF NOT EXISTS idx_orders_shipping_status_created_at ON orders(shipp
 CREATE INDEX IF NOT EXISTS idx_orders_payment_status_created_at ON orders(payment_status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_orders_payment_method_created_at ON orders(payment_method, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_orders_advance_payment ON orders(advance_payment);
+CREATE INDEX IF NOT EXISTS idx_orders_ip_address ON orders(ip_address);
 
 -- 8B. EXPENSES TABLE (Super Admin Profit Analytics & Expense Tracking)
 CREATE TABLE IF NOT EXISTS expenses (
@@ -465,3 +467,18 @@ CREATE TABLE IF NOT EXISTS fb_message_templates (
 
 CREATE INDEX IF NOT EXISTS idx_fb_templates_name ON fb_message_templates(template_name);
 CREATE INDEX IF NOT EXISTS idx_fb_templates_created_at ON fb_message_templates(created_at);
+
+-- ==============================================================
+-- 22. BLOCKED IPS TABLE (Checkout IP Blacklist & Fraud Prevention)
+-- ==============================================================
+CREATE TABLE IF NOT EXISTS blocked_ips (
+  id TEXT PRIMARY KEY,
+  ip TEXT NOT NULL UNIQUE,
+  reason TEXT DEFAULT '',
+  blocked_by TEXT DEFAULT 'admin',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_blocked_ips_ip ON blocked_ips(ip);
+CREATE INDEX IF NOT EXISTS idx_blocked_ips_created_at ON blocked_ips(created_at DESC);
+

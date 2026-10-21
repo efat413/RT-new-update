@@ -108,6 +108,11 @@ import {
   getFacebookMessageTemplateByIdFromD1,
   saveFacebookMessageTemplateInD1,
   deleteFacebookMessageTemplateFromD1,
+  // Blocked IPs & Fraud Prevention
+  isIpBlocked,
+  getAllBlockedIps,
+  blockIpInD1,
+  unblockIpInD1,
 } from './db';
 import {
   Order,
@@ -5861,6 +5866,164 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     }
   }
 
+  // ==========================================
+  // IP BLACKLIST & BLOCKING ROUTES
+  // ==========================================
+  if (path === '/api/admin/blocked-ips' && method === 'GET') {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+
+    const canManage =
+      auth!.role === 'super_admin' ||
+      hasPermission(auth!, 'order.manage') ||
+      hasPermission(auth!, 'settings.manage');
+
+    if (!canManage) {
+      return jsonResponse(
+        { success: false, error: 'Forbidden: Insufficient permissions to view blocked IPs.', requiredPermission: 'order.manage' },
+        403
+      );
+    }
+
+    try {
+      const blockedIps = await getAllBlockedIps(env.DB);
+      return jsonResponse({
+        success: true,
+        count: blockedIps.length,
+        blockedIps,
+      });
+    } catch (err: any) {
+      console.error('Error fetching blocked IPs from D1:', err);
+      return jsonResponse({ success: false, error: 'Internal server error while fetching blocked IPs.' }, 500);
+    }
+  }
+
+  if (path === '/api/admin/blocked-ips' && method === 'POST') {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+
+    const canManage =
+      auth!.role === 'super_admin' ||
+      hasPermission(auth!, 'order.manage') ||
+      hasPermission(auth!, 'settings.manage');
+
+    if (!canManage) {
+      return jsonResponse(
+        { success: false, error: 'Forbidden: Insufficient permissions to block IPs.', requiredPermission: 'order.manage' },
+        403
+      );
+    }
+
+    try {
+      const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+      if (jsonErr) return jsonErr;
+
+      const ip = (body?.ip || '').trim();
+      if (!ip) {
+        return jsonResponse({ success: false, error: 'IP address is required.' }, 400);
+      }
+
+      const isIpv4 = /^(\d{1,3}\.){3}\d{1,3}$/.test(ip);
+      const isIpv6 = /^([0-9a-fA-F]{1,4}:){1,7}[0-9a-fA-F]{1,4}$/.test(ip) || ip === '::1';
+      if (!isIpv4 && !isIpv6 && !ip.startsWith('cf-ray-') && ip !== '127.0.0.1') {
+        return jsonResponse({ success: false, error: 'Invalid IP address format.' }, 400);
+      }
+
+      const reason = (body?.reason || '').trim();
+      const blockedBy = auth!.tokenUser?.email || auth!.dbUser?.email || auth!.tokenUser?.userId || 'admin';
+
+      const blockedRecord = await blockIpInD1(env.DB, ip, reason, blockedBy);
+
+      try {
+        const isDev = isDevEnvironment(env);
+        await insertAuditLogInD1(env.DB, {
+          actorId: auth!.tokenUser?.userId || auth!.dbUser?.id || 'admin',
+          actorEmail: auth!.tokenUser?.email || auth!.dbUser?.email || '',
+          actorRole: auth!.role,
+          action: 'IP_BLOCKED',
+          targetId: ip,
+          targetType: 'blocked_ip',
+          details: `Blocked IP ${ip}. Reason: ${reason || 'Manual block via Admin'}`,
+          ipAddress: getClientIp(request, isDev),
+        });
+      } catch (auditErr) {
+        console.warn('Audit log error for IP block:', auditErr);
+      }
+
+      return jsonResponse(
+        {
+          success: true,
+          message: `IP ${ip} has been blocked from placing orders.`,
+          blockedIp: blockedRecord,
+        },
+        201
+      );
+    } catch (err: any) {
+      console.error('Error blocking IP in D1:', err);
+      return jsonResponse({ success: false, error: err?.message || 'Internal server error while blocking IP.' }, 500);
+    }
+  }
+
+  if ((path === '/api/admin/blocked-ips' || path.startsWith('/api/admin/blocked-ips/')) && method === 'DELETE') {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+
+    const canManage =
+      auth!.role === 'super_admin' ||
+      hasPermission(auth!, 'order.manage') ||
+      hasPermission(auth!, 'settings.manage');
+
+    if (!canManage) {
+      return jsonResponse(
+        { success: false, error: 'Forbidden: Insufficient permissions to unblock IPs.', requiredPermission: 'order.manage' },
+        403
+      );
+    }
+
+    try {
+      let targetIp = url.searchParams.get('ip') || url.searchParams.get('id') || '';
+      if (!targetIp && path.startsWith('/api/admin/blocked-ips/')) {
+        targetIp = decodeURIComponent(path.replace('/api/admin/blocked-ips/', '')).trim();
+      }
+
+      if (!targetIp && request.headers.get('content-length') && parseInt(request.headers.get('content-length') || '0', 10) > 0) {
+        const { data: body } = await safeParseJson(request);
+        targetIp = (body?.ip || body?.id || '').trim();
+      }
+
+      if (!targetIp) {
+        return jsonResponse({ success: false, error: 'Target IP address or record ID is required to unblock.' }, 400);
+      }
+
+      const unblocked = await unblockIpInD1(env.DB, targetIp);
+
+      try {
+        const isDev = isDevEnvironment(env);
+        await insertAuditLogInD1(env.DB, {
+          actorId: auth!.tokenUser?.userId || auth!.dbUser?.id || 'admin',
+          actorEmail: auth!.tokenUser?.email || auth!.dbUser?.email || '',
+          actorRole: auth!.role,
+          action: 'IP_UNBLOCKED',
+          targetId: targetIp,
+          targetType: 'blocked_ip',
+          details: `Unblocked IP ${targetIp}`,
+          ipAddress: getClientIp(request, isDev),
+        });
+      } catch (auditErr) {
+        console.warn('Audit log error for IP unblock:', auditErr);
+      }
+
+      return jsonResponse({
+        success: true,
+        message: `IP ${targetIp} unblocked successfully.`,
+        unblocked,
+      });
+    } catch (err: any) {
+      console.error('Error unblocking IP in D1:', err);
+      return jsonResponse({ success: false, error: err?.message || 'Internal server error while unblocking IP.' }, 500);
+    }
+  }
+
   if (path === '/api/orders' && method === 'POST') {
     let clientIp = '127.0.0.1';
     let verifiedTokenUser: TokenPayload | null = null;
@@ -5868,6 +6031,19 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       cleanupOrderAbuseMaps();
       const isDev = isDevEnvironment(env);
       clientIp = getClientIp(request, isDev);
+
+      // 0. IP Blacklist & Fraud Prevention Guard: Check if customer IP is blocked
+      const isBlocked = await isIpBlocked(env.DB, clientIp);
+      if (isBlocked) {
+        return jsonResponse(
+          {
+            success: false,
+            error: 'Your IP has been blocked from placing orders.',
+            code: 'IP_BLOCKED',
+          },
+          403
+        );
+      }
 
       // 1. Backend Enforced IP Rate Limit: Maximum 4 successful order attempts in a rolling 10-minute window
       const timeOffsetMs = isDev ? (Number(request.headers.get('x-test-timestamp-offset')) || 0) : 0;
@@ -6192,7 +6368,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       }
 
       // 5. Server-side authoritative validation, pricing calculation & stock deduction via insertOrder
-      const saved = await insertOrder(env.DB, orderData, { isPrivilegedAdmin: isAdminSession });
+      const saved = await insertOrder(env.DB, orderData, {
+        isPrivilegedAdmin: isAdminSession,
+        ipAddress: clientIp,
+      });
 
       // Record rate limit attempt for hourly phone throttling (no 60s cooldown)
       await recordFailedAttempt(`order_ph_hour:${cleanPhone}`, 6, 3600, env.DB);

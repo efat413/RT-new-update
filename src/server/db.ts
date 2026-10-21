@@ -201,7 +201,7 @@ export async function getOrderTableColumns(db: D1Database): Promise<Set<string>>
     'shipping_status', 'courier_name', 'courier_waybill', 'consignment_id', 'courier_status',
     'courier_booking_json', 'dbbl_details_json', 'card_details_json', 'last_courier_sync',
     'advance_payment', 'advance_payment_method', 'advance_payment_note',
-    'advance_payment_updated_at', 'advance_payment_updated_by', 'created_at', 'updated_at'
+    'advance_payment_updated_at', 'advance_payment_updated_by', 'ip_address', 'created_at', 'updated_at'
   ]);
 }
 
@@ -274,6 +274,23 @@ export async function ensureOrderTableSchema(db: D1Database): Promise<Set<string
     // Self-heal: index on advance_payment
     try {
       await db.prepare('CREATE INDEX IF NOT EXISTS idx_orders_advance_payment ON orders(advance_payment)').run();
+    } catch {}
+
+    // Self-heal: ip_address column
+    if (!columns.has('ip_address')) {
+      try {
+        await db.prepare('ALTER TABLE orders ADD COLUMN ip_address TEXT').run();
+        cachedOrderTableColumns = null;
+        columns = await getOrderTableColumns(db);
+        console.log('[D1] Self-healed: added missing ip_address column to orders table.');
+      } catch (err: any) {
+        console.warn('[D1] ip_address column addition notice:', err?.message || err);
+      }
+    }
+
+    // Self-heal: index on ip_address
+    try {
+      await db.prepare('CREATE INDEX IF NOT EXISTS idx_orders_ip_address ON orders(ip_address)').run();
     } catch {}
   }
 
@@ -3826,6 +3843,7 @@ export function rowToOrder(row: OrderRow): Order {
     dueAmount: (row.payment_status === 'Paid' || row.payment_status === 'PAID')
       ? 0
       : Math.max(0, Math.round(((Number(row.total_amount) || 0) - (row.advance_payment != null && !isNaN(Number(row.advance_payment)) ? Math.max(0, Number(row.advance_payment)) : 0)) * 100) / 100),
+    ipAddress: row.ip_address || undefined,
     createdAt: row.created_at,
   };
 }
@@ -4220,7 +4238,7 @@ export function generateSecureOrderNumber(year: number = new Date().getFullYear(
 export async function insertOrder(
   db: D1Database,
   order: Order,
-  options?: { isPrivilegedAdmin?: boolean }
+  options?: { isPrivilegedAdmin?: boolean; ipAddress?: string }
 ): Promise<Order> {
   if (!order) {
     throw new Error('Invalid order payload: order object is required.');
@@ -4455,6 +4473,7 @@ export async function insertOrder(
   const advanceNote = initialAdvance > 0 && order.advancePaymentNote ? String(order.advancePaymentNote).trim() : null;
   const advanceUpdatedAt = initialAdvance > 0 ? (order.advancePaymentUpdatedAt || new Date().toISOString()) : null;
   const advanceUpdatedBy = initialAdvance > 0 ? (order.advancePaymentUpdatedBy || order.userId || 'system') : null;
+  const customerIp = options?.ipAddress || (order as any).ipAddress || null;
 
   const insertSql = `
     INSERT INTO orders (
@@ -4466,6 +4485,7 @@ export async function insertOrder(
       courier_booking_json, dbbl_details_json, card_details_json, last_courier_sync,
       total_cost, total_profit,
       advance_payment, advance_payment_method, advance_payment_note, advance_payment_updated_at, advance_payment_updated_by,
+      ip_address,
       created_at, updated_at
     ) VALUES (
       ?, ?, ?, ?,
@@ -4476,6 +4496,7 @@ export async function insertOrder(
       ?, ?, ?, ?,
       ?, ?,
       ?, ?, ?, ?, ?,
+      ?,
       ?, CURRENT_TIMESTAMP
     );
   `;
@@ -4531,6 +4552,7 @@ export async function insertOrder(
         advanceNote,
         advanceUpdatedAt,
         advanceUpdatedBy,
+        customerIp,
         order.createdAt || new Date().toISOString()
       );
 
@@ -6571,5 +6593,156 @@ export async function deleteFacebookMessageTemplateFromD1(
     return false;
   }
 }
+
+// ==============================================================
+// 22. BLOCKED IPS & CHECKOUT IP BLACKLIST
+// ==============================================================
+
+export interface BlockedIpRecord {
+  id: string;
+  ip: string;
+  reason?: string;
+  blockedBy?: string;
+  createdAt: string;
+}
+
+let inMemoryBlockedIps: BlockedIpRecord[] = [];
+let blockedIpsTableInitialized = false;
+
+export async function ensureBlockedIpsTable(db: D1Database): Promise<void> {
+  if (blockedIpsTableInitialized || !db || typeof db.prepare !== 'function') return;
+  try {
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS blocked_ips (
+        id TEXT PRIMARY KEY,
+        ip TEXT NOT NULL UNIQUE,
+        reason TEXT DEFAULT '',
+        blocked_by TEXT DEFAULT 'admin',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `).run();
+    await db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_blocked_ips_ip ON blocked_ips(ip)').run().catch(() => {});
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_blocked_ips_created_at ON blocked_ips(created_at DESC)').run().catch(() => {});
+    blockedIpsTableInitialized = true;
+  } catch (err) {
+    console.warn('[D1] Error ensuring blocked_ips table exists:', err);
+  }
+}
+
+export async function isIpBlocked(db: D1Database, ip: string): Promise<boolean> {
+  if (!ip || typeof ip !== 'string' || !ip.trim()) return false;
+  const cleanIp = ip.trim();
+
+  if (!db || typeof db.prepare !== 'function') {
+    return inMemoryBlockedIps.some((b) => b.ip === cleanIp);
+  }
+
+  try {
+    await ensureBlockedIpsTable(db);
+    const row = await db
+      .prepare('SELECT id FROM blocked_ips WHERE ip = ? LIMIT 1')
+      .bind(cleanIp)
+      .first<{ id: string }>();
+    if (row && row.id) return true;
+    return inMemoryBlockedIps.some((b) => b.ip === cleanIp);
+  } catch (err) {
+    console.error('[D1] isIpBlocked check error:', err);
+    return inMemoryBlockedIps.some((b) => b.ip === cleanIp);
+  }
+}
+
+export async function getAllBlockedIps(db: D1Database): Promise<BlockedIpRecord[]> {
+  if (!db || typeof db.prepare !== 'function') {
+    return [...inMemoryBlockedIps];
+  }
+
+  try {
+    await ensureBlockedIpsTable(db);
+    const res = await db
+      .prepare('SELECT id, ip, reason, blocked_by, created_at FROM blocked_ips ORDER BY created_at DESC')
+      .all<{ id: string; ip: string; reason: string | null; blocked_by: string | null; created_at: string }>();
+    if (res.results && res.results.length > 0) {
+      return res.results.map((r) => ({
+        id: r.id,
+        ip: r.ip,
+        reason: r.reason || undefined,
+        blockedBy: r.blocked_by || undefined,
+        createdAt: r.created_at,
+      }));
+    }
+    return [...inMemoryBlockedIps];
+  } catch (err) {
+    console.error('[D1] getAllBlockedIps error:', err);
+    return [...inMemoryBlockedIps];
+  }
+}
+
+export async function blockIpInD1(
+  db: D1Database,
+  ip: string,
+  reason?: string,
+  blockedBy?: string
+): Promise<BlockedIpRecord> {
+  if (!ip || typeof ip !== 'string' || !ip.trim()) {
+    throw new Error('Valid IP address is required to block.');
+  }
+  const cleanIp = ip.trim();
+  const id = `bip-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+  const cleanReason = (reason || '').trim();
+  const cleanBlockedBy = (blockedBy || 'admin').trim();
+  const nowIso = new Date().toISOString();
+
+  const record: BlockedIpRecord = {
+    id,
+    ip: cleanIp,
+    reason: cleanReason || undefined,
+    blockedBy: cleanBlockedBy,
+    createdAt: nowIso,
+  };
+
+  // Update in-memory cache
+  inMemoryBlockedIps = inMemoryBlockedIps.filter((b) => b.ip !== cleanIp);
+  inMemoryBlockedIps.unshift(record);
+
+  if (!db || typeof db.prepare !== 'function') {
+    return record;
+  }
+
+  await ensureBlockedIpsTable(db);
+  await db.prepare(`
+    INSERT INTO blocked_ips (id, ip, reason, blocked_by, created_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(ip) DO UPDATE SET
+      reason = excluded.reason,
+      blocked_by = excluded.blocked_by
+  `).bind(id, cleanIp, cleanReason, cleanBlockedBy, nowIso).run();
+
+  return record;
+}
+
+export async function unblockIpInD1(db: D1Database, ipOrId: string): Promise<boolean> {
+  if (!ipOrId || typeof ipOrId !== 'string' || !ipOrId.trim()) {
+    throw new Error('Target IP address or block record ID is required to unblock.');
+  }
+  const clean = ipOrId.trim();
+
+  const initialLen = inMemoryBlockedIps.length;
+  inMemoryBlockedIps = inMemoryBlockedIps.filter((b) => b.ip !== clean && b.id !== clean);
+
+  if (!db || typeof db.prepare !== 'function') {
+    return inMemoryBlockedIps.length < initialLen;
+  }
+
+  await ensureBlockedIpsTable(db);
+  try {
+    const res = await db.prepare('DELETE FROM blocked_ips WHERE ip = ? OR id = ?').bind(clean, clean).run();
+    const changes = res.meta?.changes ?? (res as any)?.changes ?? (res as any)?.rows_written ?? 0;
+    return changes > 0 || inMemoryBlockedIps.length < initialLen;
+  } catch (err: any) {
+    console.error('[D1 unblockIpInD1 error]:', err?.message || err);
+    return inMemoryBlockedIps.length < initialLen;
+  }
+}
+
 
 

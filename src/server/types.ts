@@ -107,8 +107,17 @@ export interface OrderRow {
   advance_payment_note?: string | null;
   advance_payment_updated_at?: string | null;
   advance_payment_updated_by?: string | null;
+  ip_address?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface BlockedIpRow {
+  id: string;
+  ip: string;
+  reason: string | null;
+  blocked_by: string | null;
+  created_at: string;
 }
 
 export interface ProductRow {

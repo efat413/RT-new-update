@@ -241,6 +241,15 @@ export interface Order {
   advancePaymentUpdatedBy?: string;
   customerDue?: number;
   dueAmount?: number;
+  ipAddress?: string;
+  createdAt: string;
+}
+
+export interface BlockedIp {
+  id: string;
+  ip: string;
+  reason?: string;
+  blockedBy?: string;
   createdAt: string;
 }
 

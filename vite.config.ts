@@ -130,6 +130,7 @@ function localApiDevPlugin(): Plugin {
   let devFacebookCampaignQueue: any[] = [];
   let devFacebookRecipients: any[] = [];
   let devFacebookTemplates: any[] = [];
+  let devBlockedIps: any[] = [];
   const generateInitialDevAuditLogs = (): any[] => {
     const actions = [
       { action: 'SETTINGS_UPDATE', targetType: 'settings', details: 'Store brand settings updated' },
@@ -4419,9 +4420,93 @@ function localApiDevPlugin(): Plugin {
           }));
         }
 
+        // Blocked IPs Admin Endpoints (Dev Server)
+        if (url.pathname === '/api/admin/blocked-ips' && method === 'GET') {
+          const devAuth = requireDevAuth(req);
+          if (devAuth.error) {
+            res.statusCode = devAuth.error.status;
+            return res.end(JSON.stringify(devAuth.error.body));
+          }
+          res.setHeader('Content-Type', 'application/json');
+          return res.end(JSON.stringify({
+            success: true,
+            count: devBlockedIps.length,
+            blockedIps: devBlockedIps,
+          }));
+        }
+
+        if (url.pathname === '/api/admin/blocked-ips' && method === 'POST') {
+          const devAuth = requireDevAuth(req);
+          if (devAuth.error) {
+            res.statusCode = devAuth.error.status;
+            return res.end(JSON.stringify(devAuth.error.body));
+          }
+          return readBody((body) => {
+            const ip = (body?.ip || '').trim();
+            if (!ip) {
+              res.statusCode = 400;
+              return res.end(JSON.stringify({ success: false, error: 'IP address is required.' }));
+            }
+            const record = {
+              id: `bip-${Date.now()}`,
+              ip,
+              reason: (body?.reason || '').trim() || undefined,
+              blockedBy: devAuth.auth?.user?.email || devAuth.auth?.user?.name || 'admin',
+              createdAt: new Date().toISOString(),
+            };
+            devBlockedIps = devBlockedIps.filter((b) => b.ip !== ip);
+            devBlockedIps.unshift(record);
+            res.statusCode = 201;
+            return res.end(JSON.stringify({
+              success: true,
+              message: `IP ${ip} has been blocked from placing orders.`,
+              blockedIp: record,
+            }));
+          });
+        }
+
+        if ((url.pathname === '/api/admin/blocked-ips' || url.pathname.startsWith('/api/admin/blocked-ips/')) && method === 'DELETE') {
+          const devAuth = requireDevAuth(req);
+          if (devAuth.error) {
+            res.statusCode = devAuth.error.status;
+            return res.end(JSON.stringify(devAuth.error.body));
+          }
+          let targetIp = url.searchParams.get('ip') || url.searchParams.get('id') || '';
+          if (!targetIp && url.pathname.startsWith('/api/admin/blocked-ips/')) {
+            targetIp = decodeURIComponent(url.pathname.replace('/api/admin/blocked-ips/', '')).trim();
+          }
+          if (targetIp) {
+            devBlockedIps = devBlockedIps.filter((b) => b.ip !== targetIp && b.id !== targetIp);
+            res.setHeader('Content-Type', 'application/json');
+            return res.end(JSON.stringify({
+              success: true,
+              message: `IP ${targetIp} unblocked successfully.`,
+            }));
+          }
+          return readBody((body) => {
+            const ip = (body?.ip || body?.id || '').trim();
+            devBlockedIps = devBlockedIps.filter((b) => b.ip !== ip && b.id !== ip);
+            res.setHeader('Content-Type', 'application/json');
+            return res.end(JSON.stringify({
+              success: true,
+              message: `IP ${ip || targetIp} unblocked successfully.`,
+            }));
+          });
+        }
+
         if (url.pathname === '/api/orders' && method === 'POST') {
           return readBody((body) => {
             try {
+              const clientIp = getDevClientIp(req);
+              if (devBlockedIps.some((b) => b.ip === clientIp)) {
+                res.statusCode = 403;
+                return res.end(JSON.stringify({
+                  success: false,
+                  error: 'Your IP has been blocked from placing orders.',
+                  code: 'IP_BLOCKED',
+                }));
+              }
+
               const rawOrder = body.order || body;
 
               if (!rawOrder?.customer?.fullName || !rawOrder?.customer?.phone || !rawOrder?.customer?.fullAddress) {
@@ -4593,7 +4678,6 @@ function localApiDevPlugin(): Plugin {
                 }
               }
 
-              const clientIp = getDevClientIp(req);
               const timeOffsetMs = Number(req.headers['x-test-timestamp-offset']) || 0;
               const orderRateCheck = checkAndConsumeOrderRateLimitDev(clientIp, 4, 600, timeOffsetMs);
               if (!orderRateCheck.allowed) {
@@ -4679,6 +4763,7 @@ function localApiDevPlugin(): Plugin {
                 advancePaymentUpdatedBy: undefined,
                 customerDue: Number(rawOrder.totalAmount) || 0,
                 dueAmount: Number(rawOrder.totalAmount) || 0,
+                ipAddress: clientIp,
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString(),
               };

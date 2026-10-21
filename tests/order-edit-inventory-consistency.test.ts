@@ -268,7 +268,8 @@ class MockD1Database {
             total_cost: boundArgs[28],
             total_profit: boundArgs[29],
             advance_payment: boundArgs[30],
-            created_at: boundArgs[35],
+            ip_address: boundArgs[35],
+            created_at: boundArgs[36] || boundArgs[35],
           });
           return { success: true, meta: { changes: 1 } };
         }

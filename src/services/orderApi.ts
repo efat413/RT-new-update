@@ -1,4 +1,4 @@
-import { Order } from '../types';
+import { Order, BlockedIp } from '../types';
 import { isSessionUnauthorizedError, notifyAuthUnauthorized, getAuthToken } from './authApi';
 
 export interface OrderSummaryStats {
@@ -659,6 +659,61 @@ export const orderApi = {
       return { success: true, blob, filename };
     } catch (err: any) {
       return { success: false, error: err?.message || 'Network error while exporting orders' };
+    }
+  },
+
+  async getBlockedIps(): Promise<{ success: boolean; count?: number; blockedIps?: BlockedIp[]; error?: string }> {
+    try {
+      const res = await fetch(`${API_BASE}/admin/blocked-ips`, {
+        method: 'GET',
+        credentials: 'include',
+        headers: getHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 401) notifyAuthUnauthorized({ url: `${API_BASE}/admin/blocked-ips`, error: data.error });
+        return { success: false, error: data.error || 'Failed to fetch blocked IPs.' };
+      }
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Network error while fetching blocked IPs.' };
+    }
+  },
+
+  async blockIp(ip: string, reason?: string): Promise<{ success: boolean; message?: string; blockedIp?: BlockedIp; error?: string }> {
+    try {
+      const res = await fetch(`${API_BASE}/admin/blocked-ips`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: getHeaders(),
+        body: JSON.stringify({ ip, reason }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 401) notifyAuthUnauthorized({ url: `${API_BASE}/admin/blocked-ips`, error: data.error });
+        return { success: false, error: data.error || 'Failed to block IP address.' };
+      }
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Network error while blocking IP.' };
+    }
+  },
+
+  async unblockIp(ipOrId: string): Promise<{ success: boolean; message?: string; error?: string }> {
+    try {
+      const res = await fetch(`${API_BASE}/admin/blocked-ips?ip=${encodeURIComponent(ipOrId)}`, {
+        method: 'DELETE',
+        credentials: 'include',
+        headers: getHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 401) notifyAuthUnauthorized({ url: `${API_BASE}/admin/blocked-ips`, error: data.error });
+        return { success: false, error: data.error || 'Failed to unblock IP address.' };
+      }
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Network error while unblocking IP.' };
     }
   },
 };

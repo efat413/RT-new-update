@@ -104,6 +104,7 @@ import {
   AdminPermissions,
   ProfitAnalyticsSummary,
   MIN_PASSWORD_LENGTH,
+  BlockedIp,
 } from '../types';
 import { BrandLogo } from './BrandLogo';
 import { ConfirmModal } from './ConfirmModal';
@@ -324,6 +325,86 @@ const AdminPanelContent: React.FC = () => {
   // RBAC & Permissions Management Modal States
   const [permissionsModalUser, setPermissionsModalUser] = useState<UserAccount | null>(null);
   const [selectedStaffUserId, setSelectedStaffUserId] = useState<string>('');
+
+  // Blocked IPs / IP Blacklist & Fraud Prevention States
+  const [blockedIps, setBlockedIps] = useState<BlockedIp[]>([]);
+  const [isBlockedIpsLoading, setIsBlockedIpsLoading] = useState(false);
+  const [isIpBlacklistModalOpen, setIsIpBlacklistModalOpen] = useState(false);
+  const [blockingIpInput, setBlockingIpInput] = useState('');
+  const [blockingReasonInput, setBlockingReasonInput] = useState('');
+  const [isBlockingSubmitting, setIsBlockingSubmitting] = useState(false);
+  const [blockedIpSearchQuery, setBlockedIpSearchQuery] = useState('');
+  const [ipActionFeedback, setIpActionFeedback] = useState<string | null>(null);
+
+  const blockedIpSet = useMemo(() => {
+    return new Set(blockedIps.map((b) => b.ip.trim()));
+  }, [blockedIps]);
+
+  const fetchBlockedIps = useCallback(async () => {
+    if (!isAdminLoggedIn) return;
+    setIsBlockedIpsLoading(true);
+    try {
+      const res = await orderApi.getBlockedIps();
+      if (res.success && res.blockedIps) {
+        setBlockedIps(res.blockedIps);
+      }
+    } catch (err) {
+      console.error('Error loading blocked IPs:', err);
+    } finally {
+      setIsBlockedIpsLoading(false);
+    }
+  }, [isAdminLoggedIn]);
+
+  useEffect(() => {
+    if (isAdminLoggedIn) {
+      fetchBlockedIps();
+    }
+  }, [isAdminLoggedIn, fetchBlockedIps]);
+
+  const handleBlockIp = async (ipToBlock: string, reason?: string) => {
+    const cleanIp = ipToBlock.trim();
+    if (!cleanIp) return;
+    setIsBlockingSubmitting(true);
+    setIpActionFeedback(null);
+    try {
+      const res = await orderApi.blockIp(cleanIp, reason);
+      if (res.success) {
+        setAccountFeedback(`IP ${cleanIp} has been blocked from placing orders.`);
+        setIpActionFeedback(`IP ${cleanIp} blocked successfully.`);
+        setBlockingIpInput('');
+        setBlockingReasonInput('');
+        await fetchBlockedIps();
+      } else {
+        setIpActionFeedback(res.error || 'Failed to block IP.');
+      }
+    } catch (err: any) {
+      setIpActionFeedback(err?.message || 'Error blocking IP.');
+    } finally {
+      setIsBlockingSubmitting(false);
+    }
+  };
+
+  const handleUnblockIp = async (ipToUnblock: string) => {
+    setIpActionFeedback(null);
+    try {
+      const res = await orderApi.unblockIp(ipToUnblock);
+      if (res.success) {
+        setAccountFeedback(`IP ${ipToUnblock} has been unblocked.`);
+        setIpActionFeedback(`IP ${ipToUnblock} unblocked.`);
+        await fetchBlockedIps();
+      } else {
+        setIpActionFeedback(res.error || 'Failed to unblock IP.');
+      }
+    } catch (err: any) {
+      setIpActionFeedback(err?.message || 'Error unblocking IP.');
+    }
+  };
+
+  const handlePromptBlockIp = (ipAddress: string) => {
+    setBlockingIpInput(ipAddress);
+    setBlockingReasonInput(`Manual block from Order inspection (${new Date().toLocaleDateString('en-GB')})`);
+    setIsIpBlacklistModalOpen(true);
+  };
 
   // Active Tab
   const [activeTab, setActiveTab] = useState<
@@ -3583,7 +3664,20 @@ const AdminPanelContent: React.FC = () => {
                   Dispatch packages via simulated Bangladeshi courier APIs (Steadfast / Pathao / RedX), sync parcel status in real time, or manage bookings manually.
                 </p>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  id="admin-ip-blacklist-btn"
+                  onClick={() => {
+                    fetchBlockedIps();
+                    setIsIpBlacklistModalOpen(true);
+                  }}
+                  className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold flex items-center gap-2 shadow-xs transition-all active:scale-95 cursor-pointer border border-slate-700"
+                  title="Manage blocked customer IP addresses"
+                >
+                  <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
+                  <span>IP Blacklist ({blockedIps.length})</span>
+                </button>
                 <button
                   type="button"
                   id="admin-export-orders-btn"
@@ -3908,6 +4002,36 @@ const AdminPanelContent: React.FC = () => {
                                 <p className="text-[10px] text-slate-500 italic mt-1 bg-slate-50 p-1 rounded border border-slate-100 max-w-[220px]">
                                   Note: "{ord.customer.notes}"
                                 </p>
+                              )}
+                              {ord.ipAddress && (
+                                <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-mono text-[10px] border border-slate-200" title="Customer IP captured from Cloudflare CF-Connecting-IP">
+                                    <ShieldAlert className="w-2.5 h-2.5 text-slate-400" />
+                                    {ord.ipAddress}
+                                  </span>
+                                  {blockedIpSet.has(ord.ipAddress) ? (
+                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 font-bold text-[9px] border border-rose-200">
+                                      Blocked
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUnblockIp(ord.ipAddress!)}
+                                        className="hover:underline ml-0.5 text-rose-800 cursor-pointer"
+                                        title="Unblock this IP"
+                                      >
+                                        (Unblock)
+                                      </button>
+                                    </span>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => handlePromptBlockIp(ord.ipAddress!)}
+                                      className="text-[9px] text-rose-600 hover:text-rose-800 font-semibold hover:underline cursor-pointer"
+                                      title="Block this IP address from placing orders"
+                                    >
+                                      Block IP
+                                    </button>
+                                  )}
+                                </div>
                               )}
                             </td>
 
@@ -10639,6 +10763,188 @@ const AdminPanelContent: React.FC = () => {
                 className="px-4 py-2 bg-slate-900 hover:bg-black text-white rounded-xl text-xs font-bold transition-all"
               >
                 Close Preview
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================ */}
+      {/* MODAL: IP BLACKLIST & CHECKOUT FRAUD CONTROL                */}
+      {/* ============================================================ */}
+      {isIpBlacklistModalOpen && (
+        <div
+          id="ip-blacklist-modal-backdrop"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-in fade-in duration-150"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setIsIpBlacklistModalOpen(false);
+          }}
+        >
+          <div
+            id="ip-blacklist-modal-dialog"
+            className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl border border-slate-200 overflow-hidden animate-in zoom-in-95 duration-150 flex flex-col max-h-[90vh]"
+          >
+            {/* Modal Header */}
+            <div className="p-5 bg-slate-900 text-white flex items-center justify-between border-b border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-2xl bg-rose-500/20 text-rose-400 border border-rose-500/30">
+                  <ShieldAlert className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-base text-white">Customer IP Blacklist & Fraud Protection</h3>
+                  <p className="text-xs text-slate-400">
+                    Block abusive IP addresses from placing orders via Cloudflare Workers
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsIpBlacklistModalOpen(false)}
+                className="p-2 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 overflow-y-auto space-y-5">
+              {/* Cloudflare Edge Explanation Banner */}
+              <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-xs text-slate-600 space-y-1.5">
+                <div className="flex items-center gap-1.5 font-bold text-slate-800">
+                  <Info className="w-4 h-4 text-rose-500" />
+                  <span>How IP Blocking Works on Cloudflare Workers:</span>
+                </div>
+                <p>
+                  Every order checkout automatically captures the customer's true IP from the <code className="bg-slate-200 px-1 py-0.5 rounded font-mono text-[11px]">CF-Connecting-IP</code> edge header. When an IP is added to this blacklist, any order submission from that IP is instantly rejected with: <em className="text-rose-700 font-medium">"Your IP has been blocked from placing orders."</em>
+                </p>
+              </div>
+
+              {/* Form to block a new IP */}
+              <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 space-y-3">
+                <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                  <Plus className="w-3.5 h-3.5 text-rose-600" />
+                  Block an IP Address
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
+                  <div className="sm:col-span-5">
+                    <label className="text-[10px] font-bold text-slate-500 block mb-1">IP Address *</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. 103.145.74.22"
+                      value={blockingIpInput}
+                      onChange={(e) => setBlockingIpInput(e.target.value)}
+                      className="w-full px-3 py-2 text-xs font-mono rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-rose-500 bg-white"
+                    />
+                  </div>
+                  <div className="sm:col-span-5">
+                    <label className="text-[10px] font-bold text-slate-500 block mb-1">Reason (Optional)</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Fake COD spam / order return fraud"
+                      value={blockingReasonInput}
+                      onChange={(e) => setBlockingReasonInput(e.target.value)}
+                      className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-rose-500 bg-white"
+                    />
+                  </div>
+                  <div className="sm:col-span-2 flex items-end">
+                    <button
+                      type="button"
+                      disabled={isBlockingSubmitting || !blockingIpInput.trim()}
+                      onClick={() => handleBlockIp(blockingIpInput, blockingReasonInput)}
+                      className="w-full py-2 px-3 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl transition-all cursor-pointer shadow-xs"
+                    >
+                      {isBlockingSubmitting ? 'Blocking...' : 'Block'}
+                    </button>
+                  </div>
+                </div>
+                {ipActionFeedback && (
+                  <p className="text-xs text-emerald-600 font-medium flex items-center gap-1">
+                    <CheckCircle className="w-3.5 h-3.5" />
+                    {ipActionFeedback}
+                  </p>
+                )}
+              </div>
+
+              {/* Blocked IPs List Header & Filter */}
+              <div className="space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                    <Ban className="w-3.5 h-3.5 text-slate-500" />
+                    Currently Blocked IPs ({blockedIps.length})
+                  </h4>
+                  <div className="relative w-full sm:w-60">
+                    <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
+                    <input
+                      type="text"
+                      placeholder="Search blocked IPs..."
+                      value={blockedIpSearchQuery}
+                      onChange={(e) => setBlockedIpSearchQuery(e.target.value)}
+                      className="w-full pl-8 pr-3 py-1.5 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-rose-500 bg-white"
+                    />
+                  </div>
+                </div>
+
+                {/* Table of Blocked IPs */}
+                <div className="border border-slate-200 rounded-2xl overflow-hidden bg-white">
+                  {isBlockedIpsLoading ? (
+                    <div className="p-8 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+                      <RefreshCw className="w-4 h-4 animate-spin text-slate-400" />
+                      Loading blocked IP records...
+                    </div>
+                  ) : blockedIps.length === 0 ? (
+                    <div className="p-8 text-center text-xs text-slate-400">
+                      <ShieldCheck className="w-8 h-8 mx-auto mb-2 text-emerald-500/50" />
+                      No IP addresses are currently blocked.
+                    </div>
+                  ) : (
+                    <div className="max-h-64 overflow-y-auto divide-y divide-slate-100">
+                      {blockedIps
+                        .filter((b) =>
+                          !blockedIpSearchQuery.trim() ||
+                          b.ip.toLowerCase().includes(blockedIpSearchQuery.toLowerCase()) ||
+                          (b.reason && b.reason.toLowerCase().includes(blockedIpSearchQuery.toLowerCase()))
+                        )
+                        .map((b) => (
+                          <div key={b.id || b.ip} className="p-3 flex items-center justify-between gap-3 text-xs hover:bg-slate-50">
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono font-bold text-slate-900 bg-slate-100 px-2 py-0.5 rounded border border-slate-200 text-xs">
+                                  {b.ip}
+                                </span>
+                                {b.reason && (
+                                  <span className="text-[11px] text-slate-600 truncate max-w-xs">
+                                    "{b.reason}"
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-2">
+                                <span>Blocked: {new Date(b.createdAt).toLocaleDateString('en-GB')}</span>
+                                {b.blockedBy && <span>• By: {b.blockedBy}</span>}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleUnblockIp(b.ip)}
+                              className="px-2.5 py-1 text-[11px] font-bold text-rose-600 hover:text-white hover:bg-rose-600 border border-rose-200 hover:border-rose-600 rounded-lg transition-colors cursor-pointer shrink-0"
+                            >
+                              Unblock
+                            </button>
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setIsIpBlacklistModalOpen(false)}
+                className="px-4 py-2 bg-slate-900 hover:bg-black text-white text-xs font-bold rounded-xl transition-all cursor-pointer"
+              >
+                Done
               </button>
             </div>
           </div>
