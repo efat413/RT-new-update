@@ -87,8 +87,8 @@ const defaultAdminStubs: AdminContextType = {
   syncCourierStatus: async () => ({ success: false, message: 'Admin context not loaded' }),
   syncAllCourierStatuses: async () => ({ success: false, message: 'Admin context not loaded', updatedCount: 0 }),
   cancelCourierBooking: () => {},
-  blockPhoneNumber: () => {},
-  unblockPhoneNumber: () => {},
+  blockPhoneNumber: async () => false,
+  unblockPhoneNumber: async () => false,
 
   // Courier Configs
   courierConfigs: [],

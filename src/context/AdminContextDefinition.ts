@@ -71,8 +71,8 @@ export interface AdminContextType {
   syncCourierStatus: (orderId: string) => Promise<{ success: boolean; message: string; updatedStatus?: string }>;
   syncAllCourierStatuses: () => Promise<{ success: boolean; message: string; updatedCount: number }>;
   cancelCourierBooking: (orderId: string) => void;
-  blockPhoneNumber: (phone: string) => void;
-  unblockPhoneNumber: (phone: string) => void;
+  blockPhoneNumber: (phone: string) => Promise<boolean>;
+  unblockPhoneNumber: (phone: string) => Promise<boolean>;
 
   // Courier Configs
   courierConfigs: CourierApiConfig[];

@@ -18,6 +18,7 @@ import { useStore } from '../context/StoreContext';
 import { DeliveryZone, PaymentMethod, Coupon } from '../types';
 import { SearchableDistrictSelect } from './SearchableDistrictSelect';
 import { uploadImage } from '../services/storeApi';
+import { normalizeAndValidatePhone } from '../utils/phone';
 
 interface FormErrors {
   fullName?: string;
@@ -181,36 +182,6 @@ export const CheckoutSection: React.FC = () => {
         setIsUploadingSlip(false);
       }
     }
-  };
-
-  // Phone normalization & validation for Bangladesh
-  const normalizeAndValidatePhone = (phoneInput: string): { isValid: boolean; normalized: string; error?: string } => {
-    const cleanDigits = phoneInput.replace(/[^0-9]/g, '');
-    let normalized = cleanDigits;
-
-    if (normalized.startsWith('8801')) {
-      normalized = normalized.slice(2);
-    } else if (normalized.startsWith('88')) {
-      normalized = normalized.slice(2);
-    }
-
-    if (!normalized) {
-      return { isValid: false, normalized: '', error: 'Please enter a valid mobile number.' };
-    }
-    if (!normalized.startsWith('01')) {
-      return { isValid: false, normalized, error: 'Mobile number must begin with 01 (e.g. 01712345678).' };
-    }
-    if (normalized.length !== 11) {
-      return { isValid: false, normalized, error: `Mobile number must be exactly 11 digits (current: ${normalized.length}).` };
-    }
-
-    const validPrefixes = ['013', '014', '015', '016', '017', '018', '019'];
-    const prefix = normalized.substring(0, 3);
-    if (!validPrefixes.includes(prefix)) {
-      return { isValid: false, normalized, error: `Invalid Bangladeshi operator prefix "${prefix}".` };
-    }
-
-    return { isValid: true, normalized };
   };
 
   const validateForm = (): boolean => {

@@ -48,6 +48,7 @@ import {
   courierWebhooksApi,
   storeHomepageApi,
 } from '../services/storeApi';
+import { normalizeAndValidatePhone } from '../utils/phone';
 
 export const SUPER_ADMIN_PERMISSIONS: AdminPermissions = {
   canManageOrders: true,
@@ -1164,28 +1165,52 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     showNotification('info', 'Order Deleted', `Order #${targetOrder.orderNumber} deleted.`);
   }, [orders, refreshProductsByIds, showNotification]);
 
-  const blockPhoneNumber = useCallback((phone: string) => {
-    const cleanPhone = phone.trim().replace(/[^0-9]/g, '');
-    if (!cleanPhone) return;
-    setSettings((prev) => {
-      const existing = prev.blockedPhoneNumbers || [];
-      if (existing.includes(cleanPhone)) return prev;
+  const blockPhoneNumber = useCallback(
+    async (phone: string): Promise<boolean> => {
+      const phoneCheck = normalizeAndValidatePhone(phone);
+      const cleanPhone = phoneCheck.isValid ? phoneCheck.normalized : phone.trim().replace(/[^0-9]/g, '');
+      if (!cleanPhone) {
+        showNotification('error', 'Invalid Phone', 'Please enter a valid phone number.');
+        return false;
+      }
+      const existing = settings.blockedPhoneNumbers || [];
+      if (existing.includes(cleanPhone)) {
+        showNotification('info', 'Already Blocked', `Number ${cleanPhone} is already in the blacklist.`);
+        return true;
+      }
       const updated = [...existing, cleanPhone];
-      settingsApi.update({ blockedPhoneNumbers: updated }).catch(console.error);
-      return { ...prev, blockedPhoneNumbers: updated };
-    });
-    showNotification('warning', 'Phone Number Blocked', `Number ${cleanPhone} has been blocked from placing orders.`);
-  }, [setSettings, showNotification]);
+      try {
+        const savedSettings = await settingsApi.update({ blockedPhoneNumbers: updated });
+        setSettings(savedSettings);
+        showNotification('warning', 'Phone Number Blocked', `Number ${cleanPhone} has been blocked from placing orders.`);
+        return true;
+      } catch (err: any) {
+        console.error('Failed to block phone number:', err);
+        showNotification('error', 'Block Failed', err?.message || 'Failed to update phone blacklist.');
+        throw err;
+      }
+    },
+    [settings.blockedPhoneNumbers, setSettings, showNotification]
+  );
 
-  const unblockPhoneNumber = useCallback((phone: string) => {
-    const cleanPhone = phone.trim().replace(/[^0-9]/g, '');
-    setSettings((prev) => {
-      const updated = (prev.blockedPhoneNumbers || []).filter((p) => p !== cleanPhone);
-      settingsApi.update({ blockedPhoneNumbers: updated }).catch(console.error);
-      return { ...prev, blockedPhoneNumbers: updated };
-    });
-    showNotification('info', 'Phone Number Unblocked', `Number ${cleanPhone} is now allowed to place orders.`);
-  }, [setSettings, showNotification]);
+  const unblockPhoneNumber = useCallback(
+    async (phone: string): Promise<boolean> => {
+      const cleanPhone = phone.trim().replace(/[^0-9]/g, '');
+      const existing = settings.blockedPhoneNumbers || [];
+      const updated = existing.filter((p) => p !== phone && p.trim().replace(/[^0-9]/g, '') !== cleanPhone);
+      try {
+        const savedSettings = await settingsApi.update({ blockedPhoneNumbers: updated });
+        setSettings(savedSettings);
+        showNotification('info', 'Phone Number Unblocked', `Number ${cleanPhone || phone} is now allowed to place orders.`);
+        return true;
+      } catch (err: any) {
+        console.error('Failed to unblock phone number:', err);
+        showNotification('error', 'Unblock Failed', err?.message || 'Failed to update phone blacklist.');
+        throw err;
+      }
+    },
+    [settings.blockedPhoneNumbers, setSettings, showNotification]
+  );
 
   // Settings & Seed
   const resetToDefaultSeed = useCallback(async () => {

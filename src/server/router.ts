@@ -3980,8 +3980,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
     if (method === 'PUT' || method === 'PATCH' || method === 'POST') {
       const { auth, errorResponse } = await requireAuth(request, env);
       if (errorResponse) return errorResponse;
-      const permErr = requirePermission(auth!, 'settings.manage');
-      if (permErr) return permErr;
 
       const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
       if (jsonErr) return jsonErr;
@@ -3991,6 +3989,30 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
 
         if (!updates || typeof updates !== 'object') {
           return jsonResponse({ success: false, error: 'Invalid settings payload: expected a settings object.' }, 400);
+        }
+
+        const isOnlyUpdatingBlockedPhones =
+          Object.keys(updates).length > 0 &&
+          Object.keys(updates).every((k) => k === 'blockedPhoneNumbers');
+
+        if (isOnlyUpdatingBlockedPhones) {
+          const canManagePhones =
+            auth!.role === 'super_admin' ||
+            hasPermission(auth!, 'order.manage') ||
+            hasPermission(auth!, 'settings.manage');
+          if (!canManagePhones) {
+            return jsonResponse(
+              {
+                success: false,
+                error: 'Forbidden: Permission required to manage blocked phone numbers.',
+                requiredPermission: 'order.manage',
+              },
+              403
+            );
+          }
+        } else {
+          const permErr = requirePermission(auth!, 'settings.manage');
+          if (permErr) return permErr;
         }
 
         // Courier credentials must NEVER be persisted into D1 store settings

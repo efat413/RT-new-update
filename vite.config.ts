@@ -3441,11 +3441,29 @@ function localApiDevPlugin(): Plugin {
           }
           if (method === 'PUT' || method === 'PATCH' || method === 'POST') {
             const authResult = requireDevAuth(req);
-            const permErr = requireDevPermission(authResult, 'settings.manage');
-            if (permErr) return sendDevError(res, permErr);
 
             return readBody((body) => {
-              const updates = body.settings || body;
+              const updates = body?.settings || body;
+              const isOnlyUpdatingBlockedPhones =
+                updates &&
+                typeof updates === 'object' &&
+                Object.keys(updates).length > 0 &&
+                Object.keys(updates).every((k) => k === 'blockedPhoneNumbers');
+
+              const permErr = isOnlyUpdatingBlockedPhones
+                ? (
+                    authResult.auth && (
+                      authResult.auth.role === 'super_admin' ||
+                      hasDevPermission(authResult.auth, 'order.manage') ||
+                      hasDevPermission(authResult.auth, 'settings.manage')
+                    )
+                      ? null
+                      : { status: 403, body: { success: false, error: 'Forbidden: Permission required to manage blocked phone numbers.', requiredPermission: 'order.manage' } }
+                  )
+                : requireDevPermission(authResult, 'settings.manage');
+
+              if (permErr) return sendDevError(res, permErr);
+
               if (updates && typeof updates === 'object') {
                 const updatedAnnouncement = updates.topBarAnnouncementText !== undefined
                   ? updates.topBarAnnouncementText

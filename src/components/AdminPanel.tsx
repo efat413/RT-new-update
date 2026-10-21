@@ -157,7 +157,7 @@ const AdminTabFallback: React.FC = () => (
 );
 import { uploadApi, profitAnalyticsApi, productsApi } from '../services/storeApi';
 import { orderApi } from '../services/orderApi';
-import { formatWhatsAppLink, normalizeWhatsAppNumber } from '../utils/phone';
+import { formatWhatsAppLink, normalizeWhatsAppNumber, normalizeAndValidatePhone } from '../utils/phone';
 import { copyToClipboardSafe } from '../utils/clipboard';
 import { AdminProvider } from '../context/AdminProvider';
 
@@ -254,6 +254,8 @@ const AdminPanelContent: React.FC = () => {
     syncCourierStatus,
     syncAllCourierStatuses,
     cancelCourierBooking,
+    blockPhoneNumber,
+    unblockPhoneNumber,
     slides,
     addSlide,
     updateSlide,
@@ -400,6 +402,72 @@ const AdminPanelContent: React.FC = () => {
     setBlockingIpInput(ipAddress);
     setBlockingReasonInput(`Manual block from Order inspection (${new Date().toLocaleDateString('en-GB')})`);
     setIsIpBlacklistModalOpen(true);
+  };
+
+  // Blocked Phone Numbers / Phone Blacklist & Fraud Prevention States
+  const [isPhoneBlacklistModalOpen, setIsPhoneBlacklistModalOpen] = useState(false);
+  const [blockingPhoneInput, setBlockingPhoneInput] = useState('');
+  const [phoneSearchQuery, setPhoneSearchQuery] = useState('');
+  const [isBlockingPhoneSubmitting, setIsBlockingPhoneSubmitting] = useState(false);
+  const [unblockingPhone, setUnblockingPhone] = useState<string | null>(null);
+  const [phoneActionError, setPhoneActionError] = useState<string | null>(null);
+  const [phoneActionFeedback, setPhoneActionFeedback] = useState<string | null>(null);
+
+  const blockedPhonesList = useMemo(() => {
+    return Array.isArray(settings?.blockedPhoneNumbers) ? settings.blockedPhoneNumbers : [];
+  }, [settings?.blockedPhoneNumbers]);
+
+  const blockedPhoneSet = useMemo(() => {
+    return new Set(blockedPhonesList.map((p) => (p || '').trim().replace(/\D/g, '')));
+  }, [blockedPhonesList]);
+
+  const handleBlockPhone = async (phoneToBlock: string) => {
+    const raw = phoneToBlock.trim();
+    if (!raw) return;
+    const validation = normalizeAndValidatePhone(raw);
+    if (!validation.isValid) {
+      setPhoneActionError(validation.error || 'Invalid phone number format.');
+      return;
+    }
+    const cleanPhone = validation.normalized;
+    if (blockedPhoneSet.has(cleanPhone)) {
+      setPhoneActionError(`Phone number ${cleanPhone} is already in the blacklist.`);
+      return;
+    }
+
+    setIsBlockingPhoneSubmitting(true);
+    setPhoneActionError(null);
+    setPhoneActionFeedback(null);
+    try {
+      await blockPhoneNumber(cleanPhone);
+      setPhoneActionFeedback(`Phone number ${cleanPhone} blocked successfully.`);
+      setBlockingPhoneInput('');
+    } catch (err: any) {
+      setPhoneActionError(err?.message || 'Failed to block phone number.');
+    } finally {
+      setIsBlockingPhoneSubmitting(false);
+    }
+  };
+
+  const handleUnblockPhone = async (phoneToUnblock: string) => {
+    setPhoneActionError(null);
+    setPhoneActionFeedback(null);
+    setUnblockingPhone(phoneToUnblock);
+    try {
+      await unblockPhoneNumber(phoneToUnblock);
+      setPhoneActionFeedback(`Phone number ${phoneToUnblock} unblocked.`);
+    } catch (err: any) {
+      setPhoneActionError(err?.message || 'Failed to unblock phone number.');
+    } finally {
+      setUnblockingPhone(null);
+    }
+  };
+
+  const handlePromptBlockPhone = (phoneNum: string) => {
+    setBlockingPhoneInput(phoneNum);
+    setPhoneActionError(null);
+    setPhoneActionFeedback(null);
+    setIsPhoneBlacklistModalOpen(true);
   };
 
   // Active Tab
@@ -3600,6 +3668,21 @@ const AdminPanelContent: React.FC = () => {
                 </button>
                 <button
                   type="button"
+                  id="admin-phone-blacklist-btn"
+                  onClick={() => {
+                    setPhoneActionError(null);
+                    setPhoneActionFeedback(null);
+                    setIsPhoneBlacklistModalOpen(true);
+                  }}
+                  disabled={!canManageOrders}
+                  className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-900 disabled:opacity-50 text-white text-xs font-bold flex items-center gap-2 shadow-xs transition-all active:scale-95 cursor-pointer border border-slate-700"
+                  title="Manage blocked customer phone numbers"
+                >
+                  <PhoneCall className="w-3.5 h-3.5 text-rose-400" />
+                  <span>Phone Blacklist ({blockedPhonesList.length})</span>
+                </button>
+                <button
+                  type="button"
                   id="admin-export-orders-btn"
                   onClick={handleOpenExportModal}
                   disabled={!hasPermission('canManageOrders')}
@@ -3909,12 +3992,50 @@ const AdminPanelContent: React.FC = () => {
                             {/* Customer */}
                             <td className="p-3.5 align-top">
                               <p className="font-bold text-slate-900">{ord.customer.fullName}</p>
-                              <a
-                                href={`tel:${ord.customer.phone.replace(/[^0-9+]/g, '')}`}
-                                className="text-rose-600 hover:underline font-mono text-[11px] block font-semibold"
-                              >
-                                {ord.customer.phone}
-                              </a>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <a
+                                  href={`tel:${ord.customer.phone.replace(/[^0-9+]/g, '')}`}
+                                  className="text-rose-600 hover:underline font-mono text-[11px] block font-semibold"
+                                >
+                                  {ord.customer.phone}
+                                </a>
+                                {(() => {
+                                  const clean = ord.customer.phone.replace(/\D/g, '');
+                                  const isBlocked =
+                                    blockedPhoneSet.has(clean) ||
+                                    (clean.length >= 11 && blockedPhoneSet.has(clean.slice(-11)));
+                                  if (isBlocked) {
+                                    return (
+                                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 font-bold text-[9px] border border-rose-200">
+                                        Blocked
+                                        {canManageOrders && (
+                                          <button
+                                            type="button"
+                                            onClick={() => handleUnblockPhone(ord.customer.phone)}
+                                            className="hover:underline ml-0.5 text-rose-800 cursor-pointer"
+                                            title="Unblock this phone number"
+                                          >
+                                            (Unblock)
+                                          </button>
+                                        )}
+                                      </span>
+                                    );
+                                  }
+                                  if (canManageOrders) {
+                                    return (
+                                      <button
+                                        type="button"
+                                        onClick={() => handlePromptBlockPhone(ord.customer.phone)}
+                                        className="text-[9px] text-rose-600 hover:text-rose-800 font-semibold hover:underline cursor-pointer"
+                                        title="Block this phone number from placing orders"
+                                      >
+                                        Block Phone
+                                      </button>
+                                    );
+                                  }
+                                  return null;
+                                })()}
+                              </div>
                               <p className="text-slate-600 text-[11px] mt-1 max-w-[220px]">
                                 {ord.customer.fullAddress}, <span className="font-medium text-slate-800">{ord.customer.district}</span>
                               </p>
@@ -10862,6 +10983,214 @@ const AdminPanelContent: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setIsIpBlacklistModalOpen(false)}
+                className="px-4 py-2 bg-slate-900 hover:bg-black text-white text-xs font-bold rounded-xl transition-all cursor-pointer"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* CUSTOMER PHONE BLACKLIST & FRAUD PREVENTION MODAL        */}
+      {/* ======================================================== */}
+      {isPhoneBlacklistModalOpen && (
+        <div
+          id="phone-blacklist-modal-backdrop"
+          className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setIsPhoneBlacklistModalOpen(false);
+          }}
+        >
+          <div
+            id="phone-blacklist-modal-dialog"
+            className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl border border-slate-200 overflow-hidden animate-in zoom-in-95 duration-150 flex flex-col max-h-[90vh]"
+          >
+            {/* Modal Header */}
+            <div className="p-5 bg-slate-900 text-white flex items-center justify-between border-b border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-2xl bg-rose-500/20 text-rose-400 border border-rose-500/30">
+                  <PhoneCall className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-base text-white">Customer Phone Blacklist & Fraud Protection</h3>
+                  <p className="text-xs text-slate-400">
+                    Block abusive or fake phone numbers from placing orders
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                id="close-phone-blacklist-modal-btn"
+                onClick={() => setIsPhoneBlacklistModalOpen(false)}
+                className="p-2 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 overflow-y-auto space-y-5">
+              {/* Policy Explanation Banner */}
+              <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-xs text-slate-600 space-y-1.5">
+                <div className="flex items-center gap-1.5 font-bold text-slate-800">
+                  <Info className="w-4 h-4 text-rose-500" />
+                  <span>How Phone Number Blocking Works:</span>
+                </div>
+                <p>
+                  Every order submission validates the customer's contact number against this blacklist. When a phone number is added, checkout attempts with this number are rejected immediately with: <em className="text-rose-700 font-medium">"Order submission is temporarily restricted for this contact number."</em> Numbers are normalized to standard 11-digit Bangladeshi format (e.g. <code className="bg-slate-200 px-1 py-0.5 rounded font-mono text-[11px]">017XXXXXXXX</code>), preventing bypass via prefix variations (+880, spaces, or dashes).
+                </p>
+              </div>
+
+              {/* Form to block a new phone number */}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleBlockPhone(blockingPhoneInput);
+                }}
+                className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 space-y-3"
+              >
+                <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                  <Plus className="w-3.5 h-3.5 text-rose-600" />
+                  Block a Phone Number
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
+                  <div className="sm:col-span-9">
+                    <label className="text-[10px] font-bold text-slate-500 block mb-1">
+                      Phone Number * (e.g. 017XXXXXXXX or +8801XXXXXXXXX)
+                    </label>
+                    <input
+                      type="tel"
+                      id="block-phone-input"
+                      placeholder="e.g. 01712345678"
+                      value={blockingPhoneInput}
+                      onChange={(e) => {
+                        setBlockingPhoneInput(e.target.value);
+                        if (phoneActionError) setPhoneActionError(null);
+                      }}
+                      className="w-full px-3 py-2 text-xs font-mono rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-rose-500 bg-white"
+                    />
+                  </div>
+                  <div className="sm:col-span-3 flex items-end">
+                    <button
+                      type="submit"
+                      id="submit-block-phone-btn"
+                      disabled={isBlockingPhoneSubmitting || !blockingPhoneInput.trim() || !canManageOrders}
+                      className="w-full py-2 px-3 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl transition-all cursor-pointer shadow-xs flex items-center justify-center gap-1.5"
+                    >
+                      {isBlockingPhoneSubmitting ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Blocking...</span>
+                        </>
+                      ) : (
+                        <span>Block Number</span>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                {phoneActionError && (
+                  <p className="text-xs text-rose-600 font-medium flex items-center gap-1">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>{phoneActionError}</span>
+                  </p>
+                )}
+
+                {phoneActionFeedback && (
+                  <p className="text-xs text-emerald-600 font-medium flex items-center gap-1">
+                    <CheckCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>{phoneActionFeedback}</span>
+                  </p>
+                )}
+              </form>
+
+              {/* Blocked Phone List Header & Search */}
+              <div className="space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                    <Ban className="w-3.5 h-3.5 text-slate-500" />
+                    Currently Blocked Numbers ({blockedPhonesList.length})
+                  </h4>
+                  <div className="relative w-full sm:w-60">
+                    <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
+                    <input
+                      type="text"
+                      id="search-blocked-phones-input"
+                      placeholder="Search blocked numbers..."
+                      value={phoneSearchQuery}
+                      onChange={(e) => setPhoneSearchQuery(e.target.value)}
+                      className="w-full pl-8 pr-3 py-1.5 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-rose-500 bg-white"
+                    />
+                  </div>
+                </div>
+
+                {/* Table of Blocked Phones */}
+                <div className="border border-slate-200 rounded-2xl overflow-hidden bg-white">
+                  {blockedPhonesList.length === 0 ? (
+                    <div className="p-8 text-center text-xs text-slate-400">
+                      <ShieldCheck className="w-8 h-8 mx-auto mb-2 text-emerald-500/50" />
+                      No phone numbers are currently blocked.
+                    </div>
+                  ) : (
+                    <div className="max-h-64 overflow-y-auto divide-y divide-slate-100">
+                      {blockedPhonesList
+                        .filter((p) =>
+                          !phoneSearchQuery.trim() ||
+                          p.toLowerCase().includes(phoneSearchQuery.toLowerCase())
+                        )
+                        .map((p) => (
+                          <div
+                            key={p}
+                            className="p-3 flex items-center justify-between gap-3 text-xs hover:bg-slate-50"
+                          >
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono font-bold text-slate-900 bg-slate-100 px-2.5 py-1 rounded-lg border border-slate-200 text-xs flex items-center gap-1.5">
+                                <PhoneCall className="w-3 h-3 text-slate-500" />
+                                {p}
+                              </span>
+                              <span className="text-[11px] text-slate-500">
+                                {p.length === 11 && p.startsWith('01') ? 'Standard Bangladesh Mobile' : 'Blocked contact format'}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleUnblockPhone(p)}
+                              disabled={unblockingPhone === p || isBlockingPhoneSubmitting || !canManageOrders}
+                              className="px-2.5 py-1 text-[11px] font-bold text-rose-600 hover:text-white hover:bg-rose-600 disabled:opacity-50 border border-rose-200 hover:border-rose-600 rounded-lg transition-colors cursor-pointer shrink-0 flex items-center gap-1"
+                            >
+                              {unblockingPhone === p ? (
+                                <>
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                  <span>Unblocking...</span>
+                                </>
+                              ) : (
+                                <span>Unblock</span>
+                              )}
+                            </button>
+                          </div>
+                        ))}
+                      {blockedPhonesList.filter((p) =>
+                        !phoneSearchQuery.trim() ||
+                        p.toLowerCase().includes(phoneSearchQuery.toLowerCase())
+                      ).length === 0 && (
+                        <div className="p-6 text-center text-xs text-slate-400">
+                          No blocked phone numbers matching "{phoneSearchQuery}".
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end">
+              <button
+                type="button"
+                id="done-phone-blacklist-modal-btn"
+                onClick={() => setIsPhoneBlacklistModalOpen(false)}
                 className="px-4 py-2 bg-slate-900 hover:bg-black text-white text-xs font-bold rounded-xl transition-all cursor-pointer"
               >
                 Done
