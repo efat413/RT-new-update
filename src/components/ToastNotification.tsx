@@ -79,6 +79,14 @@ export const ToastNotification: React.FC = () => {
 
   const theme = getThemeClasses();
 
+  // Defense-in-depth: Never reveal IP blacklisting to store visitors in notification toasts
+  const rawMessage = notification.message || '';
+  const isIpBlockedMessage = /ip.*(block|blacklist)|blacklisted/i.test(rawMessage);
+  const displayTitle = isIpBlockedMessage ? 'Order Placement Failed' : notification.title;
+  const displayMessage = isIpBlockedMessage
+    ? 'We are currently unable to process your order due to a temporary network issue. Please try again later or contact our support team.'
+    : rawMessage;
+
   return (
     <aside
       aria-label="Action Confirmation Notification"
@@ -105,11 +113,11 @@ export const ToastNotification: React.FC = () => {
           <div className="flex-1 min-w-0 pr-2">
             <div className="flex items-center gap-2">
               <h4 className="text-sm font-extrabold text-slate-900 tracking-tight">
-                {notification.title}
+                {displayTitle}
               </h4>
             </div>
             <p className="text-xs text-slate-600 font-medium mt-1 leading-relaxed">
-              {notification.message}
+              {displayMessage}
             </p>
           </div>
 

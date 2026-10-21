@@ -350,7 +350,9 @@ export const CheckoutSection: React.FC = () => {
     } catch (err: any) {
       setIsSubmitting(false);
       let msg = err?.message || 'Unable to place the order right now. Please try again.';
-      if (/sqlite|syntax error|d1|table |column |foreign key|prepare|bind|database disk|file not found|\/app\/|\/src\/|\.ts:\d+|\.js:\d+|admin_secret|token|credential|api[_-]?key/i.test(msg)) {
+      if (/ip.*(block|blacklist)|blacklisted|forbidden|fraud|security/i.test(msg)) {
+        msg = 'We are currently unable to process your order due to a temporary network issue. Please try again later or contact our support team.';
+      } else if (/sqlite|syntax error|d1|table |column |foreign key|prepare|bind|database disk|file not found|\/app\/|\/src\/|\.ts:\d+|\.js:\d+|admin_secret|token|credential|api[_-]?key/i.test(msg)) {
         msg = 'Unable to place the order right now. Please try again.';
       }
       setErrorMessage(msg);
@@ -371,9 +373,12 @@ export const CheckoutSection: React.FC = () => {
       />
 
       {errorMessage && (
-        <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium flex items-start gap-2">
-          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-          <span>{errorMessage}</span>
+        <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-medium flex items-start gap-2.5 shadow-xs">
+          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600" />
+          <div className="flex-1 space-y-0.5">
+            <p className="font-bold text-rose-900">Order Placement Failed</p>
+            <p className="text-rose-700 leading-relaxed">{errorMessage}</p>
+          </div>
         </div>
       )}
 

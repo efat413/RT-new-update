@@ -38,6 +38,8 @@ export interface OrderApiResponse<T = any> {
   hasPrevPage?: boolean;
   summary?: OrderSummaryStats;
   data?: T;
+  code?: string;
+  status?: number;
   trackingCode?: string;
   tracking_code?: string;
   consignmentId?: string;
@@ -252,10 +254,23 @@ export const orderApi = {
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.success) {
         let errorMsg = data.error || data.message || 'Unable to place the order right now. Please try again.';
-        if (/sqlite|syntax error|d1|table |column |foreign key|prepare|bind|database disk|file not found|\/app\/|\/src\/|\.ts:\d+|\.js:\d+|admin_secret|token|credential|api[_-]?key/i.test(errorMsg)) {
+        const isIpBlockedOrSecurity =
+          res.status === 403 ||
+          data.code === 'IP_BLOCKED' ||
+          /ip.*(block|blacklist)|blacklisted|forbidden|fraud|security/i.test(errorMsg);
+
+        if (isIpBlockedOrSecurity) {
+          // Stealthy, polite, user-friendly message that protects security rules without revealing blacklist
+          errorMsg = 'We are currently unable to process your order due to a temporary network issue. Please try again later or contact our support team.';
+        } else if (/sqlite|syntax error|d1|table |column |foreign key|prepare|bind|database disk|file not found|\/app\/|\/src\/|\.ts:\d+|\.js:\d+|admin_secret|token|credential|api[_-]?key/i.test(errorMsg)) {
           errorMsg = 'Unable to place the order right now. Please try again.';
         }
-        return { success: false, error: errorMsg };
+        return {
+          success: false,
+          error: errorMsg,
+          code: data.code || (res.status === 403 ? 'IP_BLOCKED' : undefined),
+          status: res.status,
+        };
       }
 
       return {

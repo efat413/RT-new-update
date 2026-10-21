@@ -1295,13 +1295,22 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     const res = await orderApi.createOrder(newOrder, idempotencyKey);
     if (!res.success) {
+      const isSecurityOrIpBlock =
+        res.code === 'IP_BLOCKED' ||
+        res.status === 403 ||
+        /ip.*(block|blacklist)|blacklisted|forbidden|fraud|security/i.test(res.error || '');
+
+      const displayMessage = isSecurityOrIpBlock
+        ? 'We are currently unable to process your order due to a temporary network issue. Please try again later or contact our support team.'
+        : (res.error || 'Unable to place the order right now. Please try again.');
+
       showNotification(
         'error',
         'Order Placement Failed',
-        res.error || 'Unable to place the order right now. Please try again.',
-        6000
+        displayMessage,
+        7000
       );
-      throw new Error(res.error || 'Unable to place the order right now. Please try again.');
+      throw new Error(displayMessage);
     }
 
     const canonicalOrder: Order = res.order || newOrder;
