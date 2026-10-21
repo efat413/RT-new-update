@@ -305,10 +305,6 @@ const AdminPanelContent: React.FC = () => {
 
   const [selectedReviewProductFilter, setSelectedReviewProductFilter] = useState<string>('all');
 
-  // Authentication states (start empty for security, no auto-fill)
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [authError, setAuthError] = useState('');
   const [accountFeedback, setAccountFeedback] = useState<string | null>(null);
   const [accountSearch, setAccountSearch] = useState('');
 
@@ -921,13 +917,18 @@ const AdminPanelContent: React.FC = () => {
       } catch {}
 
       if (Date.now() - lastActivityTime >= INACTIVITY_TIMEOUT_MS) {
-        // 30 minutes of inactivity reached!
+        // 30 minutes of continuous inactivity reached!
         try {
           localStorage.removeItem(ADMIN_ACTIVITY_KEY);
+          localStorage.removeItem(STORAGE_KEYS.ADMIN_LAST_TAB);
         } catch {}
-        // Invalidate session on server and client using existing authentication architecture
+        // Invalidate session on server and client, and automatically redirect to homepage without any pop-up
         adminLogout();
-        setAuthError('You have been automatically logged out due to 30 minutes of inactivity. Please log in again.');
+        setCurrentView('store');
+        setIsAuthModalOpen(false);
+        if (typeof window !== 'undefined') {
+          window.history.pushState({}, '', '/');
+        }
       }
     }, 10000);
 
@@ -940,6 +941,11 @@ const AdminPanelContent: React.FC = () => {
         }
       } else if (e.key === STORAGE_KEYS.ADMIN_AUTH && e.newValue === null) {
         adminLogout();
+        setCurrentView('store');
+        setIsAuthModalOpen(false);
+        if (typeof window !== 'undefined') {
+          window.history.pushState({}, '', '/');
+        }
       }
     };
 
@@ -952,7 +958,24 @@ const AdminPanelContent: React.FC = () => {
       window.removeEventListener('storage', handleStorageEvent);
       clearInterval(interval);
     };
-  }, [isPrivilegedAdmin, adminLogout]);
+  }, [isPrivilegedAdmin, adminLogout, setCurrentView, setIsAuthModalOpen]);
+
+  // Automatic redirect to homepage once session expires or when unauthenticated
+  useEffect(() => {
+    if (!isAuthInitializing && !isPrivilegedAdmin) {
+      setCurrentView('store');
+      setIsAuthModalOpen(false);
+      try {
+        localStorage.removeItem(STORAGE_KEYS.ADMIN_LAST_TAB);
+        localStorage.removeItem(STORAGE_KEYS.ADMIN_LAST_ACTIVITY);
+      } catch {}
+      if (typeof window !== 'undefined') {
+        if (window.location.pathname.startsWith('/admin') || window.location.pathname === '/admin') {
+          window.history.pushState({}, '', '/');
+        }
+      }
+    }
+  }, [isAuthInitializing, isPrivilegedAdmin, setCurrentView, setIsAuthModalOpen]);
 
   // While startup server-session verification (/api/auth/me) is in flight, show clean loading screen
   if (isAuthInitializing) {
@@ -966,120 +989,9 @@ const AdminPanelContent: React.FC = () => {
     );
   }
 
-  // --- LOGIN SCREEN ---
+  // If session expired or unauthenticated, do not render any login prompt box; redirecting to homepage
   if (!isPrivilegedAdmin) {
-    const handleLoginSubmit = async (e: React.FormEvent) => {
-      e.preventDefault();
-      setAuthError('');
-      const success = await adminLogin(username.trim(), password.trim());
-      if (!success) {
-        setAuthError('Invalid credentials. Check your admin email/username and password.');
-      }
-    };
-
-    return (
-      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4 py-12">
-        <div className="w-full max-w-md bg-white rounded-3xl shadow-xl overflow-hidden border border-slate-200">
-          <div className="h-2 w-full rainbow-gradient-bg" />
-
-          <div className="p-6 sm:p-8 space-y-6">
-            <div className="text-center space-y-2">
-              <div className="flex justify-center mb-2">
-                <BrandLogo size="lg" />
-              </div>
-              <h2 className="text-2xl font-bold font-display text-slate-800">
-                Admin Management Portal
-              </h2>
-              <p className="text-xs text-slate-500">
-                Enter your administrative credentials (email or username) to access product controls, categories & couriers.
-              </p>
-            </div>
-
-            {authError && (
-              <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold">
-                {authError}
-              </div>
-            )}
-
-            <form onSubmit={handleLoginSubmit} className="space-y-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                  Admin Email / Username
-                </label>
-                <div className="relative">
-                  <Mail className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                  <input
-                    id="admin-username-input"
-                    type="text"
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                    placeholder="admin@rongdhonutrade.com"
-                    className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500"
-                    required
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                  Admin Password
-                </label>
-                <div className="relative">
-                  <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                  <input
-                    id="admin-password-input"
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="••••••••"
-                    className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500"
-                    required
-                  />
-                </div>
-              </div>
-
-              {/* Secure Admin Portal Notice */}
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-[11px] text-slate-600 flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
-                <span>Enter authorized administrator credentials to access the management portal.</span>
-              </div>
-
-              <button
-                id="admin-login-submit-btn"
-                type="submit"
-                className="w-full py-3 px-4 rounded-xl bg-slate-900 hover:bg-black text-white font-bold text-xs shadow-md hover:shadow-lg active:scale-95 transition-all"
-              >
-                Authorize & Open Admin Dashboard
-              </button>
-            </form>
-
-            <div className="pt-2 border-t border-slate-100 space-y-2 text-center">
-              <button
-                type="button"
-                onClick={() => {
-                  setAuthModalMode('login');
-                  setIsAuthModalOpen(true);
-                  setCurrentView('store');
-                }}
-                className="w-full py-2 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors"
-              >
-                <User className="w-3.5 h-3.5 text-rose-600" />
-                Regular Customer? Log in / Sign up to Store
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setCurrentView('store')}
-                className="text-xs text-slate-500 hover:text-slate-800 font-semibold flex items-center justify-center gap-1 mx-auto pt-1"
-              >
-                <ArrowLeft className="w-3.5 h-3.5" />
-                Return to Storefront
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
+    return null;
   }
 
   // --- METRICS COMPUTATION (Backed by authoritative server-side D1 summary stats) ---

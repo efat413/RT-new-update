@@ -196,6 +196,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       hadActiveSessionRef.current = false;
       setCurrentUser(null);
       setIsAdminLoggedIn(false);
+      setIsAuthModalOpen(false);
       persistAdminAuthToStorage(false);
       persistCurrentUserToStorage(null);
     });

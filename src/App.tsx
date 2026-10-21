@@ -272,6 +272,9 @@ const StoreContent: React.FC = () => {
     settings,
     currentUser,
     isAdminLoggedIn,
+    isAuthInitializing,
+    setCurrentView,
+    setIsAuthModalOpen,
     cartCount,
     cartSubtotal,
     setIsCartOpen,
@@ -391,11 +394,26 @@ const StoreContent: React.FC = () => {
     );
   }
 
-  if (
+  const isAdminRoute =
     currentView === 'admin' ||
     (typeof window !== 'undefined' &&
-      (window.location.pathname === '/admin' || window.location.pathname.startsWith('/admin/')))
-  ) {
+      (window.location.pathname === '/admin' || window.location.pathname.startsWith('/admin/')));
+
+  // When admin session expires or user is unauthenticated on admin route, automatically redirect to homepage
+  React.useEffect(() => {
+    if (!isAuthInitializing && !isAdminLoggedIn && isAdminRoute) {
+      setCurrentView('store');
+      setIsAuthModalOpen(false);
+      if (typeof window !== 'undefined' && (window.location.pathname.startsWith('/admin') || window.location.pathname === '/admin')) {
+        window.history.pushState({}, '', '/');
+      }
+    }
+  }, [isAuthInitializing, isAdminLoggedIn, isAdminRoute, setCurrentView, setIsAuthModalOpen]);
+
+  if (isAdminRoute) {
+    if (!isAuthInitializing && !isAdminLoggedIn) {
+      return null;
+    }
     return (
       <>
         <ErrorBoundary fallbackTitle="Admin Panel Unavailable" fallbackMessage="Could not load the administrative dashboard. Please reload or try again.">
