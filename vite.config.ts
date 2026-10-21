@@ -2217,13 +2217,13 @@ function localApiDevPlugin(): Plugin {
               }));
             }
 
-            const hashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(rawToken));
-            const tokenHash = bufferToHex(hashBuf);
+            const normalizedToken = rawToken.toLowerCase();
+            const hashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalizedToken));
+            const tokenHash = bufferToHex(hashBuf).toLowerCase();
             const tokenRecord = devPasswordResetTokens.get(tokenHash);
             const now = Date.now();
 
-            // Atomic token claim: verifies valid, unused, and unexpired token, claiming it immediately
-            if (!tokenRecord || tokenRecord.usedAt != null || tokenRecord.expiresAt <= now) {
+            if (!tokenRecord) {
               recordDevRateAttempt(verifyRateKey, 900);
               res.statusCode = 400;
               return res.end(JSON.stringify({
@@ -2234,14 +2234,36 @@ function localApiDevPlugin(): Plugin {
               }));
             }
 
+            if (tokenRecord.usedAt != null) {
+              recordDevRateAttempt(verifyRateKey, 900);
+              res.statusCode = 400;
+              return res.end(JSON.stringify({
+                success: false,
+                status: 'TOKEN_ALREADY_USED',
+                message: 'This password reset link has already been used. Please request a new one.',
+                error: 'This password reset link has already been used. Please request a new one.',
+              }));
+            }
+
+            if (tokenRecord.expiresAt <= now) {
+              recordDevRateAttempt(verifyRateKey, 900);
+              res.statusCode = 400;
+              return res.end(JSON.stringify({
+                success: false,
+                status: 'TOKEN_EXPIRED',
+                message: 'This password reset link has expired (valid for 60 minutes). Please request a new one.',
+                error: 'This password reset link has expired (valid for 60 minutes). Please request a new one.',
+              }));
+            }
+
             const targetUser = devUsers.find((u) => u.id === tokenRecord.userId);
             if (!targetUser) {
               res.statusCode = 400;
               return res.end(JSON.stringify({
                 success: false,
                 status: 'INVALID_TOKEN',
-                message: 'Invalid or expired password reset link. Please request a new one.',
-                error: 'Invalid or expired password reset link. Please request a new one.',
+                message: 'Associated user account not found. Please request a new reset link.',
+                error: 'Associated user account not found. Please request a new reset link.',
               }));
             }
 

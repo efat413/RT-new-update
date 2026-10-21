@@ -3627,6 +3627,7 @@ export async function updateUserPasswordInD1(db: D1Database, id: string, newPass
 
 export async function unclaimPasswordResetToken(db: D1Database, tokenId: string): Promise<void> {
   try {
+    await ensurePasswordResetTokensTable(db);
     await db
       .prepare('UPDATE password_reset_tokens SET used_at = NULL WHERE id = ?')
       .bind(tokenId)
@@ -3657,6 +3658,29 @@ export async function deleteUserFromD1(db: D1Database, id: string): Promise<bool
   }
 }
 
+let passwordResetTokensTableInitialized = false;
+
+export async function ensurePasswordResetTokensTable(db: D1Database): Promise<void> {
+  if (passwordResetTokensTableInitialized || !db || typeof db.prepare !== 'function') return;
+  try {
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS password_reset_tokens (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        token_hash TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        used_at INTEGER,
+        created_at INTEGER NOT NULL
+      )
+    `).run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_prt_token_hash ON password_reset_tokens(token_hash)').run().catch(() => {});
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_prt_user_id ON password_reset_tokens(user_id)').run().catch(() => {});
+    passwordResetTokensTableInitialized = true;
+  } catch (err) {
+    console.warn('[D1] Error ensuring password_reset_tokens table exists:', err);
+  }
+}
+
 // ==============================================================
 // 7.1 PASSWORD RESET TOKENS (SECURE HASHED STORAGE)
 // ==============================================================
@@ -3667,6 +3691,7 @@ export async function createPasswordResetToken(
   tokenHash: string,
   expiresAt: number
 ): Promise<void> {
+  await ensurePasswordResetTokensTable(db);
   // Security Hardening: Use cryptographically secure randomUUID for token record identifier
   const tokenRecordRand = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
   const id = `prt-${Date.now()}-${tokenRecordRand}`;
@@ -3692,6 +3717,7 @@ export async function getPasswordResetToken(
   db: D1Database,
   tokenHash: string
 ): Promise<PasswordResetTokenRow | null> {
+  await ensurePasswordResetTokensTable(db);
   const row = await db
     .prepare('SELECT * FROM password_reset_tokens WHERE token_hash = ? LIMIT 1')
     .bind(tokenHash)
@@ -3709,25 +3735,10 @@ export async function claimPasswordResetToken(
   db: D1Database,
   tokenHash: string
 ): Promise<{ success: boolean; tokenRecord?: PasswordResetTokenRow | null }> {
+  await ensurePasswordResetTokensTable(db);
   const now = Date.now();
 
-  // 1. Try atomic claim with RETURNING clause in SQLite / D1
-  try {
-    const claimed = await db
-      .prepare(
-        'UPDATE password_reset_tokens SET used_at = ? WHERE token_hash = ? AND used_at IS NULL AND expires_at > ? RETURNING id, user_id, token_hash, expires_at, used_at, created_at'
-      )
-      .bind(now, tokenHash, now)
-      .first<PasswordResetTokenRow>();
-
-    if (claimed && claimed.id) {
-      return { success: true, tokenRecord: claimed };
-    }
-  } catch {
-    // If the D1 driver or simulation does not support RETURNING, fall back to atomic UPDATE + changes check
-  }
-
-  // 2. Atomic UPDATE ensuring single-use and expiration constraints
+  // Atomic UPDATE ensuring single-use and expiration constraints
   const res = await db
     .prepare(
       'UPDATE password_reset_tokens SET used_at = ? WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?'
@@ -3735,8 +3746,10 @@ export async function claimPasswordResetToken(
     .bind(now, tokenHash, now)
     .run();
 
-  const changes = res.meta?.changes ?? (res as any).changes ?? res.meta?.rows_written ?? 0;
-  if (changes !== 1) {
+  const changes = res?.meta?.changes ?? (res as any)?.changes ?? (res as any)?.meta?.rows_written;
+  const claimSuccess = changes !== undefined && changes !== null ? (res?.success && changes > 0) : Boolean(res?.success);
+
+  if (!claimSuccess) {
     // Zero rows were updated: token is already used, expired, or invalid.
     return { success: false, tokenRecord: null };
   }
@@ -3754,13 +3767,17 @@ export async function markPasswordResetTokenUsed(
   db: D1Database,
   id: string
 ): Promise<boolean> {
+  await ensurePasswordResetTokensTable(db);
   const now = Date.now();
   const res = await db
     .prepare('UPDATE password_reset_tokens SET used_at = ? WHERE id = ? AND used_at IS NULL')
     .bind(now, id)
     .run();
-  const changes = res.meta?.changes ?? (res as any).changes ?? res.meta?.rows_written ?? 0;
-  return changes === 1;
+  const changes = res?.meta?.changes ?? (res as any)?.changes ?? (res as any)?.meta?.rows_written;
+  if (changes !== undefined && changes !== null) {
+    return Boolean(res?.success && changes > 0);
+  }
+  return Boolean(res?.success);
 }
 
 

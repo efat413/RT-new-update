@@ -32,14 +32,31 @@ export const ResetPasswordPage: React.FC = () => {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const params = new URLSearchParams(window.location.search);
-    const urlToken = params.get('token') || '';
-    if (!urlToken.trim()) {
+    try {
+      const searchParams = new URLSearchParams(window.location.search);
+      const hashParams = new URLSearchParams(
+        window.location.hash.startsWith('#') ? window.location.hash.slice(1) : window.location.hash
+      );
+      const rawUrlToken =
+        searchParams.get('token') ||
+        searchParams.get('resetToken') ||
+        searchParams.get('t') ||
+        hashParams.get('token') ||
+        hashParams.get('resetToken') ||
+        hashParams.get('t') ||
+        '';
+
+      const decodedToken = decodeURIComponent(rawUrlToken).trim();
+      if (!decodedToken) {
+        setTokenMissing(true);
+        setErrorMessage('No password reset token was found in the link. Please request a new password reset.');
+      } else {
+        setToken(decodedToken);
+        setTokenMissing(false);
+      }
+    } catch {
       setTokenMissing(true);
-      setErrorMessage('No password reset token was found in the link. Please request a new password reset.');
-    } else {
-      setToken(urlToken.trim());
-      setTokenMissing(false);
+      setErrorMessage('Invalid password reset link. Please request a new password reset.');
     }
   }, []);
 
@@ -48,7 +65,8 @@ export const ResetPasswordPage: React.FC = () => {
     setErrorMessage('');
     setSuccessMessage('');
 
-    if (!token) {
+    const cleanToken = token.trim();
+    if (!cleanToken) {
       setErrorMessage('Invalid or missing password reset token. Please request a new reset link.');
       return;
     }
@@ -57,7 +75,7 @@ export const ResetPasswordPage: React.FC = () => {
     const trimmedConfirm = confirmPassword.trim();
 
     if (!trimmedNew || trimmedNew.length < MIN_PASSWORD_LENGTH) {
-      setErrorMessage('New password must be at least 8 characters long.');
+      setErrorMessage(`New password must be at least ${MIN_PASSWORD_LENGTH} characters long.`);
       return;
     }
 
@@ -68,7 +86,7 @@ export const ResetPasswordPage: React.FC = () => {
 
     setIsLoading(true);
     try {
-      const res = await authApi.resetPassword(token, trimmedNew);
+      const res = await authApi.resetPassword(cleanToken, trimmedNew);
       if (res.success) {
         setSuccessMessage(res.message || 'Your password has been successfully reset. You can now log in with your new password.');
         setNewPassword('');

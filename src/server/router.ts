@@ -2470,11 +2470,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         // 1. Generate cryptographically secure random token (32 bytes = 64 hex characters)
         const tokenBytes = new Uint8Array(32);
         crypto.getRandomValues(tokenBytes);
-        const rawToken = bufferToHex(tokenBytes.buffer);
+        const rawToken = bufferToHex(tokenBytes.buffer).toLowerCase();
 
         // 2. Store ONLY the SHA-256 hash of the reset token in D1 (never plaintext)
         const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(rawToken));
-        const tokenHash = bufferToHex(hashBuffer);
+        const tokenHash = bufferToHex(hashBuffer).toLowerCase();
 
         // 3. Short expiration time: 60 minutes
         const expiresAt = Date.now() + 60 * 60 * 1000;
@@ -2561,6 +2561,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       const clientIp = getClientIp(request, isDev);
       const verifyRateKey = `pwd-reset-verify:${clientIp}`;
       const verifyRateCheck = await checkRateLimit(verifyRateKey, 10, 900, env.DB, { policy: 'fail-closed', isDev });
+
       if (!verifyRateCheck.allowed) {
         const isDegraded = Boolean(verifyRateCheck.degraded);
         const msg = isDegraded
@@ -2578,13 +2579,14 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       }
 
       // Hash the submitted token using SHA-256 to compare with stored token hash
-      const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(rawToken));
-      const tokenHash = bufferToHex(hashBuffer);
+      const normalizedToken = rawToken.toLowerCase();
+      const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalizedToken));
+      const tokenHash = bufferToHex(hashBuffer).toLowerCase();
 
       // Check existing reset token before claiming
       const existingToken = await getPasswordResetToken(env.DB, tokenHash);
       const now = Date.now();
-      if (!existingToken || existingToken.used_at != null || existingToken.expires_at <= now) {
+      if (!existingToken) {
         await recordFailedAttempt(verifyRateKey, 10, 900, env.DB);
         return jsonResponse(
           {
@@ -2597,6 +2599,32 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         );
       }
 
+      if (existingToken.used_at != null) {
+        await recordFailedAttempt(verifyRateKey, 10, 900, env.DB);
+        return jsonResponse(
+          {
+            success: false,
+            status: 'TOKEN_ALREADY_USED',
+            message: 'This password reset link has already been used. Please request a new one.',
+            error: 'This password reset link has already been used. Please request a new one.',
+          },
+          400
+        );
+      }
+
+      if (Number(existingToken.expires_at) <= now) {
+        await recordFailedAttempt(verifyRateKey, 10, 900, env.DB);
+        return jsonResponse(
+          {
+            success: false,
+            status: 'TOKEN_EXPIRED',
+            message: 'This password reset link has expired (valid for 60 minutes). Please request a new one.',
+            error: 'This password reset link has expired (valid for 60 minutes). Please request a new one.',
+          },
+          400
+        );
+      }
+
       // Verify associated user account exists in D1 before claiming token
       const targetUser = await env.DB.prepare('SELECT id, email, role FROM users WHERE id = ?').bind(existingToken.user_id).first<UserRow>();
       if (!targetUser) {
@@ -2604,8 +2632,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           {
             success: false,
             status: 'INVALID_TOKEN',
-            message: 'Invalid or expired password reset link. Please request a new one.',
-            error: 'Invalid or expired password reset link. Please request a new one.',
+            message: 'Associated user account not found. Please request a new reset link.',
+            error: 'Associated user account not found. Please request a new reset link.',
           },
           400
         );
@@ -2619,9 +2647,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         return jsonResponse(
           {
             success: false,
-            status: 'INVALID_TOKEN',
-            message: 'Invalid or expired password reset link. Please request a new one.',
-            error: 'Invalid or expired password reset link. Please request a new one.',
+            status: 'TOKEN_ALREADY_USED',
+            message: 'This password reset link has already been used. Please request a new one.',
+            error: 'This password reset link has already been used. Please request a new one.',
           },
           400
         );

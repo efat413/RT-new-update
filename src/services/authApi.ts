@@ -467,14 +467,14 @@ export const authApi = {
           'Content-Type': 'application/json',
           'Cache-Control': 'no-cache, no-store, must-revalidate',
         },
-        body: JSON.stringify({ token, newPassword }),
+        body: JSON.stringify({ token: token.trim(), newPassword: newPassword.trim() }),
       });
 
       const data = await res.json().catch(() => ({}));
       const status = typeof data.status === 'string' ? data.status : undefined;
 
       if (res.status === 429 || status === 'RATE_LIMITED') {
-        const msg = 'Too many password reset attempts. Please try again later.';
+        const msg = data.message || data.error || 'Too many password reset attempts. Please try again later.';
         return {
           success: false,
           status: 'RATE_LIMITED',
@@ -484,13 +484,13 @@ export const authApi = {
       }
 
       if (!res.ok || !data.success) {
-        let msg = 'Invalid or expired password reset link. Please request a new one.';
+        let msg = data.message || data.error || 'Invalid or expired password reset link. Please request a new one.';
         if (status === 'TOKEN_ALREADY_USED') {
-          msg = 'This password reset link has already been used. Please request a new one.';
+          msg = data.message || data.error || 'This password reset link has already been used. Please request a new one.';
         } else if (status === 'TOKEN_EXPIRED') {
-          msg = 'This password reset link has expired (valid for 60 minutes). Please request a new one.';
+          msg = data.message || data.error || 'This password reset link has expired (valid for 60 minutes). Please request a new one.';
         } else if (status === 'INVALID_PASSWORD') {
-          msg = 'New password must be at least 8 characters long.';
+          msg = data.message || data.error || 'New password must be at least 8 characters long.';
         }
         return {
           success: false,
