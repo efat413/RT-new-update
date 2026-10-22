@@ -381,10 +381,11 @@ export const productsApi = {
     url.searchParams.set('limit', String(params?.limit || 24));
     if (params?.sortBy) url.searchParams.set('sortBy', params.sortBy);
 
-    const res = await apiRequest<{ success: boolean; products: Product[]; total: number; page: number; limit: number; totalPages: number }>(url.toString());
+    const res = await apiRequest<{ success: boolean; products?: Product[]; items?: Product[]; data?: Product[]; total: number; page: number; limit: number; totalPages: number }>(url.toString());
     if (res.success && res.data) {
-      const products = Array.isArray(res.data.products)
-        ? res.data.products
+      const rawProducts = res.data.products || (res.data as any).items || (res.data as any).data;
+      const products = Array.isArray(rawProducts)
+        ? rawProducts
         : Array.isArray(res.data)
         ? (res.data as any)
         : [];

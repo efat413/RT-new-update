@@ -18,6 +18,8 @@ interface CategoryListingViewProps {
   searchQuery?: string;
   products?: Product[];
   isLoading?: boolean;
+  error?: string | null;
+  onRetry?: () => void;
   totalProducts?: number;
   currentPage?: number;
   totalPages?: number;
@@ -38,6 +40,8 @@ export const CategoryListingView: React.FC<CategoryListingViewProps> = ({
   searchQuery,
   products: propProducts,
   isLoading: propIsLoading,
+  error: propError,
+  onRetry,
   totalProducts: propTotalProducts,
   currentPage: propCurrentPage,
   totalPages: propTotalPages,
@@ -64,6 +68,7 @@ export const CategoryListingView: React.FC<CategoryListingViewProps> = ({
   const isControlled = propProducts !== undefined;
   const products = isControlled ? propProducts : internalProducts;
   const isLoading = isControlled ? Boolean(propIsLoading) : internalLoading;
+  const error = propError || null;
   const currentPage = isControlled ? (propCurrentPage || 1) : internalPage;
   const totalProducts = isControlled ? (propTotalProducts ?? products.length) : internalTotal;
   const totalPages = isControlled ? (propTotalPages || 1) : internalTotalPages;
@@ -287,7 +292,7 @@ export const CategoryListingView: React.FC<CategoryListingViewProps> = ({
         </div>
       </div>
 
-      {/* Main Content: Loading State, Empty State, or Product Grid */}
+      {/* Main Content: Loading State, Error State, Empty State, or Product Grid */}
       {isLoading ? (
         <div className="space-y-4">
           <div className="flex items-center justify-center gap-2 py-2 text-xs font-semibold text-slate-500">
@@ -307,6 +312,35 @@ export const CategoryListingView: React.FC<CategoryListingViewProps> = ({
                 <div className="h-8 w-full rounded-xl bg-slate-100 animate-pulse" />
               </div>
             ))}
+          </div>
+        </div>
+      ) : error ? (
+        <div className="py-16 text-center space-y-4 bg-white rounded-3xl border border-rose-200 shadow-xs px-4">
+          <div className="w-16 h-16 rounded-full bg-rose-50 flex items-center justify-center mx-auto text-rose-500">
+            <Package className="w-8 h-8" />
+          </div>
+          <h3 className="font-bold text-slate-800 text-lg">Failed to Load Products</h3>
+          <p className="text-xs text-slate-500 max-w-sm mx-auto">
+            {error}
+          </p>
+          <div className="flex items-center justify-center gap-3 pt-2">
+            {onRetry && (
+              <button
+                type="button"
+                onClick={onRetry}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-md active:scale-95 transition-all cursor-pointer"
+              >
+                <Loader2 className="w-3.5 h-3.5" />
+                <span>Try Again</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onBackToHome}
+              className="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition-all cursor-pointer"
+            >
+              Back to Homepage
+            </button>
           </div>
         </div>
       ) : products.length === 0 ? (

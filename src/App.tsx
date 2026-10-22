@@ -289,6 +289,8 @@ const StoreContent: React.FC = () => {
     categoryTotalPages,
     categoryTotalProducts,
     isCategoryLoading,
+    categoryError,
+    retryCategoryFetch,
     categorySortBy,
     setCategorySortBy,
     featuredProducts,
@@ -578,7 +580,9 @@ const StoreContent: React.FC = () => {
     );
   }
 
-  const activeCategoryObj = categories.find((c) => c.id === selectedCategory || c.slug === selectedCategory);
+  const activeCategoryObj = categories.find(
+    (c) => c.id === selectedCategory || c.slug?.toLowerCase() === selectedCategory?.toLowerCase()
+  );
   const supportWhatsAppNumber = settings.footer?.supportWhatsApp || settings.phone || '';
   const floatingWhatsAppHref = formatWhatsAppLink(
     supportWhatsAppNumber,
@@ -716,6 +720,8 @@ const StoreContent: React.FC = () => {
                     searchQuery={searchQuery}
                     products={categoryListingProducts}
                     isLoading={isCategoryLoading}
+                    error={categoryError}
+                    onRetry={retryCategoryFetch}
                     totalProducts={categoryTotalProducts}
                     currentPage={categoryPage}
                     totalPages={categoryTotalPages}

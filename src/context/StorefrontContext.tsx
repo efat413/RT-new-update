@@ -100,6 +100,8 @@ export interface StorefrontContextType {
   categoryTotalPages: number;
   categoryTotalProducts: number;
   isCategoryLoading: boolean;
+  categoryError: string | null;
+  retryCategoryFetch: () => void;
   categorySortBy: 'featured' | 'price-asc' | 'price-desc' | 'rating';
   setCategorySortBy: (sort: 'featured' | 'price-asc' | 'price-desc' | 'rating') => void;
 
@@ -296,6 +298,11 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [categoryTotalProducts, setCategoryTotalProducts] = useState<number>(0);
   const [categorySortBy, setCategorySortByState] = useState<'featured' | 'price-asc' | 'price-desc' | 'rating'>('featured');
   const [isCategoryLoading, setIsCategoryLoading] = useState<boolean>(false);
+  const [categoryError, setCategoryError] = useState<string | null>(null);
+
+  const retryCategoryFetch = useCallback(() => {
+    setCategoryNavSeq((prev) => prev + 1);
+  }, []);
 
   const setCategorySortBy = useCallback((newSort: 'featured' | 'price-asc' | 'price-desc' | 'rating') => {
     setCategoryListingProducts([]);
@@ -411,6 +418,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setCategoryListingProducts([]);
     setSelectedCategoryState((prev) => (prev === catId ? prev : catId));
     setCategoryPage((prev) => (prev === 1 ? prev : 1));
+    setCategoryNavSeq((prev) => prev + 1);
   }, []);
 
   const navigateToCategory = useCallback((categoryIdOrSlug: string | null) => {
@@ -496,6 +504,19 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, [categories]);
+
+  // When categories are loaded/updated, normalize selectedCategory to canonical ID if it was set via URL slug
+  useEffect(() => {
+    if (!selectedCategory || selectedCategory === 'featured' || categories.length === 0) {
+      return;
+    }
+    const matched = categories.find(
+      (c) => c.slug?.toLowerCase() === selectedCategory.toLowerCase() || c.id === selectedCategory
+    );
+    if (matched && matched.id !== selectedCategory) {
+      setSelectedCategoryState(matched.id);
+    }
+  }, [categories, selectedCategory]);
 
   const [searchQuery, setSearchQueryState] = useState<string>('');
 
@@ -1182,32 +1203,41 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   // Server-side paginated product fetch for dedicated Category Listing and Search Views
   useEffect(() => {
     if (!selectedCategory && !searchQuery.trim()) {
+      setCategoryListingProducts([]);
+      setCategoryError(null);
+      setIsCategoryLoading(false);
       return;
     }
 
     let isCancelled = false;
     setIsCategoryLoading(true);
+    setCategoryError(null);
 
     const isFeaturedCategory = selectedCategory === 'featured';
-    const catObj = categories.find((c) => c.id === selectedCategory || c.slug === selectedCategory);
+    const catObj = categories.find(
+      (c) => c.id === selectedCategory || c.slug?.toLowerCase() === selectedCategory?.toLowerCase()
+    );
     const categoryParamForApi = isFeaturedCategory
       ? undefined
       : (catObj ? catObj.id : (selectedCategory || undefined));
 
+    const apiParams = {
+      category: categoryParamForApi,
+      search: searchQuery.trim() || undefined,
+      featured: isFeaturedCategory ? true : undefined,
+      page: categoryPage,
+      limit: 12,
+      sortBy: categorySortBy,
+    };
+
     productsApi
-      .getPaginated({
-        category: categoryParamForApi,
-        search: searchQuery.trim() || undefined,
-        featured: isFeaturedCategory ? true : undefined,
-        page: categoryPage,
-        limit: 12,
-        sortBy: categorySortBy,
-      })
+      .getPaginated(apiParams)
       .then((res) => {
         if (!isCancelled) {
           setCategoryListingProducts(res.products);
           setCategoryTotalProducts(res.total);
           setCategoryTotalPages(res.totalPages);
+          setCategoryError(null);
           setIsCategoryLoading(false);
 
           setProducts((prev) => {
@@ -1236,6 +1266,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       .catch((err) => {
         if (!isCancelled) {
           console.warn('Failed to fetch paginated products:', err);
+          setCategoryError(err?.message || 'Failed to load category products. Please try again.');
           setIsCategoryLoading(false);
         }
       });
@@ -1243,7 +1274,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     return () => {
       isCancelled = true;
     };
-  }, [selectedCategory, searchQuery, categoryPage, categorySortBy, categories]);
+  }, [selectedCategory, searchQuery, categoryPage, categorySortBy, categories, categoryNavSeq]);
 
   // Customer Checkout & Order Creation
   const createOrder = useCallback(async (orderData: {
@@ -1719,6 +1750,8 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     categoryTotalPages,
     categoryTotalProducts,
     isCategoryLoading,
+    categoryError,
+    retryCategoryFetch,
     categorySortBy,
     setCategorySortBy,
     wishlist,
@@ -1796,6 +1829,8 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     categoryTotalPages,
     categoryTotalProducts,
     isCategoryLoading,
+    categoryError,
+    retryCategoryFetch,
     categorySortBy,
     wishlist,
     isWishlistOpen,
