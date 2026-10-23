@@ -1655,7 +1655,8 @@ function localApiDevPlugin(): Plugin {
           const pathname = url.pathname;
           const normalizedPathname = pathname.replace(/\/+$/, '') || '/';
           const VALID_SPA_PATHS = new Set(['/', '/admin', '/reset-password', '/tracking', '/account', '/checkout', '/cart']);
-          const isKnownSpa = VALID_SPA_PATHS.has(normalizedPathname) || normalizedPathname.startsWith('/admin/') || normalizedPathname.startsWith('/reset-password/');
+          const isAssetUnderAdmin = normalizedPathname.startsWith('/admin/') && (/\.[a-zA-Z0-9]{2,5}$/.test(normalizedPathname) || normalizedPathname.includes('/assets/'));
+          const isKnownSpa = !isAssetUnderAdmin && (VALID_SPA_PATHS.has(normalizedPathname) || normalizedPathname.startsWith('/admin/') || normalizedPathname.startsWith('/reset-password/'));
           const isVitePath =
             pathname.startsWith('/@') ||
             pathname.startsWith('/src/') ||
@@ -8116,6 +8117,7 @@ function localApiDevPlugin(): Plugin {
 
 export default defineConfig(() => {
   return {
+    base: '/',
     plugins: [react(), tailwindcss(), { ...localApiDevPlugin(), apply: 'serve' }],
     resolve: {
       alias: {

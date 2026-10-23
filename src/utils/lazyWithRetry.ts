@@ -1,17 +1,19 @@
 import React, { ComponentType, LazyExoticComponent } from 'react';
 
 export interface LazyWithRetryOptions {
-  /** Maximum number of auto-reload attempts for chunk failures before giving up (default: 2) */
+  /** Maximum number of auto-reload attempts for persistent chunk failures before rendering boundary (default: 2) */
   maxRetries?: number;
   /** Storage key to track reload attempts in sessionStorage (default: 'chunk_retry_' + componentName) */
   storageKey?: string;
-  /** Time window in milliseconds for retry counts to stay active (default: 15000 ms) */
+  /** Time window in milliseconds for reload retry counts to stay active (default: 20000 ms) */
   windowMs?: number;
+  /** In-memory retry attempts before initiating page reload (default: 2) */
+  inMemoryRetries?: number;
 }
 
 /**
- * Checks whether an error represents a JavaScript chunk or dynamic import failure.
- * Covers Chrome, Firefox, Safari/WebKit, Edge, Vite, and Cloudflare asset 404s.
+ * Checks whether an error represents a JavaScript chunk, dynamic import, or asset delivery failure.
+ * Covers Chrome, Firefox, Safari/WebKit, Edge, Vite, and Cloudflare asset 404s/MIME-type HTML responses.
  */
 export function isChunkLoadError(error: unknown): boolean {
   if (!error) return false;
@@ -27,18 +29,26 @@ export function isChunkLoadError(error: unknown): boolean {
     msg.includes('loading css chunk') ||
     msg.includes('unable to load script') ||
     msg.includes('error resolving module specifier') ||
+    msg.includes("unexpected token '<'") ||
+    msg.includes("expected expression, got '<'") ||
+    msg.includes('failed to load module script') ||
+    msg.includes('mime type') ||
+    msg.includes('strict mime type') ||
+    msg.includes('script error') ||
     (msg.includes('load failed') && !msg.includes('network request failed'))
   );
 }
 
 /**
- * Creates a React.lazy component wrapped in a bounded, loop-safe retry mechanism.
+ * Creates a React.lazy component wrapped in a robust, dual-tier recovery mechanism:
  * 
- * Guarantees:
- * 1. On successful import, automatically removes any retry flags from sessionStorage.
- * 2. On chunk-load failure, attempts a bounded page reload (default: max 2 attempts).
- * 3. Never enters an infinite reload loop if an asset remains genuinely missing.
- * 4. Resets cleanly so subsequent genuine failures in the same tab can recover.
+ * 1. Tier 1 (In-Memory Retry): Immediately retries the dynamic import in-memory (up to 2 times)
+ *    to transparently absorb transient latency, server compile delay, or network blips without
+ *    any disruption to the user or unnecessary page reloads.
+ * 2. Tier 2 (Loop-Safe Page Reload): If in-memory retries fail because assets changed after a
+ *    new deployment, initiates a bounded page reload (max 2 attempts) to fetch fresh HTML shells.
+ * 3. Self-Clearing State: Automatically cleans up sessionStorage counters immediately on success
+ *    and on manual user retry so subsequent genuine failures in the session can recover cleanly.
  */
 export function lazyWithRetry<T extends ComponentType<any>>(
   componentFactory: () => Promise<{ default: T } | T>,
@@ -46,82 +56,93 @@ export function lazyWithRetry<T extends ComponentType<any>>(
   options: LazyWithRetryOptions = {}
 ): LazyExoticComponent<T> {
   const maxRetries = options.maxRetries ?? 2;
+  const inMemoryRetries = options.inMemoryRetries ?? 2;
   const storageKey = options.storageKey || `chunk_retry_${componentName.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
-  const windowMs = options.windowMs ?? 15000;
+  const windowMs = options.windowMs ?? 20000;
 
-  // Primary lazy component loader with bounded reload retry
   return React.lazy(async () => {
-    try {
-      const module = await componentFactory();
+    let lastError: any = null;
 
-      // On successful module import: Clean up retry counter so future failures can also recover
-      if (typeof window !== 'undefined' && window.sessionStorage) {
-        try {
-          window.sessionStorage.removeItem(storageKey);
-          // Also remove legacy single-boolean keys if present
-          if (componentName === 'AdminPanel') {
-            window.sessionStorage.removeItem('chunk_retry_admin');
-          }
-        } catch {}
-      }
+    // Tier 1: In-memory retry loop
+    for (let attempt = 0; attempt <= inMemoryRetries; attempt++) {
+      try {
+        if (attempt > 0) {
+          // Exponential backoff: 150ms, 300ms
+          await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
+        }
 
-      // Normalization: Support both `{ default: Component }` and direct `{ Component }`
-      if (module && typeof module === 'object' && 'default' in module) {
-        return module as { default: T };
-      }
-      return { default: module as T };
-    } catch (err: any) {
-      if (typeof window !== 'undefined' && window.sessionStorage) {
-        const isChunkErr = isChunkLoadError(err);
+        const module = await componentFactory();
 
-        try {
-          const raw = window.sessionStorage.getItem(storageKey);
-          let record: { count: number; timestamp: number } = { count: 0, timestamp: 0 };
-
-          if (raw) {
-            try {
-              const parsed = JSON.parse(raw);
-              if (parsed && typeof parsed === 'object') {
-                record = parsed;
-              }
-            } catch {
-              // Backward-compatible parse for legacy 'true' string
-              record = { count: 1, timestamp: Date.now() };
+        // Successful import: Clean up retry counters
+        if (typeof window !== 'undefined' && window.sessionStorage) {
+          try {
+            window.sessionStorage.removeItem(storageKey);
+            if (componentName === 'AdminPanel') {
+              window.sessionStorage.removeItem('chunk_retry_admin');
+              window.sessionStorage.removeItem('chunk_retry_adminpanel');
             }
-          }
+          } catch {}
+        }
 
-          const now = Date.now();
-          const isWithinWindow = now - record.timestamp < windowMs;
-          const currentCount = isWithinWindow ? record.count : 0;
-
-          if (isChunkErr && currentCount < maxRetries) {
-            const nextCount = currentCount + 1;
-            window.sessionStorage.setItem(
-              storageKey,
-              JSON.stringify({ count: nextCount, timestamp: now })
-            );
-
-            // Log sanitized diagnostic for developers without exposing credentials or PII
-            console.warn(
-              `[lazyWithRetry] Detected chunk loading error for "${componentName}" (attempt ${nextCount}/${maxRetries}). Initiating loop-safe page reload...`
-            );
-
-            // Trigger clean reload
-            window.location.reload();
-            // Return a pending promise so React does not synchronously throw to ErrorBoundary before reload completes
-            return new Promise<{ default: T }>(() => {});
-          } else if (currentCount >= maxRetries) {
-            console.error(
-              `[lazyWithRetry] Maximum chunk retries (${maxRetries}) reached for "${componentName}". Rendering fallback boundary.`
-            );
-          }
-        } catch (storageErr) {
-          console.warn('[lazyWithRetry] sessionStorage access error:', storageErr);
+        if (module && typeof module === 'object' && 'default' in module) {
+          return module as { default: T };
+        }
+        return { default: module as T };
+      } catch (err: any) {
+        lastError = err;
+        // If it's not a chunk loading error (e.g. application runtime bug), do not retry in-memory
+        if (!isChunkLoadError(err)) {
+          throw err;
         }
       }
-
-      // Re-throw if non-chunk error or max retries exceeded
-      throw err;
     }
+
+    // Tier 2: Persistent chunk failure after in-memory retries (e.g. stale deployment hashes)
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      const isChunkErr = isChunkLoadError(lastError);
+
+      try {
+        const raw = window.sessionStorage.getItem(storageKey);
+        let record: { count: number; timestamp: number } = { count: 0, timestamp: 0 };
+
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === 'object') {
+              record = parsed;
+            }
+          } catch {
+            record = { count: 1, timestamp: Date.now() };
+          }
+        }
+
+        const now = Date.now();
+        const isWithinWindow = now - record.timestamp < windowMs;
+        const currentCount = isWithinWindow ? record.count : 0;
+
+        if (isChunkErr && currentCount < maxRetries) {
+          const nextCount = currentCount + 1;
+          window.sessionStorage.setItem(
+            storageKey,
+            JSON.stringify({ count: nextCount, timestamp: now })
+          );
+
+          console.warn(
+            `[lazyWithRetry] Stale chunk detected for "${componentName}" after in-memory retries (attempt ${nextCount}/${maxRetries}). Initiating loop-safe page reload...`
+          );
+
+          window.location.reload();
+          return new Promise<{ default: T }>(() => {});
+        } else if (currentCount >= maxRetries) {
+          console.error(
+            `[lazyWithRetry] Maximum chunk retries (${maxRetries}) reached for "${componentName}". Rendering fallback boundary.`
+          );
+        }
+      } catch (storageErr) {
+        console.warn('[lazyWithRetry] sessionStorage access error:', storageErr);
+      }
+    }
+
+    throw lastError;
   });
 }

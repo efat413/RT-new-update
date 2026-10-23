@@ -32,8 +32,8 @@ describe('Admin Panel Chunk Loading & Recovery Architecture', () => {
       sessionStorage: mockStorage,
       location: {
         reload: reloadMock,
-        pathname: '/admin',
-        href: 'http://localhost:3000/admin',
+        pathname: '/admin/products',
+        href: 'http://localhost:3000/admin/products',
       },
     };
 
@@ -64,15 +64,24 @@ describe('Admin Panel Chunk Loading & Recovery Architecture', () => {
       expect(isChunkLoadError(err2)).toBe(true);
     });
 
+    it('correctly classifies HTML 404 response SyntaxError (Unexpected token <)', () => {
+      const err = new SyntaxError("Unexpected token '<', \"<!doctype \"... is not valid JavaScript");
+      expect(isChunkLoadError(err)).toBe(true);
+      const errFirefox = new SyntaxError("expected expression, got '<'");
+      expect(isChunkLoadError(errFirefox)).toBe(true);
+    });
+
     it('correctly classifies Webpack/Rollup style chunk errors', () => {
       const err = new Error('Loading chunk 14 failed.');
       (err as any).name = 'ChunkLoadError';
       expect(isChunkLoadError(err)).toBe(true);
     });
 
-    it('correctly classifies CSS chunk failures', () => {
+    it('correctly classifies CSS chunk failures and MIME type errors', () => {
       const err = new Error('Loading CSS chunk AdminPanel failed.');
       expect(isChunkLoadError(err)).toBe(true);
+      const errMime = new TypeError('Failed to load module script: Expected a JavaScript module script but the server responded with a MIME type of "text/html".');
+      expect(isChunkLoadError(errMime)).toBe(true);
     });
 
     it('rejects regular application runtime errors', () => {
@@ -85,8 +94,32 @@ describe('Admin Panel Chunk Loading & Recovery Architecture', () => {
   });
 
   describe('lazyWithRetry dynamic loader behavior', () => {
+    it('recovers seamlessly in-memory on transient chunk failure without page reload', async () => {
+      const DummyComponent: React.FC = () => null;
+      const transientErr = new TypeError('Failed to fetch dynamically imported module: /assets/AdminPanel-temp.js');
+      
+      // Fails on attempt 0, succeeds on attempt 1 in-memory
+      const factory = vi.fn()
+        .mockRejectedValueOnce(transientErr)
+        .mockResolvedValueOnce({ default: DummyComponent });
+
+      const LazyComp = lazyWithRetry(factory, 'AdminPanel', { inMemoryRetries: 2 });
+      const loadFn = (LazyComp as any)._payload?._result || (LazyComp as any)._init;
+
+      let result: any = null;
+      if (typeof loadFn === 'function') {
+        result = await loadFn((LazyComp as any)._payload);
+      }
+
+      // Proves: in-memory retry succeeded!
+      expect(factory).toHaveBeenCalledTimes(2);
+      expect(result).toBeDefined();
+      expect(result.default).toBe(DummyComponent);
+      // No disruptive page reload was triggered!
+      expect(reloadMock).not.toHaveBeenCalled();
+    });
+
     it('clears sessionStorage retry keys on successful module resolution', async () => {
-      // Simulate previously set retry flag
       mockSessionStorage['chunk_retry_admin'] = 'true';
       mockSessionStorage['chunk_retry_adminpanel'] = JSON.stringify({ count: 1, timestamp: Date.now() });
 
@@ -95,39 +128,33 @@ describe('Admin Panel Chunk Loading & Recovery Architecture', () => {
 
       const LazyComp = lazyWithRetry(factory, 'AdminPanel');
 
-      // Execute factory by reading _payload._result (standard React.lazy contract)
       const payload = (LazyComp as any)._payload;
       const loadFn = payload?._result || (LazyComp as any)._init;
       
-      let loadedModule: any;
       if (typeof loadFn === 'function') {
-        loadedModule = await loadFn(payload);
+        await loadFn(payload);
       } else {
-        // Direct factory call if React internal signature differs
-        loadedModule = await factory();
+        await factory();
       }
 
       expect(factory).toHaveBeenCalledTimes(1);
-      // Verify legacy and component keys are cleaned up
       expect(mockSessionStorage['chunk_retry_admin']).toBeUndefined();
       expect(mockSessionStorage['chunk_retry_adminpanel']).toBeUndefined();
     });
 
-    it('initiates bounded reload on first chunk failure and records attempt count', async () => {
+    it('initiates bounded reload on persistent chunk failure after in-memory retries exhausted', async () => {
       const chunkErr = new TypeError('Failed to fetch dynamically imported module: /assets/AdminPanel-old.js');
       const factory = vi.fn().mockRejectedValue(chunkErr);
 
-      const LazyComp = lazyWithRetry(factory, 'AdminPanel', { maxRetries: 2 });
+      const LazyComp = lazyWithRetry(factory, 'AdminPanel', { inMemoryRetries: 0, maxRetries: 2 });
       const payload = (LazyComp as any)._payload;
       const loadFn = payload?._result || (LazyComp as any)._init;
 
       if (typeof loadFn === 'function') {
-        // Trigger load
         loadFn(payload);
       }
 
-      // Allow async catch block to execute
-      await new Promise((r) => setTimeout(r, 10));
+      await new Promise((r) => setTimeout(r, 20));
 
       expect(reloadMock).toHaveBeenCalledTimes(1);
       const saved = JSON.parse(mockSessionStorage['chunk_retry_adminpanel'] || '{}');
@@ -136,7 +163,6 @@ describe('Admin Panel Chunk Loading & Recovery Architecture', () => {
     });
 
     it('stops reloading and throws safely after reaching maxRetries (prevents infinite loops)', async () => {
-      // Seed sessionStorage with max attempts already reached
       mockSessionStorage['chunk_retry_adminpanel'] = JSON.stringify({
         count: 2,
         timestamp: Date.now(),
@@ -145,7 +171,7 @@ describe('Admin Panel Chunk Loading & Recovery Architecture', () => {
       const chunkErr = new TypeError('Failed to fetch dynamically imported module: /assets/AdminPanel-old.js');
       const factory = vi.fn().mockRejectedValue(chunkErr);
 
-      const LazyComp = lazyWithRetry(factory, 'AdminPanel', { maxRetries: 2 });
+      const LazyComp = lazyWithRetry(factory, 'AdminPanel', { inMemoryRetries: 0, maxRetries: 2 });
       const payload = (LazyComp as any)._payload;
       const loadFn = payload?._result || (LazyComp as any)._init;
 
@@ -158,26 +184,22 @@ describe('Admin Panel Chunk Loading & Recovery Architecture', () => {
         }
       }
 
-      // Did NOT reload again
       expect(reloadMock).not.toHaveBeenCalled();
-      // Error was safely passed through to be caught by ErrorBoundary
       expect(caughtError).toBe(chunkErr);
     });
 
     it('allows fresh recovery on subsequent failures after a previous load succeeded', async () => {
-      // 1. First failure -> triggers reload 1
       const chunkErr = new TypeError('Failed to fetch dynamically imported module: /assets/AdminPanel-old.js');
       let factory = vi.fn().mockRejectedValue(chunkErr);
 
-      let LazyComp = lazyWithRetry(factory, 'AdminPanel');
+      let LazyComp = lazyWithRetry(factory, 'AdminPanel', { inMemoryRetries: 0 });
       let loadFn = (LazyComp as any)._payload?._result || (LazyComp as any)._init;
       if (typeof loadFn === 'function') {
         loadFn((LazyComp as any)._payload);
       }
-      await new Promise((r) => setTimeout(r, 10));
+      await new Promise((r) => setTimeout(r, 20));
       expect(reloadMock).toHaveBeenCalledTimes(1);
 
-      // 2. Next load succeeds -> clears storage
       const DummyComponent: React.FC = () => null;
       factory = vi.fn().mockResolvedValue({ default: DummyComponent });
       LazyComp = lazyWithRetry(factory, 'AdminPanel');
@@ -187,20 +209,18 @@ describe('Admin Panel Chunk Loading & Recovery Architecture', () => {
       }
       expect(mockSessionStorage['chunk_retry_adminpanel']).toBeUndefined();
 
-      // 3. Much later, another deployment causes a new chunk failure -> CAN reload again!
       reloadMock.mockClear();
       factory = vi.fn().mockRejectedValue(new TypeError('Failed to fetch dynamically imported module: /assets/AdminPanel-new.js'));
-      LazyComp = lazyWithRetry(factory, 'AdminPanel');
+      LazyComp = lazyWithRetry(factory, 'AdminPanel', { inMemoryRetries: 0 });
       loadFn = (LazyComp as any)._payload?._result || (LazyComp as any)._init;
       if (typeof loadFn === 'function') {
         loadFn((LazyComp as any)._payload);
       }
-      await new Promise((r) => setTimeout(r, 10));
-      // Proves recovery is NOT blocked by a permanently stuck flag!
+      await new Promise((r) => setTimeout(r, 20));
       expect(reloadMock).toHaveBeenCalledTimes(1);
     });
 
-    it('throws non-chunk errors immediately without triggering page reload', async () => {
+    it('throws non-chunk errors immediately without triggering page reload or in-memory retry loops', async () => {
       const runtimeErr = new ReferenceError('someVariable is not defined');
       const factory = vi.fn().mockRejectedValue(runtimeErr);
 
@@ -216,13 +236,14 @@ describe('Admin Panel Chunk Loading & Recovery Architecture', () => {
         }
       }
 
+      expect(factory).toHaveBeenCalledTimes(1);
       expect(reloadMock).not.toHaveBeenCalled();
       expect(caughtError).toBe(runtimeErr);
     });
   });
 
   describe('ErrorBoundary chunk error diagnostics and retry handling', () => {
-    it('cleans up sessionStorage chunk retry keys when user clicks retry on chunk error', () => {
+    it('cleans up sessionStorage chunk retry keys and reloads when user clicks reload on chunk error', () => {
       mockSessionStorage['chunk_retry_admin'] = 'true';
       mockSessionStorage['chunk_retry_adminpanel'] = '{"count":2}';
 
@@ -239,7 +260,8 @@ describe('Admin Panel Chunk Loading & Recovery Architecture', () => {
       expect(reloadMock).toHaveBeenCalledTimes(1);
     });
 
-    it('resets state and triggers onReset callback for non-chunk errors', () => {
+    it('resets state and triggers onReset callback without reloading for non-chunk errors', () => {
+      mockSessionStorage['chunk_retry_admin'] = 'true';
       const onResetMock = vi.fn();
       const boundary = new ErrorBoundary({ children: null, onReset: onResetMock });
       boundary.setState = vi.fn(function (partial: any) {
@@ -258,7 +280,29 @@ describe('Admin Panel Chunk Loading & Recovery Architecture', () => {
       expect(reloadMock).not.toHaveBeenCalled();
       expect(boundary.state.hasError).toBe(false);
       expect(boundary.state.error).toBeNull();
+      expect(mockSessionStorage['chunk_retry_admin']).toBeUndefined();
       expect(onResetMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('renders Reload Page for chunk errors and Try Again for application runtime errors', () => {
+      const chunkBoundary = new ErrorBoundary({ children: null });
+      chunkBoundary.state = {
+        hasError: true,
+        error: new TypeError('Failed to fetch dynamically imported module: /assets/AdminPanel.js'),
+      };
+      const chunkRender = chunkBoundary.render() as any;
+      const chunkString = JSON.stringify(chunkRender);
+      expect(chunkString).toContain('Reload Page');
+
+      const runtimeBoundary = new ErrorBoundary({ children: null });
+      runtimeBoundary.state = {
+        hasError: true,
+        error: new Error('Validation failed'),
+      };
+      const runtimeRender = runtimeBoundary.render() as any;
+      const runtimeString = JSON.stringify(runtimeRender);
+      expect(runtimeString).toContain('Try Again');
+      expect(runtimeString).not.toContain('Reload Page');
     });
 
     it('redacts sensitive bearer tokens in console error diagnostics', () => {
