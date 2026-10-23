@@ -1,6 +1,5 @@
 import React, { ErrorInfo, ReactNode } from 'react';
 import { AlertTriangle, RefreshCw, Home } from 'lucide-react';
-import { isChunkLoadError } from '../utils/lazyWithRetry';
 
 export interface ErrorBoundaryProps {
   children: ReactNode;
@@ -42,43 +41,29 @@ export class ErrorBoundary extends (React.Component as unknown as {
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     const errorType = error?.name || 'Error';
-    const isChunk = isChunkLoadError(error);
-
-    // Sanitize message to ensure no sensitive bearer tokens or passwords ever leak into browser console
-    const rawMessage = error?.message || String(error);
-    const sanitizedMessage = rawMessage
-      .replace(/bearer\s+[a-zA-Z0-9_\-.]+/gi, 'Bearer [REDACTED]')
-      .replace(/(?:password|token|secret)=[^&\s]+/gi, '$1=[REDACTED]');
+    const isChunkLoadError =
+      error?.message?.includes('Failed to fetch dynamically imported module') ||
+      error?.message?.includes('Importing a module script failed') ||
+      error?.message?.includes('Loading chunk');
 
     console.error(
-      `[ErrorBoundary] Caught ${errorType}${isChunk ? ' (ChunkLoadError)' : ''}:`,
-      sanitizedMessage,
+      `[ErrorBoundary] Caught ${errorType}${isChunkLoadError ? ' (ChunkLoadError)' : ''}:`,
+      error?.message,
       '\nComponent stack:',
       errorInfo?.componentStack
     );
   }
 
   handleRetry = () => {
-    const isChunk = isChunkLoadError(this.state.error);
-
-    // Clear any sessionStorage chunk retry counters so the retry gets a clean slate
-    if (typeof window !== 'undefined' && window.sessionStorage) {
-      try {
-        window.sessionStorage.removeItem('chunk_retry_admin');
-        for (let i = window.sessionStorage.length - 1; i >= 0; i--) {
-          const k = window.sessionStorage.key(i);
-          if (k && k.startsWith('chunk_retry_')) {
-            window.sessionStorage.removeItem(k);
-          }
-        }
-      } catch {}
-    }
-
-    if (isChunk) {
+    // If it's a chunk loading error, reloading the page or cache-busting helps
+    if (
+      this.state.error?.message?.includes('Failed to fetch dynamically imported module') ||
+      this.state.error?.message?.includes('Importing a module script failed') ||
+      this.state.error?.message?.includes('Loading chunk')
+    ) {
       window.location.reload();
       return;
     }
-
     this.setState({ hasError: false, error: null });
     if (this.props.onReset) {
       this.props.onReset();
@@ -91,15 +76,18 @@ export class ErrorBoundary extends (React.Component as unknown as {
 
   render(): ReactNode {
     if (this.state.hasError) {
-      const isChunk = isChunkLoadError(this.state.error);
+      const isChunkLoadError =
+        this.state.error?.message?.includes('Failed to fetch dynamically imported module') ||
+        this.state.error?.message?.includes('Importing a module script failed') ||
+        this.state.error?.message?.includes('Loading chunk');
 
       const title =
         this.props.fallbackTitle ||
-        (isChunk ? 'New Version Available' : 'Something went wrong');
+        (isChunkLoadError ? 'New Version Available' : 'Something went wrong');
 
       const message =
         this.props.fallbackMessage ||
-        (isChunk
+        (isChunkLoadError
           ? 'A newer version of this page is available. Please reload to fetch the latest update.'
           : 'We encountered an unexpected error while loading this content. Please try again.');
 
@@ -118,7 +106,7 @@ export class ErrorBoundary extends (React.Component as unknown as {
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-black text-white text-xs font-bold transition-all shadow-xs cursor-pointer active:scale-95"
               >
                 <RefreshCw className="w-3 h-3" />
-                <span>{isChunk ? 'Reload Page' : 'Try Again'}</span>
+                <span>Try Again</span>
               </button>
             </div>
           </div>
@@ -142,7 +130,7 @@ export class ErrorBoundary extends (React.Component as unknown as {
                 className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-black text-white text-xs font-bold transition-all shadow-sm active:scale-95 cursor-pointer"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
-                <span>{isChunk ? 'Reload Page' : 'Try Again'}</span>
+                <span>{isChunkLoadError ? 'Reload Page' : 'Try Again'}</span>
               </button>
               {(this.props.showHomeButton ?? true) && (
                 <button

@@ -11708,19 +11708,9 @@ const AdminPanelContent: React.FC = () => {
 };
 
 export const AdminPanel: React.FC = () => {
-  useEffect(() => {
-    if (typeof window !== 'undefined' && window.sessionStorage) {
-      try {
-        window.sessionStorage.removeItem('chunk_retry_admin');
-        window.sessionStorage.removeItem('chunk_retry_adminpanel');
-      } catch {}
-    }
-  }, []);
-
   return (
     <AdminProvider>
       <AdminPanelContent />
     </AdminProvider>
   );
 };
-

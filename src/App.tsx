@@ -8,7 +8,6 @@ import { Footer } from './components/Footer';
 import { CategoryProductCarousel } from './components/CategoryProductCarousel';
 import { FeaturedProductsCarousel } from './components/FeaturedProductsCarousel';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { lazyWithRetry } from './utils/lazyWithRetry';
 import { formatWhatsAppLink } from './utils/phone';
 import { DEFAULT_SITE_NAME } from './utils/seo';
 import {
@@ -28,23 +27,28 @@ import {
   Gift,
 } from 'lucide-react';
 
-// Code-splitting: Lazy-load route pages with loop-safe chunk retry and auto-cleared flags
+// Code-splitting: Lazy-load route pages
 // Storefront visitors do NOT download heavy admin, product detail, or category listing chunks during initial load
-const AdminPanel = lazyWithRetry(
-  () => import('./components/AdminPanel').then((m) => ({ default: m.AdminPanel })),
-  'AdminPanel'
+const AdminPanel = React.lazy(() =>
+  import('./components/AdminPanel')
+    .then((m) => ({ default: m.AdminPanel }))
+    .catch((err) => {
+      const retryKey = 'chunk_retry_admin';
+      if (typeof window !== 'undefined' && !sessionStorage.getItem(retryKey)) {
+        sessionStorage.setItem(retryKey, 'true');
+        window.location.reload();
+      }
+      throw err;
+    })
 );
-const ResetPasswordPage = lazyWithRetry(
-  () => import('./components/ResetPasswordPage').then((m) => ({ default: m.ResetPasswordPage })),
-  'ResetPasswordPage'
+const ResetPasswordPage = React.lazy(() =>
+  import('./components/ResetPasswordPage').then((m) => ({ default: m.ResetPasswordPage }))
 );
-const ProductDetailView = lazyWithRetry(
-  () => import('./components/ProductDetailView').then((m) => ({ default: m.ProductDetailView })),
-  'ProductDetailView'
+const ProductDetailView = React.lazy(() =>
+  import('./components/ProductDetailView').then((m) => ({ default: m.ProductDetailView }))
 );
-const CategoryListingView = lazyWithRetry(
-  () => import('./components/CategoryListingView').then((m) => ({ default: m.CategoryListingView })),
-  'CategoryListingView'
+const CategoryListingView = React.lazy(() =>
+  import('./components/CategoryListingView').then((m) => ({ default: m.CategoryListingView }))
 );
 
 // Code-splitting: Lazy-load global modal and drawer components
@@ -420,18 +424,7 @@ const StoreContent: React.FC = () => {
     }
     return (
       <>
-        <ErrorBoundary
-          fallbackTitle="Admin Panel Unavailable"
-          fallbackMessage="Could not load the administrative dashboard. Please reload or try again."
-          onReset={() => {
-            if (typeof window !== 'undefined' && window.sessionStorage) {
-              try {
-                window.sessionStorage.removeItem('chunk_retry_admin');
-                window.sessionStorage.removeItem('chunk_retry_adminpanel');
-              } catch {}
-            }
-          }}
-        >
+        <ErrorBoundary fallbackTitle="Admin Panel Unavailable" fallbackMessage="Could not load the administrative dashboard. Please reload or try again.">
           <React.Suspense fallback={<AdminLoadingFallback />}>
             <AdminPanel />
           </React.Suspense>
