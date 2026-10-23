@@ -436,22 +436,7 @@ export const CategoryListingView: React.FC<CategoryListingViewProps> = ({
                 </button>
               </div>
             </div>
-          ) : totalProducts > 0 ? (
-            <div className="mt-8 pt-4 border-t border-slate-200/80 text-center">
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium text-slate-500 bg-slate-100">
-                <span>All {totalProducts} products loaded</span>
-              </span>
-            </div>
           ) : null}
-
-          {/* End-of-catalog status when on last page of multi-page view */}
-          {totalPages > 1 && currentPage >= totalPages && !isLoading && (
-            <div className="mt-4 text-center">
-              <span className="text-xs font-medium text-slate-400">
-                End of catalog — all {totalProducts} products loaded.
-              </span>
-            </div>
-          )}
         </>
       )}
     </div>
