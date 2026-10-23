@@ -1,5 +1,6 @@
 import React, { ErrorInfo, ReactNode } from 'react';
 import { AlertTriangle, RefreshCw, Home } from 'lucide-react';
+import { isChunkLoadError } from '../utils/lazyWithRetry';
 
 export interface ErrorBoundaryProps {
   children: ReactNode;
@@ -41,29 +42,42 @@ export class ErrorBoundary extends (React.Component as unknown as {
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     const errorType = error?.name || 'Error';
-    const isChunkLoadError =
-      error?.message?.includes('Failed to fetch dynamically imported module') ||
-      error?.message?.includes('Importing a module script failed') ||
-      error?.message?.includes('Loading chunk');
+    const isChunk = isChunkLoadError(error);
+
+    // Sanitize message to ensure no sensitive bearer tokens or passwords ever leak into browser console
+    const rawMessage = error?.message || String(error);
+    const sanitizedMessage = rawMessage
+      .replace(/bearer\s+[a-zA-Z0-9_\-.]+/gi, 'Bearer [REDACTED]')
+      .replace(/(?:password|token|secret)=[^&\s]+/gi, '$1=[REDACTED]');
 
     console.error(
-      `[ErrorBoundary] Caught ${errorType}${isChunkLoadError ? ' (ChunkLoadError)' : ''}:`,
-      error?.message,
+      `[ErrorBoundary] Caught ${errorType}${isChunk ? ' (ChunkLoadError)' : ''}:`,
+      sanitizedMessage,
       '\nComponent stack:',
       errorInfo?.componentStack
     );
   }
 
   handleRetry = () => {
-    // If it's a chunk loading error, reloading the page or cache-busting helps
-    if (
-      this.state.error?.message?.includes('Failed to fetch dynamically imported module') ||
-      this.state.error?.message?.includes('Importing a module script failed') ||
-      this.state.error?.message?.includes('Loading chunk')
-    ) {
+    const isChunk = isChunkLoadError(this.state.error);
+
+    if (isChunk) {
+      // Clear any sessionStorage chunk retry counters so the hard reload gets a clean retry slate
+      if (typeof window !== 'undefined' && window.sessionStorage) {
+        try {
+          window.sessionStorage.removeItem('chunk_retry_admin');
+          for (let i = window.sessionStorage.length - 1; i >= 0; i--) {
+            const k = window.sessionStorage.key(i);
+            if (k && k.startsWith('chunk_retry_')) {
+              window.sessionStorage.removeItem(k);
+            }
+          }
+        } catch {}
+      }
       window.location.reload();
       return;
     }
+
     this.setState({ hasError: false, error: null });
     if (this.props.onReset) {
       this.props.onReset();
@@ -76,18 +90,15 @@ export class ErrorBoundary extends (React.Component as unknown as {
 
   render(): ReactNode {
     if (this.state.hasError) {
-      const isChunkLoadError =
-        this.state.error?.message?.includes('Failed to fetch dynamically imported module') ||
-        this.state.error?.message?.includes('Importing a module script failed') ||
-        this.state.error?.message?.includes('Loading chunk');
+      const isChunk = isChunkLoadError(this.state.error);
 
       const title =
         this.props.fallbackTitle ||
-        (isChunkLoadError ? 'New Version Available' : 'Something went wrong');
+        (isChunk ? 'New Version Available' : 'Something went wrong');
 
       const message =
         this.props.fallbackMessage ||
-        (isChunkLoadError
+        (isChunk
           ? 'A newer version of this page is available. Please reload to fetch the latest update.'
           : 'We encountered an unexpected error while loading this content. Please try again.');
 
