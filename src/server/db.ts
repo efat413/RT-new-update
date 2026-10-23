@@ -933,106 +933,268 @@ export interface HomepageProductsData {
 }
 
 /**
- * Loads strictly up to 6 products per category for the homepage.
- * Primary path uses SQLite window function ROW_NUMBER() <= ? with bound parameter [limit].
- * Fallback path executes a correlated/safe subquery with LIMIT ? [limit] ensuring active, published, non-deleted visibility.
+ * Self-healing schema guard ensuring category_homepage_products exists in D1.
+ */
+let categoryHomepageTableChecked = false;
+export async function ensureCategoryHomepageProductsTable(db: D1Database): Promise<void> {
+  if (categoryHomepageTableChecked) return;
+  try {
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS category_homepage_products (
+        id TEXT PRIMARY KEY,
+        category_id TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(category_id, product_id)
+      )
+    `).run();
+    await db.prepare(
+      'CREATE INDEX IF NOT EXISTS idx_cat_hp_prods_category ON category_homepage_products(category_id, sort_order ASC)'
+    ).run().catch(() => {});
+    await db.prepare(
+      'CREATE INDEX IF NOT EXISTS idx_cat_hp_prods_product ON category_homepage_products(product_id)'
+    ).run().catch(() => {});
+    categoryHomepageTableChecked = true;
+  } catch (err: any) {
+    console.warn('[D1] category_homepage_products table check:', err?.message || err);
+  }
+}
+
+/**
+ * Gets homepage product configuration for a specific category.
+ * Returns configured products in deterministic sort_order ASC.
+ */
+export async function getCategoryHomepageProductsConfig(
+  db: D1Database,
+  categoryId: string
+): Promise<{ isConfigured: boolean; products: Product[]; productIds: string[] }> {
+  await ensureCategoryHomepageProductsTable(db);
+  const rows = await db.prepare(`
+    SELECT chp.sort_order as homepage_sort_order, p.*
+    FROM category_homepage_products chp
+    JOIN products p ON chp.product_id = p.id
+    WHERE chp.category_id = ?
+      AND p.category_id = ?
+      AND (p.status = 'active' OR p.status = 'published' OR p.status IS NULL OR p.status = '')
+    ORDER BY chp.sort_order ASC, chp.created_at ASC
+  `).bind(categoryId, categoryId).all<ProductRow>();
+
+  const countRes = await db.prepare(
+    'SELECT COUNT(*) as total FROM category_homepage_products WHERE category_id = ?'
+  ).bind(categoryId).first<{ total: number }>();
+  const isConfigured = (countRes?.total || 0) > 0;
+
+  const products = (rows?.results || []).map(rowToProduct);
+  const productIds = products.map((p) => p.id);
+
+  return { isConfigured, products, productIds };
+}
+
+/**
+ * Returns all configured category IDs and their ordered product IDs.
+ */
+export async function getAllCategoryHomepageConfigs(
+  db: D1Database
+): Promise<Record<string, string[]>> {
+  await ensureCategoryHomepageProductsTable(db);
+  try {
+    const res = await db.prepare(`
+      SELECT chp.category_id, chp.product_id, chp.sort_order
+      FROM category_homepage_products chp
+      JOIN products p ON chp.product_id = p.id
+      WHERE p.category_id = chp.category_id
+        AND (p.status = 'active' OR p.status = 'published' OR p.status IS NULL OR p.status = '')
+      ORDER BY chp.category_id ASC, chp.sort_order ASC, chp.created_at ASC
+    `).all<{ category_id: string; product_id: string; sort_order: number }>();
+
+    const configs: Record<string, string[]> = {};
+    for (const r of (res?.results || [])) {
+      if (!configs[r.category_id]) {
+        configs[r.category_id] = [];
+      }
+      configs[r.category_id].push(r.product_id);
+    }
+    return configs;
+  } catch (err: any) {
+    console.warn('[D1] getAllCategoryHomepageConfigs error:', err?.message || err);
+    return {};
+  }
+}
+
+/**
+ * Persistently saves manual product selection and display ordering for a category.
+ * Existing entries for this category are replaced atomically.
+ */
+export async function saveCategoryHomepageProducts(
+  db: D1Database,
+  categoryId: string,
+  productIds: string[]
+): Promise<boolean> {
+  await ensureCategoryHomepageProductsTable(db);
+  const cleanProductIds = Array.from(new Set(
+    (productIds || []).map((id) => (typeof id === 'string' ? id.trim() : '')).filter(Boolean)
+  ));
+
+  const stmts: D1PreparedStatement[] = [
+    db.prepare('DELETE FROM category_homepage_products WHERE category_id = ?').bind(categoryId),
+  ];
+
+  cleanProductIds.forEach((prodId, idx) => {
+    const id = `chp_${categoryId}_${prodId}_${idx + 1}`;
+    stmts.push(
+      db.prepare(`
+        INSERT INTO category_homepage_products (id, category_id, product_id, sort_order, created_at, updated_at)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `).bind(id, categoryId, prodId, idx + 1)
+    );
+  });
+
+  if (typeof db.batch === 'function') {
+    await db.batch(stmts);
+  } else {
+    for (const s of stmts) {
+      await s.run();
+    }
+  }
+  return true;
+}
+
+/**
+ * Resets a category to default behavior (deletes manual selection).
+ * Unconfigured categories automatically fall back to the 5 most recent products.
+ */
+export async function resetCategoryHomepageProducts(
+  db: D1Database,
+  categoryId: string
+): Promise<boolean> {
+  await ensureCategoryHomepageProductsTable(db);
+  await db.prepare('DELETE FROM category_homepage_products WHERE category_id = ?').bind(categoryId).run();
+  return true;
+}
+
+/**
+ * Loads products per category for the homepage.
+ * If a category has custom homepage products configured in category_homepage_products,
+ * those products are returned strictly in their defined sort_order.
+ * If unconfigured, falls back to the default behavior: showing the 5 most recent active products.
+ * Gracefully handles deleted, unpublished, or category-mismatched products.
  */
 export async function getHomepageCategoryProducts(
   db: D1Database,
-  categoryIds: string[],
-  limit = 6
+  categoryIds: string[] | string,
+  limit = 5
 ): Promise<Record<string, Product[]>> {
-  const boundedLimit = Math.min(24, Math.max(1, limit || 6));
+  const normalizedCategoryIds = Array.isArray(categoryIds)
+    ? categoryIds.filter(Boolean)
+    : (categoryIds ? [categoryIds] : []);
+  const boundedLimit = Math.min(24, Math.max(1, limit || 5));
   const categoryProducts: Record<string, Product[]> = {};
-  categoryIds.forEach((catId) => {
+  normalizedCategoryIds.forEach((catId) => {
     categoryProducts[catId] = [];
   });
 
-  if (categoryIds.length === 0) {
+  if (normalizedCategoryIds.length === 0) {
     return categoryProducts;
   }
 
-  const categoryFilterClause = `AND category_id IN (${categoryIds.map(() => '?').join(', ')})`;
-
-  // Primary path: SQLite window function ROW_NUMBER() OVER (PARTITION BY category_id ORDER BY display_order ASC, created_at DESC)
-  const windowSql = `
-    WITH RankedProducts AS (
-      SELECT 
-        ${PUBLIC_PRODUCT_COLUMNS},
-        ROW_NUMBER() OVER (
-          PARTITION BY category_id 
-          ORDER BY display_order ASC, created_at DESC
-        ) AS row_num
-      FROM products
-      WHERE (status = 'active' OR status = 'published' OR status IS NULL OR status = '')
-        ${categoryFilterClause}
-    )
-    SELECT ${PUBLIC_PRODUCT_COLUMNS} 
-    FROM RankedProducts 
-    WHERE row_num <= ?
-  `;
+  await ensureCategoryHomepageProductsTable(db);
 
   try {
-    const stmt = db.prepare(windowSql).bind(...categoryIds, boundedLimit);
-    const res = await stmt.all<ProductRow>();
-    const rows = res?.results || [];
-    for (const row of rows) {
-      const prod = rowToProduct(row);
-      if (!categoryProducts[prod.categoryId]) {
-        categoryProducts[prod.categoryId] = [];
+    // 1. Fetch custom-configured homepage products for any of the requested categories
+    const customSql = `
+      SELECT chp.category_id as config_cat_id, chp.sort_order, p.*
+      FROM category_homepage_products chp
+      JOIN products p ON chp.product_id = p.id
+      WHERE chp.category_id IN (${normalizedCategoryIds.map(() => '?').join(', ')})
+        AND p.category_id = chp.category_id
+        AND (p.status = 'active' OR p.status = 'published' OR p.status IS NULL OR p.status = '')
+      ORDER BY chp.category_id ASC, chp.sort_order ASC, chp.created_at ASC
+    `;
+    const customRes = await db.prepare(customSql).bind(...normalizedCategoryIds).all<any>();
+    const configuredCategories = new Set<string>();
+
+    for (const row of (customRes?.results || [])) {
+      const catId = row.config_cat_id || row.category_id;
+      if (!categoryProducts[catId]) {
+        categoryProducts[catId] = [];
       }
-      categoryProducts[prod.categoryId].push(prod);
+      categoryProducts[catId].push(rowToProduct(row));
+      configuredCategories.add(catId);
     }
-    return categoryProducts;
-  } catch (err: any) {
-    // Fallback subquery path: enforce identical LIMIT ? binding [boundedLimit] and active/published/non-deleted visibility filters
-    const fallbackSql = `
-      SELECT ${PUBLIC_PRODUCT_COLUMNS}
-      FROM products p
-      WHERE (p.status = 'active' OR p.status = 'published' OR p.status IS NULL OR p.status = '')
-        AND p.category_id IN (${categoryIds.map(() => '?').join(', ')})
-        AND p.id IN (
-          SELECT sub.id
-          FROM products sub
-          WHERE sub.category_id = p.category_id
-            AND (sub.status = 'active' OR sub.status = 'published' OR sub.status IS NULL OR sub.status = '')
-          ORDER BY sub.created_at DESC
-          LIMIT ?
-        )
-      ORDER BY p.created_at DESC
+
+    // Identify unconfigured categories that fall back to default behavior (5 most recent products)
+    const unconfiguredCategoryIds = normalizedCategoryIds.filter((id) => !configuredCategories.has(id));
+    if (unconfiguredCategoryIds.length === 0) {
+      return categoryProducts;
+    }
+
+    // 2. Fetch default most recent products for unconfigured categories
+    const windowSql = `
+      WITH RankedProducts AS (
+        SELECT 
+          ${PUBLIC_PRODUCT_COLUMNS},
+          ROW_NUMBER() OVER (
+            PARTITION BY category_id 
+            ORDER BY created_at DESC, id DESC
+          ) AS row_num
+        FROM products
+        WHERE (status = 'active' OR status = 'published' OR status IS NULL OR status = '')
+          AND category_id IN (${unconfiguredCategoryIds.map(() => '?').join(', ')})
+      )
+      SELECT ${PUBLIC_PRODUCT_COLUMNS} 
+      FROM RankedProducts 
+      WHERE row_num <= ?
+      ORDER BY category_id, row_num ASC
     `;
 
-    const fallbackStmt = db.prepare(fallbackSql).bind(...categoryIds, boundedLimit);
-    const res = await fallbackStmt.all<ProductRow>();
-    const rows = res?.results || [];
-    for (const row of rows) {
-      const prod = rowToProduct(row);
-      if (!categoryProducts[prod.categoryId]) {
-        categoryProducts[prod.categoryId] = [];
+    try {
+      const stmt = db.prepare(windowSql).bind(...unconfiguredCategoryIds, boundedLimit);
+      const res = await stmt.all<ProductRow>();
+      for (const row of (res?.results || [])) {
+        const prod = rowToProduct(row);
+        if (!categoryProducts[prod.categoryId]) {
+          categoryProducts[prod.categoryId] = [];
+        }
+        categoryProducts[prod.categoryId].push(prod);
       }
-      categoryProducts[prod.categoryId].push(prod);
+    } catch {
+      // Fallback correlated subquery if window functions unavailable
+      for (const catId of unconfiguredCategoryIds) {
+        const fallbackStmt = db.prepare(`
+          SELECT ${PUBLIC_PRODUCT_COLUMNS}
+          FROM products
+          WHERE category_id = ?
+            AND (status = 'active' OR status = 'published' OR status IS NULL OR status = '')
+          ORDER BY created_at DESC, id DESC
+          LIMIT ?
+        `).bind(catId, boundedLimit);
+        const fbRes = await fallbackStmt.all<ProductRow>();
+        categoryProducts[catId] = (fbRes?.results || []).map(rowToProduct);
+      }
     }
+
+    return categoryProducts;
+  } catch (err: any) {
+    console.error('[D1] getHomepageCategoryProducts error:', err);
     return categoryProducts;
   }
 }
 
 /**
  * Loads strictly the products required for the homepage directly via SQL LIMITs and batching.
- * Eliminates loading the entire products table into memory and avoids N+1 database queries.
- * Selects only public storefront fields without exposing internal buying prices.
+ * Prioritizes manual homepage category configurations, falling back to 5 most recent products for unconfigured categories.
  */
 export async function getHomepageProducts(
   db: D1Database,
   categoryIds: string[],
   options?: HomepageProductsOptions
 ): Promise<HomepageProductsData> {
-  const perCategoryLimit = Math.min(24, Math.max(1, options?.perCategoryLimit || 6));
+  const perCategoryLimit = Math.min(24, Math.max(1, options?.perCategoryLimit || 5));
   const featuredLimit = Math.min(24, Math.max(1, options?.featuredLimit || 8));
 
-  // 1. Prepare batch queries for D1 (1 round trip for all product queries)
-  const statements: D1PreparedStatement[] = [];
-
-  // Statement 0: Featured products (SQL WHERE + ORDER BY + LIMIT)
+  // 1. Fetch featured products
   const featuredSql = `
     SELECT ${PUBLIC_PRODUCT_COLUMNS} FROM products 
     WHERE (status = 'active' OR status = 'published' OR status IS NULL OR status = '')
@@ -1040,90 +1202,19 @@ export async function getHomepageProducts(
     ORDER BY CASE WHEN featured_sort_order IS NOT NULL AND featured_sort_order > 0 THEN featured_sort_order ELSE 99999 END ASC, created_at DESC 
     LIMIT ?
   `;
-  statements.push(db.prepare(featuredSql).bind(featuredLimit));
+  const featuredRows = await db.prepare(featuredSql).bind(featuredLimit).all<ProductRow>();
+  const featuredProducts = (featuredRows?.results || []).map(rowToProduct);
 
-  // Statement 1: Category products using SQLite window function ROW_NUMBER() <= ? (default limit 6)
-  const categoryFilterClause = categoryIds.length > 0
-    ? `AND category_id IN (${categoryIds.map(() => '?').join(', ')})`
-    : '';
+  // 2. Fetch category products honoring custom category homepage selections
+  const categoryProducts = await getHomepageCategoryProducts(db, categoryIds, perCategoryLimit);
 
-  const buildCategoryWindowSql = (orderClause: string) => `
-    WITH RankedProducts AS (
-      SELECT 
-        ${PUBLIC_PRODUCT_COLUMNS},
-        ROW_NUMBER() OVER (
-          PARTITION BY category_id 
-          ORDER BY ${orderClause}
-        ) AS row_num
-      FROM products
-      WHERE (status = 'active' OR status = 'published' OR status IS NULL OR status = '')
-        ${categoryFilterClause}
-    )
-    SELECT ${PUBLIC_PRODUCT_COLUMNS} 
-    FROM RankedProducts 
-    WHERE row_num <= ?
-  `;
-
-  const primaryCategorySql = buildCategoryWindowSql('display_order ASC, created_at DESC');
-  const catStmt = db.prepare(primaryCategorySql);
-  statements.push(categoryIds.length > 0 ? catStmt.bind(...categoryIds, perCategoryLimit) : catStmt.bind(perCategoryLimit));
-
-  // Execute in 1 single D1 batch round trip (or concurrent fallback)
-  let batchResults: any[];
-  try {
-    batchResults = typeof db.batch === 'function'
-      ? await db.batch<ProductRow>(statements)
-      : await Promise.all(statements.map((s) => s.all<ProductRow>()));
-  } catch (err: any) {
-    if (
-      err?.message?.includes('display_order') ||
-      err?.message?.includes('featured_sort_order') ||
-      err?.message?.includes('no such column')
-    ) {
-      const fallbackFeaturedSql = `
-        SELECT ${PUBLIC_PRODUCT_COLUMNS} FROM products 
-        WHERE (status = 'active' OR status = 'published' OR status IS NULL OR status = '')
-          AND (featured = 1 OR featured = 'true')
-        ORDER BY created_at DESC 
-        LIMIT ?
-      `;
-      statements[0] = db.prepare(fallbackFeaturedSql).bind(featuredLimit);
-
-      const fallbackCategorySql = buildCategoryWindowSql('created_at DESC');
-      const fallbackCatStmt = db.prepare(fallbackCategorySql);
-      statements[1] = categoryIds.length > 0 ? fallbackCatStmt.bind(...categoryIds, perCategoryLimit) : fallbackCatStmt.bind(perCategoryLimit);
-
-      batchResults = typeof db.batch === 'function'
-        ? await db.batch<ProductRow>(statements)
-        : await Promise.all(statements.map((s) => s.all<ProductRow>()));
-    } else {
-      throw err;
-    }
-  }
-
-  // Process featured products
-  const featuredRows = batchResults[0]?.results || [];
-  const featuredProducts = featuredRows.map(rowToProduct);
-
-  // Process category products from the window function result
-  const categoryRows = batchResults[1]?.results || [];
-  const categoryProducts: Record<string, Product[]> = {};
-  categoryIds.forEach((catId) => {
-    categoryProducts[catId] = [];
-  });
-
+  // 3. Assemble unique products pool
   const collectedMap = new Map<string, Product>();
-
-  for (const row of categoryRows) {
-    const prod = rowToProduct(row);
-    if (!categoryProducts[prod.categoryId]) {
-      categoryProducts[prod.categoryId] = [];
+  for (const prods of Object.values(categoryProducts)) {
+    for (const prod of prods) {
+      collectedMap.set(prod.id, prod);
     }
-    categoryProducts[prod.categoryId].push(prod);
-    collectedMap.set(prod.id, prod);
   }
-
-  // Also include featured products in uniqueProducts collection so quick view and details work seamlessly
   for (const p of featuredProducts) {
     if (!collectedMap.has(p.id)) {
       collectedMap.set(p.id, p);

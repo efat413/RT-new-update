@@ -126,6 +126,7 @@ function localApiDevPlugin(): Plugin {
   let devCategories: any[] = [...INITIAL_CATEGORIES];
   let devSliders: any[] = [...INITIAL_SLIDES];
   let devSettings: any = { ...INITIAL_SETTINGS };
+  let devCategoryHomepageProducts: Record<string, string[]> = {};
   let devFacebookCampaigns: any[] = [];
   let devFacebookCampaignQueue: any[] = [];
   let devFacebookRecipients: any[] = [];
@@ -2765,10 +2766,22 @@ function localApiDevPlugin(): Plugin {
           const collectedMap = new Map<string, any>();
 
           devCategories.forEach((cat: any) => {
-            const catProds = devProducts
-              .filter((p: any) => p.status !== 'inactive' && !p.isDeleted && p.categoryId === cat.id)
-              .slice(0, 5)
-              .map((p: any) => sanitizeDevProduct(p, false));
+            let catProds: any[] = [];
+            const configuredIds = devCategoryHomepageProducts[cat.id];
+            if (Array.isArray(configuredIds) && configuredIds.length > 0) {
+              for (const pId of configuredIds) {
+                const prod = devProducts.find((p: any) => p.id === pId && p.categoryId === cat.id && p.status !== 'inactive' && !p.isDeleted);
+                if (prod) {
+                  catProds.push(sanitizeDevProduct(prod, false));
+                }
+              }
+            } else {
+              catProds = devProducts
+                .filter((p: any) => p.status !== 'inactive' && !p.isDeleted && p.categoryId === cat.id)
+                .sort((a: any, b: any) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
+                .slice(0, 5)
+                .map((p: any) => sanitizeDevProduct(p, false));
+            }
             categoryProducts[cat.id] = catProds;
             catProds.forEach((p: any) => collectedMap.set(p.id, p));
           });
@@ -3286,6 +3299,77 @@ function localApiDevPlugin(): Plugin {
             devCategories = devCategories.filter((c) => c.id !== id && c.slug !== id);
             res.statusCode = 200;
             return res.end(JSON.stringify({ success: true, message: 'Deleted' }));
+          }
+        }
+
+        // 2B. CATEGORY HOMEPAGE PRODUCTS SELECTION & ORDERING
+        if (url.pathname === '/api/admin/homepage-categories' && method === 'GET') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          res.statusCode = 200;
+          return res.end(JSON.stringify({ success: true, configs: devCategoryHomepageProducts }));
+        }
+
+        const devCatHpMatch = url.pathname.match(/^\/api\/(?:admin\/homepage-categories|categories\/([^/]+)\/homepage-products)(?:\/([^/]+))?\/?$/);
+        if (devCatHpMatch) {
+          const catId = decodeURIComponent(devCatHpMatch[1] || devCatHpMatch[2] || '');
+          if (catId) {
+            if (method === 'GET') {
+              const configuredIds = devCategoryHomepageProducts[catId] || [];
+              const isConfigured = Array.isArray(devCategoryHomepageProducts[catId]) && devCategoryHomepageProducts[catId].length > 0;
+              const prods: any[] = [];
+              for (const pId of configuredIds) {
+                const prod = devProducts.find((p: any) => p.id === pId && p.categoryId === catId && p.status !== 'inactive' && !p.isDeleted);
+                if (prod) prods.push(sanitizeDevProduct(prod, false));
+              }
+              res.statusCode = 200;
+              return res.end(JSON.stringify({
+                success: true,
+                categoryId: catId,
+                isConfigured,
+                productIds: configuredIds,
+                products: prods,
+              }));
+            }
+
+            if (method === 'PUT' || method === 'POST') {
+              const authResult = requireDevAuth(req);
+              if (authResult.error) return sendDevError(res, authResult.error);
+              return readBody((body) => {
+                const productIds = Array.isArray(body?.productIds) ? body.productIds : (Array.isArray(body?.products) ? body.products : []);
+                const cleanIds: string[] = Array.from(new Set<string>(productIds.map((id: any) => String(id || '').trim()).filter(Boolean)));
+                devCategoryHomepageProducts[catId] = cleanIds;
+
+                const prods: any[] = [];
+                for (const pId of cleanIds) {
+                  const prod = devProducts.find((p: any) => p.id === pId && p.categoryId === catId && p.status !== 'inactive' && !p.isDeleted);
+                  if (prod) prods.push(sanitizeDevProduct(prod, false));
+                }
+
+                res.statusCode = 200;
+                return res.end(JSON.stringify({
+                  success: true,
+                  message: `Homepage showcase updated for category "${catId}".`,
+                  categoryId: catId,
+                  isConfigured: cleanIds.length > 0,
+                  productIds: cleanIds,
+                  products: prods,
+                }));
+              });
+            }
+
+            if (method === 'DELETE') {
+              const authResult = requireDevAuth(req);
+              if (authResult.error) return sendDevError(res, authResult.error);
+              delete devCategoryHomepageProducts[catId];
+              res.statusCode = 200;
+              return res.end(JSON.stringify({
+                success: true,
+                message: `Category "${catId}" homepage products reset to default (5 most recent).`,
+                categoryId: catId,
+                isConfigured: false,
+              }));
+            }
           }
         }
 

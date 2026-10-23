@@ -20,6 +20,11 @@ import {
   insertCategory,
   updateCategoryInD1,
   deleteCategoryFromD1,
+  ensureCategoryHomepageProductsTable,
+  getCategoryHomepageProductsConfig,
+  getAllCategoryHomepageConfigs,
+  saveCategoryHomepageProducts,
+  resetCategoryHomepageProducts,
   // Sliders
   getAllSliders,
   getSliderById,
@@ -3814,6 +3819,122 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       } catch (err: any) {
         logServerError({ route: path, method, error: err, action: 'category.delete' });
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+      }
+    }
+  }
+
+  // ==========================================
+  // 2B. CATEGORY HOMEPAGE PRODUCTS SELECTION & ORDERING
+  // ==========================================
+  if (path === '/api/admin/homepage-categories' && method === 'GET') {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const canManage = auth!.role === 'super_admin' || hasPermission(auth!, 'category.manage') || hasPermission(auth!, 'product.update') || hasPermission(auth!, 'canManageCategories');
+    if (!canManage) {
+      return jsonResponse({ success: false, error: 'Forbidden: Category management permission required.' }, 403);
+    }
+
+    try {
+      const configs = await getAllCategoryHomepageConfigs(env.DB);
+      return jsonResponse({ success: true, configs });
+    } catch (err: any) {
+      console.error('Error fetching homepage category configs:', err);
+      return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+    }
+  }
+
+  const categoryHomepageMatch = path.match(/^\/api\/(?:admin\/homepage-categories|categories\/([^/]+)\/homepage-products)(?:\/([^/]+))?\/?$/);
+  if (categoryHomepageMatch) {
+    const catId = decodeURIComponent(categoryHomepageMatch[1] || categoryHomepageMatch[2] || '');
+
+    if (catId) {
+      if (method === 'GET') {
+        try {
+          const config = await getCategoryHomepageProductsConfig(env.DB, catId);
+          return jsonResponse({
+            success: true,
+            categoryId: catId,
+            isConfigured: config.isConfigured,
+            productIds: config.productIds,
+            products: config.products,
+          });
+        } catch (err: any) {
+          console.error('Error fetching category homepage config:', err);
+          return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+        }
+      }
+
+      if (method === 'PUT' || method === 'POST') {
+        const { auth, errorResponse } = await requireAuth(request, env);
+        if (errorResponse) return errorResponse;
+        const canManage = auth!.role === 'super_admin' || hasPermission(auth!, 'category.manage') || hasPermission(auth!, 'product.update') || hasPermission(auth!, 'canManageCategories');
+        if (!canManage) {
+          return jsonResponse({ success: false, error: 'Forbidden: Category management permission required.' }, 403);
+        }
+
+        const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+        if (jsonErr) return jsonErr;
+
+        try {
+          const productIds = Array.isArray(body?.productIds) ? body.productIds : (Array.isArray(body?.products) ? body.products : []);
+          await saveCategoryHomepageProducts(env.DB, catId, productIds);
+
+          await insertAuditLogInD1(env.DB, {
+            actorId: auth!.dbUser.id,
+            actorEmail: auth!.dbUser.email,
+            actorRole: auth!.role,
+            action: 'category.homepage_products_update',
+            targetId: catId,
+            targetType: 'category',
+            details: { categoryId: catId, count: productIds.length, productIds },
+          });
+
+          const config = await getCategoryHomepageProductsConfig(env.DB, catId);
+          return jsonResponse({
+            success: true,
+            message: `Homepage showcase updated for category "${catId}".`,
+            categoryId: catId,
+            isConfigured: config.isConfigured,
+            productIds: config.productIds,
+            products: config.products,
+          });
+        } catch (err: any) {
+          console.error('Error saving category homepage config:', err);
+          return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+        }
+      }
+
+      if (method === 'DELETE') {
+        const { auth, errorResponse } = await requireAuth(request, env);
+        if (errorResponse) return errorResponse;
+        const canManage = auth!.role === 'super_admin' || hasPermission(auth!, 'category.manage') || hasPermission(auth!, 'product.update') || hasPermission(auth!, 'canManageCategories');
+        if (!canManage) {
+          return jsonResponse({ success: false, error: 'Forbidden: Category management permission required.' }, 403);
+        }
+
+        try {
+          await resetCategoryHomepageProducts(env.DB, catId);
+
+          await insertAuditLogInD1(env.DB, {
+            actorId: auth!.dbUser.id,
+            actorEmail: auth!.dbUser.email,
+            actorRole: auth!.role,
+            action: 'category.homepage_products_reset',
+            targetId: catId,
+            targetType: 'category',
+            details: { categoryId: catId, resetToDefault: true },
+          });
+
+          return jsonResponse({
+            success: true,
+            message: `Category "${catId}" homepage products reset to default (5 most recent).`,
+            categoryId: catId,
+            isConfigured: false,
+          });
+        } catch (err: any) {
+          console.error('Error resetting category homepage config:', err);
+          return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+        }
       }
     }
   }

@@ -754,7 +754,7 @@ const StoreContent: React.FC = () => {
                   const catProducts =
                     homepageCategoryProducts[cat.id] && homepageCategoryProducts[cat.id].length > 0
                       ? homepageCategoryProducts[cat.id]
-                      : products.filter((p) => p.categoryId === cat.id).slice(0, 6);
+                      : products.filter((p) => p.categoryId === cat.id).slice(0, 5);
 
                   if (!catProducts || catProducts.length === 0) return null;
 

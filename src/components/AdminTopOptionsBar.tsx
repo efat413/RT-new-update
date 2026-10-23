@@ -17,6 +17,7 @@ import {
   CheckCircle2,
   Lock,
   MessageSquare,
+  Layers,
 } from 'lucide-react';
 
 export interface AdminTopOptionsBarProps {
@@ -91,6 +92,14 @@ export const AdminTopOptionsBar: React.FC<AdminTopOptionsBarProps> = ({
       icon: FolderTree,
       badge: `${categoriesCount}`,
       badgeColor: 'bg-slate-700 text-slate-300',
+      permission: 'canManageCategories',
+    },
+    {
+      id: 'homepage-categories',
+      label: 'Homepage Showcase',
+      icon: Layers,
+      badge: 'Order',
+      badgeColor: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30',
       permission: 'canManageCategories',
     },
     {

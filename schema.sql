@@ -482,3 +482,19 @@ CREATE TABLE IF NOT EXISTS blocked_ips (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_blocked_ips_ip ON blocked_ips(ip);
 CREATE INDEX IF NOT EXISTS idx_blocked_ips_created_at ON blocked_ips(created_at DESC);
 
+-- ==============================================================
+-- 23. CATEGORY HOMEPAGE PRODUCTS TABLE (Isolated Per-Category Homepage Showcase)
+-- ==============================================================
+CREATE TABLE IF NOT EXISTS category_homepage_products (
+  id TEXT PRIMARY KEY,
+  category_id TEXT NOT NULL,
+  product_id TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(category_id, product_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cat_hp_prods_category ON category_homepage_products(category_id, sort_order ASC);
+CREATE INDEX IF NOT EXISTS idx_cat_hp_prods_product ON category_homepage_products(product_id);
+
