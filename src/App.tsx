@@ -8,6 +8,7 @@ import { Footer } from './components/Footer';
 import { CategoryProductCarousel } from './components/CategoryProductCarousel';
 import { FeaturedProductsCarousel } from './components/FeaturedProductsCarousel';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { CategoryListingView } from './components/CategoryListingView';
 import { formatWhatsAppLink } from './utils/phone';
 import { DEFAULT_SITE_NAME } from './utils/seo';
 import {
@@ -76,20 +77,19 @@ function lazyWithRetry<T extends React.ComponentType<any>>(
   });
 }
 
-// Code-splitting: Lazy-load route pages
-// Storefront visitors do NOT download heavy admin, product detail, or category listing chunks during initial load
+// Code-splitting: Lazy-load heavy admin and secondary route pages
+// CategoryListingView is statically imported for instant zero-latency storefront browsing
 const AdminPanel = lazyWithRetry(
   () => import('./components/AdminPanel').then((m) => ({ default: m.AdminPanel })),
   'admin'
 );
-const ResetPasswordPage = React.lazy(() =>
-  import('./components/ResetPasswordPage').then((m) => ({ default: m.ResetPasswordPage }))
+const ResetPasswordPage = lazyWithRetry(
+  () => import('./components/ResetPasswordPage').then((m) => ({ default: m.ResetPasswordPage })),
+  'reset-password'
 );
-const ProductDetailView = React.lazy(() =>
-  import('./components/ProductDetailView').then((m) => ({ default: m.ProductDetailView }))
-);
-const CategoryListingView = React.lazy(() =>
-  import('./components/CategoryListingView').then((m) => ({ default: m.CategoryListingView }))
+const ProductDetailView = lazyWithRetry(
+  () => import('./components/ProductDetailView').then((m) => ({ default: m.ProductDetailView })),
+  'product-detail'
 );
 
 // Code-splitting: Lazy-load global modal and drawer components
@@ -757,29 +757,27 @@ const StoreContent: React.FC = () => {
                 fallbackTitle="Category Unavailable"
                 fallbackMessage="Could not load product collection. Click dismiss or return home."
               >
-                <React.Suspense fallback={<CategoryListingLoadingFallback />}>
-                  <CategoryListingView
-                    category={activeCategoryObj || null}
-                    categories={categories}
-                    searchQuery={searchQuery}
-                    products={categoryListingProducts}
-                    isLoading={isCategoryLoading}
-                    error={categoryError}
-                    onRetry={retryCategoryFetch}
-                    totalProducts={categoryTotalProducts}
-                    currentPage={categoryPage}
-                    totalPages={categoryTotalPages}
-                    limit={12}
-                    sortBy={categorySortBy}
-                    isFeaturedListing={selectedCategory === 'featured'}
-                    onPageChange={(page) => setCategoryPage(page)}
-                    onSortChange={(sort) => setCategorySortBy(sort)}
-                    onCategoryChange={(catId) => navigateToCategory(catId)}
-                    onBackToHome={handleBackToHome}
-                    onShareCategory={copyCategoryLink}
-                    siteName={settings?.siteName}
-                  />
-                </React.Suspense>
+                <CategoryListingView
+                  category={activeCategoryObj || null}
+                  categories={categories}
+                  searchQuery={searchQuery}
+                  products={categoryListingProducts}
+                  isLoading={isCategoryLoading}
+                  error={categoryError}
+                  onRetry={retryCategoryFetch}
+                  totalProducts={categoryTotalProducts}
+                  currentPage={categoryPage}
+                  totalPages={categoryTotalPages}
+                  limit={12}
+                  sortBy={categorySortBy}
+                  isFeaturedListing={selectedCategory === 'featured'}
+                  onPageChange={(page) => setCategoryPage(page)}
+                  onSortChange={(sort) => setCategorySortBy(sort)}
+                  onCategoryChange={(catId) => navigateToCategory(catId)}
+                  onBackToHome={handleBackToHome}
+                  onShareCategory={copyCategoryLink}
+                  siteName={settings?.siteName}
+                />
               </ErrorBoundary>
             </section>
           ) : (

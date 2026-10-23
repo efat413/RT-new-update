@@ -415,19 +415,36 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [categoryNavSeq, setCategoryNavSeq] = useState<number>(0);
 
   const setSelectedCategory = useCallback((catId: string | null) => {
-    setCategoryListingProducts([]);
+    let initialProds: Product[] = [];
+    if (catId === 'featured') {
+      initialProds = featuredProducts.length > 0 ? featuredProducts : [];
+    } else if (catId) {
+      initialProds = homepageCategoryProducts[catId] || products.filter((p) => p.categoryId === catId);
+    }
+
+    if (initialProds.length > 0) {
+      setCategoryListingProducts(initialProds);
+      setCategoryTotalProducts(initialProds.length);
+    } else {
+      setCategoryListingProducts([]);
+    }
+
+    if (catId) {
+      setIsCategoryLoading(true);
+      setCategoryError(null);
+    }
     setSelectedCategoryState((prev) => (prev === catId ? prev : catId));
     setCategoryPage((prev) => (prev === 1 ? prev : 1));
     setCategoryNavSeq((prev) => prev + 1);
-  }, []);
+  }, [featuredProducts, homepageCategoryProducts, products]);
 
   const navigateToCategory = useCallback((categoryIdOrSlug: string | null) => {
-    setCategoryListingProducts([]);
     setSelectedProductId(null);
     setSearchQueryState('');
     setCurrentView('store');
 
     if (!categoryIdOrSlug) {
+      setCategoryListingProducts([]);
       setSelectedCategoryState(null);
       setCategoryPage(1);
       if (typeof window !== 'undefined' && (window.location.pathname !== '/' || window.location.search)) {
@@ -438,6 +455,14 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     }
 
     if (categoryIdOrSlug === 'featured') {
+      if (featuredProducts.length > 0) {
+        setCategoryListingProducts(featuredProducts);
+        setCategoryTotalProducts(featuredProducts.length);
+      } else {
+        setCategoryListingProducts([]);
+      }
+      setIsCategoryLoading(true);
+      setCategoryError(null);
       setSelectedCategoryState('featured');
       setCategoryPage(1);
       if (typeof window !== 'undefined' && window.location.pathname !== '/featured') {
@@ -453,6 +478,20 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     const targetId = cat ? cat.id : categoryIdOrSlug;
     const targetSlug = cat ? cat.slug || cat.id : categoryIdOrSlug;
 
+    // Pre-populate category products immediately from cached products so user never experiences an empty/error flash
+    const initialProds = targetId
+      ? (homepageCategoryProducts[targetId] || products.filter((p) => p.categoryId === targetId))
+      : [];
+
+    if (initialProds.length > 0) {
+      setCategoryListingProducts(initialProds);
+      setCategoryTotalProducts(initialProds.length);
+    } else {
+      setCategoryListingProducts([]);
+    }
+
+    setIsCategoryLoading(true);
+    setCategoryError(null);
     setSelectedCategoryState(targetId);
     setCategoryPage(1);
     if (typeof window !== 'undefined') {
@@ -462,7 +501,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
     }
     setCategoryNavSeq((prev) => prev + 1);
-  }, [categories]);
+  }, [categories, featuredProducts, homepageCategoryProducts, products]);
 
   // Synchronize browser history (popstate) with category navigation
   useEffect(() => {
@@ -1276,7 +1315,19 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       .catch((err) => {
         if (!isCancelled) {
           console.warn('Failed to fetch paginated products:', err);
-          setCategoryError(err?.message || 'Failed to load category products. Please try again.');
+          const targetId = catObj ? catObj.id : selectedCategory;
+          const fallbackProds = targetId === 'featured'
+            ? featuredProducts
+            : (targetId ? (homepageCategoryProducts[targetId] || products.filter((p) => p.categoryId === targetId)) : []);
+
+          if (fallbackProds.length > 0) {
+            setCategoryListingProducts(fallbackProds);
+            setCategoryTotalProducts(fallbackProds.length);
+            setCategoryTotalPages(1);
+            setCategoryError(null);
+          } else {
+            setCategoryError(err?.message || 'Failed to load category products. Please try again.');
+          }
           setIsCategoryLoading(false);
         }
       });
@@ -1284,7 +1335,7 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     return () => {
       isCancelled = true;
     };
-  }, [selectedCategory, searchQuery, categoryPage, categorySortBy, categories, categoryNavSeq]);
+  }, [selectedCategory, searchQuery, categoryPage, categorySortBy, categories, categoryNavSeq, featuredProducts, homepageCategoryProducts, products]);
 
   // Customer Checkout & Order Creation
   const createOrder = useCallback(async (orderData: {
