@@ -1135,7 +1135,17 @@ export const StorefrontProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         if (prodsRes.status === 'fulfilled' && Array.isArray(prodsRes.value) && prodsRes.value.length > 0) {
           loadedProducts = prodsRes.value;
           for (const c of freshCategories) {
-            catMap[c.id] = loadedProducts.filter((p) => p.categoryId === c.id).slice(0, 6);
+            catMap[c.id] = loadedProducts
+              .filter((p) => p.categoryId === c.id)
+              .sort((a, b) => {
+                const orderA = Number(a.displayOrder ?? a.display_order) || 0;
+                const orderB = Number(b.displayOrder ?? b.display_order) || 0;
+                if (orderA > 0 && orderB > 0) return orderA - orderB;
+                if (orderA > 0) return -1;
+                if (orderB > 0) return 1;
+                return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+              })
+              .slice(0, 6);
           }
           const feat = loadedProducts.filter((p) => Boolean(p.featured || (p as any).isFeatured)).slice(0, 8);
           setFeaturedProducts(feat);

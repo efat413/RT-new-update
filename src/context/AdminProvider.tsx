@@ -711,6 +711,74 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, [setCategories, showNotification]);
 
+  const reorderCategoryProducts = useCallback(async (
+    categoryId: string,
+    productOrders: Array<{ id: string; displayOrder: number }>
+  ): Promise<{ success: boolean; products?: Product[]; error?: string }> => {
+    try {
+      const updatedProducts = await categoriesApi.reorderProducts(categoryId, productOrders);
+
+      // Update global products list with updated displayOrder
+      const orderMap = new Map<string, number>();
+      productOrders.forEach((item) => orderMap.set(item.id, item.displayOrder));
+
+      setProducts((prev) =>
+        prev.map((p) => {
+          if (p.categoryId === categoryId && orderMap.has(p.id)) {
+            const newOrder = orderMap.get(p.id)!;
+            return { ...p, displayOrder: newOrder, display_order: newOrder };
+          }
+          return p;
+        })
+      );
+
+      // Re-sort and update homepageCategoryProducts for this category immediately!
+      setHomepageCategoryProducts((prev) => {
+        const currentCatProds = prev[categoryId] || [];
+        const updatedCatProds = currentCatProds.map((p) => {
+          if (orderMap.has(p.id)) {
+            const newOrder = orderMap.get(p.id)!;
+            return { ...p, displayOrder: newOrder, display_order: newOrder };
+          }
+          return p;
+        });
+
+        // Deterministically sort by custom displayOrder ASC (> 0 prioritized), then createdAt DESC
+        updatedCatProds.sort((a, b) => {
+          const orderA = Number(a.displayOrder ?? a.display_order) || 0;
+          const orderB = Number(b.displayOrder ?? b.display_order) || 0;
+          if (orderA > 0 && orderB > 0) return orderA - orderB;
+          if (orderA > 0) return -1;
+          if (orderB > 0) return 1;
+          return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+        });
+
+        return {
+          ...prev,
+          [categoryId]: updatedCatProds,
+        };
+      });
+
+      // Also update categoryListingProducts if currently viewing this category
+      setCategoryListingProducts((prev) =>
+        prev.map((p) => {
+          if (p.categoryId === categoryId && orderMap.has(p.id)) {
+            const newOrder = orderMap.get(p.id)!;
+            return { ...p, displayOrder: newOrder, display_order: newOrder };
+          }
+          return p;
+        })
+      );
+
+      showNotification('success', 'Sequence Saved', 'Homepage category product sequence successfully updated.');
+      return { success: true, products: updatedProducts };
+    } catch (err: any) {
+      const errorMsg = err?.message || 'Failed to update category product sequence';
+      showNotification('error', 'Update Failed', errorMsg, 6000);
+      return { success: false, error: errorMsg };
+    }
+  }, [setCategoryListingProducts, setHomepageCategoryProducts, setProducts, showNotification]);
+
   // Slides
   const addSlide = useCallback(async (
     slideData: Omit<CarouselSlide, 'id'>
@@ -1457,6 +1525,7 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     addCategory,
     updateCategory,
     deleteCategory,
+    reorderCategoryProducts,
     orders,
     setOrders,
     updateOrderStatus,
@@ -1532,6 +1601,7 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     addCategory,
     updateCategory,
     deleteCategory,
+    reorderCategoryProducts,
     orders,
     updateOrderStatus,
     updateOrder,

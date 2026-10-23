@@ -40,6 +40,7 @@ export interface AdminContextType {
   addCategory: (category: Omit<Category, 'id' | 'slug'>) => Promise<{ success: boolean; category?: Category; error?: string }>;
   updateCategory: (id: string, updates: Partial<Category>) => Promise<{ success: boolean; category?: Category; error?: string }>;
   deleteCategory: (id: string) => Promise<{ success: boolean; error?: string }>;
+  reorderCategoryProducts: (categoryId: string, productOrders: Array<{ id: string; displayOrder: number }>) => Promise<{ success: boolean; products?: Product[]; error?: string }>;
 
   // Orders & Courier
   orders: Order[];

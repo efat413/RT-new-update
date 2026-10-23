@@ -134,6 +134,7 @@ export interface ProductRow {
   stock: number;
   featured: number;
   featured_sort_order?: number | null;
+  display_order?: number | null;
   rating: number;
   reviews_count: number;
   specs_json: string | null;

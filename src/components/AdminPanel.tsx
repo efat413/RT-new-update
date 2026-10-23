@@ -9,6 +9,7 @@ import {
   LogOut,
   TrendingUp,
   ArrowUpRight,
+  ArrowDownUp,
   AlertTriangle,
   Plus,
   Edit2,
@@ -166,6 +167,10 @@ const FeaturedProductsManagement = lazyWithRetry(
   () => import('./Admin/FeaturedProductsManagement').then((m) => ({ default: m.FeaturedProductsManagement })),
   'featured_products'
 );
+const CategoryProductSequenceManagement = lazyWithRetry(
+  () => import('./Admin/CategoryProductSequenceManagement').then((m) => ({ default: m.CategoryProductSequenceManagement })),
+  'category_sequence'
+);
 const PermissionManagementModal = lazyWithRetry(
   () => import('./Admin/PermissionManagementModal').then((m) => ({ default: m.PermissionManagementModal })),
   'permission_modal'
@@ -301,6 +306,7 @@ const AdminPanelContent: React.FC = () => {
     addCategory,
     updateCategory,
     deleteCategory,
+    reorderCategoryProducts,
     updateOrderStatus,
     updateOrder,
     verifyAndMarkPaid,
@@ -584,6 +590,7 @@ const AdminPanelContent: React.FC = () => {
   const galleryFileInputRef = useRef<HTMLInputElement>(null);
   const [prodStock, setProdStock] = useState<number>(10);
   const [prodFeatured, setProdFeatured] = useState(false);
+  const [prodDisplayOrder, setProdDisplayOrder] = useState<number | ''>('');
   const [prodVideoUrl, setProdVideoUrl] = useState('');
   const [productSearch, setProductSearch] = useState('');
 
@@ -784,7 +791,8 @@ const AdminPanelContent: React.FC = () => {
   // 2. Product Management filters
   const [productStockFilter, setProductStockFilter] = useState<'all' | 'in_stock' | 'low_stock' | 'out_of_stock' | 'featured'>('all');
   const [productCategoryFilter, setProductCategoryFilter] = useState<string>('all');
-  const [productsSubView, setProductsSubView] = useState<'all' | 'featured'>('all');
+  const [productsSubView, setProductsSubView] = useState<'all' | 'featured' | 'sequence'>('all');
+  const [sequenceTargetCategoryId, setSequenceTargetCategoryId] = useState<string>('');
 
   // 3. Categories filters
   const [categoryFilter, setCategoryFilter] = useState<'all' | 'with_products' | 'empty'>('all');
@@ -1481,6 +1489,7 @@ const AdminPanelContent: React.FC = () => {
     setNewColorInput('');
     setNewColorHex('#1e3a8a');
     setDisplaySpecificColor(true);
+    setProdDisplayOrder('');
     setIsProductModalOpen(true);
   };
 
@@ -1554,6 +1563,7 @@ const AdminPanelContent: React.FC = () => {
     setNewColorInput('');
     setNewColorHex('#1e3a8a');
     setDisplaySpecificColor(true);
+    setProdDisplayOrder(product.displayOrder || (product as any).display_order || '');
     setIsProductModalOpen(true);
   };
 
@@ -1748,6 +1758,7 @@ const AdminPanelContent: React.FC = () => {
           images: allImages.length > 1 ? allImages : [primaryImg],
           stock: Number(prodStock),
           featured: prodFeatured,
+          displayOrder: prodDisplayOrder !== '' ? Number(prodDisplayOrder) : undefined,
           rating: editingProduct.rating ?? 5.0,
           reviewsCount: editingProduct.reviewsCount ?? 0,
           sizes: prodSizes.length > 0 ? prodSizes : undefined,
@@ -1771,6 +1782,7 @@ const AdminPanelContent: React.FC = () => {
           images: allImages.length > 1 ? allImages : [primaryImg],
           stock: Number(prodStock),
           featured: prodFeatured,
+          displayOrder: prodDisplayOrder !== '' ? Number(prodDisplayOrder) : undefined,
           rating: 5.0,
           reviewsCount: 0,
           specs: ['Standard 1-year authentic warranty', 'Verified Bangladeshi import'],
@@ -4711,9 +4723,39 @@ const AdminPanelContent: React.FC = () => {
                 <Sparkles className="w-4 h-4 text-amber-300" />
                 <span>Featured Products ({featuredProductsCount})</span>
               </button>
+
+              <button
+                type="button"
+                id="subtab-sequence-products"
+                onClick={() => {
+                  setProductsSubView('sequence');
+                  if (productStockFilter === 'featured') setProductStockFilter('all');
+                }}
+                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+                  productsSubView === 'sequence'
+                    ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white shadow-sm'
+                    : 'bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-200'
+                }`}
+              >
+                <ArrowDownUp className="w-4 h-4" />
+                <span>Category Product Sequence</span>
+              </button>
             </div>
 
-            {(productsSubView === 'featured' || productStockFilter === 'featured') ? (
+            {productsSubView === 'sequence' ? (
+              <ErrorBoundary compact fallbackTitle="Sequence Manager Unavailable" fallbackMessage="Could not load category sequence management module.">
+                <React.Suspense fallback={<AdminTabFallback />}>
+                  <CategoryProductSequenceManagement
+                    products={products}
+                    categories={categories}
+                    initialCategoryId={sequenceTargetCategoryId || categories[0]?.id}
+                    onSaveSequence={reorderCategoryProducts}
+                    hasPermission={hasPermission}
+                    onOpenEditModal={openEditProductModal}
+                  />
+                </React.Suspense>
+              </ErrorBoundary>
+            ) : (productsSubView === 'featured' || productStockFilter === 'featured') ? (
               <ErrorBoundary compact fallbackTitle="Featured Products Unavailable" fallbackMessage="Could not load featured products management module.">
                 <React.Suspense fallback={<AdminTabFallback />}>
                   <FeaturedProductsManagement
@@ -5504,6 +5546,18 @@ const AdminPanelContent: React.FC = () => {
                     </div>
 
                     <div className="pt-3 border-t border-slate-100 flex items-center gap-2">
+                      <button
+                        onClick={() => {
+                          setSequenceTargetCategoryId(cat.id);
+                          setProductsSubView('sequence');
+                          setActiveTab('products');
+                        }}
+                        className="py-1.5 px-3 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold text-xs flex items-center justify-center gap-1 border border-indigo-200 transition-colors cursor-pointer"
+                        title={`Customize product display order for ${cat.name}`}
+                      >
+                        <ArrowDownUp className="w-3.5 h-3.5 text-indigo-600" />
+                        Order
+                      </button>
                       <button
                         onClick={() => openEditCategoryModal(cat)}
                         className="flex-1 py-1.5 px-3 rounded-xl bg-slate-50 hover:bg-slate-100 text-slate-700 font-bold text-xs flex items-center justify-center gap-1 border border-slate-200 transition-colors cursor-pointer"
@@ -9717,6 +9771,38 @@ const AdminPanelContent: React.FC = () => {
                   >
                     Feature this product on homepage hero and top highlights
                   </label>
+                </div>
+
+                <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                  <div>
+                    <label htmlFor="product-display-order-input" className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                      <ArrowDownUp className="w-3.5 h-3.5 text-indigo-600" />
+                      Category Sequence Rank (Homepage Slot)
+                    </label>
+                    <p className="text-[11px] text-slate-500">
+                      Customize slot number for this product in its category (1 = first at the front, 2 = second, etc.).
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-[11px] font-bold text-slate-400">Position:</span>
+                    <input
+                      id="product-display-order-input"
+                      type="number"
+                      min="1"
+                      placeholder="Auto"
+                      value={prodDisplayOrder}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === '') {
+                          setProdDisplayOrder('');
+                        } else {
+                          const n = parseInt(val, 10);
+                          setProdDisplayOrder(isNaN(n) ? '' : Math.max(1, n));
+                        }
+                      }}
+                      className="w-20 px-2.5 py-1 text-center bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
                 </div>
               </div>
               </div>

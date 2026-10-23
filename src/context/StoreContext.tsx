@@ -73,6 +73,7 @@ const defaultAdminStubs: AdminContextType = {
   addCategory: async () => ({ success: false, error: 'Admin context not loaded' }),
   updateCategory: async () => ({ success: false, error: 'Admin context not loaded' }),
   deleteCategory: async () => ({ success: false, error: 'Admin context not loaded' }),
+  reorderCategoryProducts: async () => ({ success: false, error: 'Admin context not loaded' }),
 
   // Order Management & Courier
   orders: [],

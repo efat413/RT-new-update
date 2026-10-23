@@ -598,6 +598,21 @@ export const categoriesApi = {
     invalidateStoreCaches();
     return true;
   },
+
+  async reorderProducts(categoryId: string, productOrders: Array<{ id: string; displayOrder: number }>): Promise<Product[]> {
+    const res = await apiRequest<{ success: boolean; products: Product[] }>(
+      `${API_BASE}/categories/${encodeURIComponent(categoryId)}/products/order`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ productOrders }),
+      }
+    );
+    if (!res.success) {
+      throw new Error(res.error || 'Failed to update category products sequence.');
+    }
+    invalidateStoreCaches();
+    return res.data?.products || [];
+  },
 };
 
 // ==========================================

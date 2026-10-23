@@ -90,7 +90,7 @@ export async function getProductTableColumns(db: D1Database): Promise<Set<string
     // Graceful fallback to default column list
   }
   return new Set([
-    'id', 'slug', 'title', 'price', 'original_price', 'buying_price', 'featured_sort_order', 'video_url', 'category_id', 'description',
+    'id', 'slug', 'title', 'price', 'original_price', 'buying_price', 'featured_sort_order', 'display_order', 'video_url', 'category_id', 'description',
     'image_url', 'images_json', 'stock', 'featured', 'rating', 'reviews_count',
     'specs_json', 'sizes_json', 'colors_json', 'sku', 'status', 'created_at', 'updated_at'
   ]);
@@ -98,7 +98,7 @@ export async function getProductTableColumns(db: D1Database): Promise<Set<string
 
 /**
  * Migration verification & self-healing helper.
- * Ensures the products table contains all required columns (e.g. video_url, buying_price, featured_sort_order)
+ * Ensures the products table contains all required columns (e.g. video_url, buying_price, featured_sort_order, display_order)
  * without data loss, table drops, or resets.
  */
 export async function ensureProductTableSchema(db: D1Database): Promise<Set<string>> {
@@ -140,6 +140,19 @@ export async function ensureProductTableSchema(db: D1Database): Promise<Set<stri
         console.log('[D1] Self-healed: added missing featured_sort_order column to products table.');
       } catch (err: any) {
         console.warn('[D1] featured_sort_order column addition notice:', err?.message || err);
+      }
+    }
+
+    // Self-heal: display_order column and index for category product ordering
+    if (!columns.has('display_order')) {
+      try {
+        await db.prepare('ALTER TABLE products ADD COLUMN display_order INTEGER DEFAULT 0').run();
+        await db.prepare('CREATE INDEX IF NOT EXISTS idx_products_category_display_order ON products(category_id, display_order ASC, created_at DESC)').run();
+        cachedProductTableColumns = null;
+        columns = await getProductTableColumns(db);
+        console.log('[D1] Self-healed: added missing display_order column to products table.');
+      } catch (err: any) {
+        console.warn('[D1] display_order column addition notice:', err?.message || err);
       }
     }
 
@@ -674,6 +687,7 @@ export function rowToProduct(row: ProductRow): Product {
     stock: Number(row.stock) || 0,
     featured: Boolean(row.featured),
     featuredSortOrder: row.featured_sort_order != null ? Number(row.featured_sort_order) : 0,
+    displayOrder: row.display_order != null ? Number(row.display_order) : 0,
     rating: Number(row.rating) || 5.0,
     reviewsCount: row.reviews_count != null && Number.isFinite(Number(row.reviews_count))
       ? Number(row.reviews_count)
@@ -690,10 +704,10 @@ export function rowToProduct(row: ProductRow): Product {
 }
 
 export const PUBLIC_PRODUCT_COLUMNS =
-  'id, slug, title, price, original_price, category_id, description, image_url, images_json, stock, featured, featured_sort_order, rating, reviews_count, specs_json, sizes_json, colors_json, sku, video_url, status, created_at, updated_at';
+  'id, slug, title, price, original_price, category_id, description, image_url, images_json, stock, featured, featured_sort_order, display_order, rating, reviews_count, specs_json, sizes_json, colors_json, sku, video_url, status, created_at, updated_at';
 
 export const ADMIN_PRODUCT_COLUMNS =
-  'id, slug, title, price, original_price, buying_price, category_id, description, image_url, images_json, stock, featured, featured_sort_order, rating, reviews_count, specs_json, sizes_json, colors_json, sku, video_url, status, created_at, updated_at';
+  'id, slug, title, price, original_price, buying_price, category_id, description, image_url, images_json, stock, featured, featured_sort_order, display_order, rating, reviews_count, specs_json, sizes_json, colors_json, sku, video_url, status, created_at, updated_at';
 
 export const CATEGORY_COLUMNS = 'id, name, slug, icon_name, description';
 
@@ -954,14 +968,14 @@ export async function getHomepageCategoryProducts(
 
   const categoryFilterClause = `AND category_id IN (${categoryIds.map(() => '?').join(', ')})`;
 
-  // Primary path: SQLite window function ROW_NUMBER() OVER (PARTITION BY category_id ORDER BY display_order ASC, created_at DESC)
+  // Primary path: SQLite window function ROW_NUMBER() OVER (PARTITION BY category_id ORDER BY CASE WHEN display_order IS NOT NULL AND display_order > 0 THEN display_order ELSE 99999 END ASC, created_at DESC)
   const windowSql = `
     WITH RankedProducts AS (
       SELECT 
         ${PUBLIC_PRODUCT_COLUMNS},
         ROW_NUMBER() OVER (
           PARTITION BY category_id 
-          ORDER BY display_order ASC, created_at DESC
+          ORDER BY CASE WHEN display_order IS NOT NULL AND display_order > 0 THEN display_order ELSE 99999 END ASC, created_at DESC
         ) AS row_num
       FROM products
       WHERE (status = 'active' OR status = 'published' OR status IS NULL OR status = '')
@@ -996,10 +1010,10 @@ export async function getHomepageCategoryProducts(
           FROM products sub
           WHERE sub.category_id = p.category_id
             AND (sub.status = 'active' OR sub.status = 'published' OR sub.status IS NULL OR sub.status = '')
-          ORDER BY sub.created_at DESC
+          ORDER BY CASE WHEN sub.display_order IS NOT NULL AND sub.display_order > 0 THEN sub.display_order ELSE 99999 END ASC, sub.created_at DESC
           LIMIT ?
         )
-      ORDER BY p.created_at DESC
+      ORDER BY CASE WHEN p.display_order IS NOT NULL AND p.display_order > 0 THEN p.display_order ELSE 99999 END ASC, p.created_at DESC
     `;
 
     const fallbackStmt = db.prepare(fallbackSql).bind(...categoryIds, boundedLimit);
@@ -1064,7 +1078,9 @@ export async function getHomepageProducts(
     WHERE row_num <= ?
   `;
 
-  const primaryCategorySql = buildCategoryWindowSql('display_order ASC, created_at DESC');
+  const primaryCategorySql = buildCategoryWindowSql(
+    'CASE WHEN display_order IS NOT NULL AND display_order > 0 THEN display_order ELSE 99999 END ASC, created_at DESC'
+  );
   const catStmt = db.prepare(primaryCategorySql);
   statements.push(categoryIds.length > 0 ? catStmt.bind(...categoryIds, perCategoryLimit) : catStmt.bind(perCategoryLimit));
 
@@ -1235,7 +1251,7 @@ export async function getCategoryProductsPaginated(
   `;
 
   let dataStmt = db
-    .prepare(buildDataQuery('display_order ASC, created_at DESC, id DESC'))
+    .prepare(buildDataQuery('CASE WHEN display_order IS NOT NULL AND display_order > 0 THEN display_order ELSE 99999 END ASC, created_at DESC, id DESC'))
     .bind(rawCatId, rawCatId, limit, offset);
 
   let countRes: any;
@@ -1565,6 +1581,11 @@ export async function insertProduct(db: D1Database, input: any): Promise<Product
   const featuredSortOrder = input.featuredSortOrder != null && !isNaN(Number(input.featuredSortOrder))
     ? Math.max(0, Math.floor(Number(input.featuredSortOrder)))
     : 0;
+  const displayOrder = input.displayOrder != null && !isNaN(Number(input.displayOrder))
+    ? Math.max(0, Math.floor(Number(input.displayOrder)))
+    : (input.display_order != null && !isNaN(Number(input.display_order))
+        ? Math.max(0, Math.floor(Number(input.display_order)))
+        : 0);
   // Ratings and reviewsCount are strictly derived from approved reviews (no fake counts or manual overrides)
   const rating = 5.0;
   const reviewsCount = 0;
@@ -1599,6 +1620,7 @@ export async function insertProduct(db: D1Database, input: any): Promise<Product
     { col: 'stock', val: stock },
     { col: 'featured', val: featured },
     { col: 'featured_sort_order', val: featuredSortOrder },
+    { col: 'display_order', val: displayOrder },
     { col: 'rating', val: rating },
     { col: 'reviews_count', val: reviewsCount },
     { col: 'specs_json', val: JSON.stringify(specs) },
@@ -1670,6 +1692,11 @@ export async function updateProductInD1(
   const featuredSortOrder = updates.featuredSortOrder !== undefined
     ? Math.max(0, Math.floor(Number(updates.featuredSortOrder)))
     : (existing.featuredSortOrder ?? 0);
+  const displayOrder = updates.displayOrder !== undefined
+    ? Math.max(0, Math.floor(Number(updates.displayOrder)))
+    : ((updates as any).display_order !== undefined
+        ? Math.max(0, Math.floor(Number((updates as any).display_order)))
+        : (existing.displayOrder ?? (existing as any).display_order ?? 0));
 
   // Slug stability rule: Preserve existing slug unless explicitly edited or missing
   let resolvedSlug = existing.slug;
@@ -1703,6 +1730,7 @@ export async function updateProductInD1(
     { col: 'stock', val: stock },
     { col: 'featured', val: featured },
     { col: 'featured_sort_order', val: featuredSortOrder },
+    { col: 'display_order', val: displayOrder },
     { col: 'rating', val: rating },
     { col: 'reviews_count', val: reviewsCount },
     { col: 'specs_json', val: JSON.stringify(specs) },
@@ -1794,6 +1822,48 @@ export async function setProductFeaturedInD1(
   const updated = await getProductById(db, id);
   if (!updated) throw new Error('Failed to retrieve updated product');
   return updated;
+}
+
+/**
+ * Updates the display order sequence of products within a specific category in Cloudflare D1.
+ * Allows custom homepage & category sequence management.
+ */
+export async function updateCategoryProductsDisplayOrder(
+  db: D1Database,
+  categoryId: string,
+  productOrders: Array<{ id: string; displayOrder: number }>
+): Promise<Product[]> {
+  await ensureProductTableSchema(db);
+
+  if (!categoryId || !Array.isArray(productOrders) || productOrders.length === 0) {
+    return [];
+  }
+
+  const statements: D1PreparedStatement[] = [];
+  for (const item of productOrders) {
+    if (!item?.id) continue;
+    const order = Math.max(0, Math.floor(Number(item.displayOrder) || 0));
+    statements.push(
+      db
+        .prepare('UPDATE products SET display_order = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND category_id = ?')
+        .bind(order, item.id, categoryId)
+    );
+  }
+
+  if (statements.length > 0) {
+    if (typeof db.batch === 'function') {
+      await db.batch(statements);
+    } else {
+      await Promise.all(statements.map((stmt) => stmt.run()));
+    }
+  }
+
+  // Return the newly ordered products for this category
+  const updatedStmt = db.prepare(
+    `SELECT ${ADMIN_PRODUCT_COLUMNS} FROM products WHERE category_id = ? ORDER BY CASE WHEN display_order IS NOT NULL AND display_order > 0 THEN display_order ELSE 99999 END ASC, created_at DESC`
+  ).bind(categoryId);
+  const res = await updatedStmt.all<ProductRow>();
+  return (res?.results || []).map(rowToProduct);
 }
 
 export async function deleteProductFromD1(db: D1Database, id: string): Promise<boolean> {

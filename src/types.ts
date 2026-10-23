@@ -15,6 +15,8 @@ export interface Product {
   stock: number;
   featured: boolean;
   featuredSortOrder?: number;
+  displayOrder?: number;
+  display_order?: number;
   rating: number;
   reviewsCount: number;
   specs?: string[];

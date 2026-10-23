@@ -2765,9 +2765,17 @@ function localApiDevPlugin(): Plugin {
           const collectedMap = new Map<string, any>();
 
           devCategories.forEach((cat: any) => {
-            const catProds = devProducts
+            const catProds = [...devProducts]
               .filter((p: any) => p.status !== 'inactive' && !p.isDeleted && p.categoryId === cat.id)
-              .slice(0, 5)
+              .sort((a: any, b: any) => {
+                const orderA = Number(a.displayOrder ?? a.display_order) || 0;
+                const orderB = Number(b.displayOrder ?? b.display_order) || 0;
+                if (orderA > 0 && orderB > 0) return orderA - orderB;
+                if (orderA > 0) return -1;
+                if (orderB > 0) return 1;
+                return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+              })
+              .slice(0, 6)
               .map((p: any) => sanitizeDevProduct(p, false));
             categoryProducts[cat.id] = catProds;
             catProds.forEach((p: any) => collectedMap.set(p.id, p));
@@ -3287,6 +3295,89 @@ function localApiDevPlugin(): Plugin {
             res.statusCode = 200;
             return res.end(JSON.stringify({ success: true, message: 'Deleted' }));
           }
+        }
+
+        const catProdsOrderMatch = url.pathname.match(/^\/api\/categories\/([^/]+)\/products\/(?:order|reorder)\/?$/);
+        if (catProdsOrderMatch && (method === 'PUT' || method === 'POST' || method === 'PATCH')) {
+          const catId = decodeURIComponent(catProdsOrderMatch[1]);
+          const authResult = requireDevAuth(req);
+          const canUpdate = authResult.auth?.role === 'super_admin' ||
+            !requireDevPermission(authResult, 'product.update') ||
+            !requireDevPermission(authResult, 'category.manage');
+          if (!canUpdate) return sendDevError(res, { status: 403, body: { success: false, error: 'Forbidden: Insufficient permissions.' } });
+
+          return readBody((body) => {
+            let productOrders: Array<{ id: string; displayOrder: number }> = [];
+            if (Array.isArray(body?.productOrders)) {
+              productOrders = body.productOrders;
+            } else if (Array.isArray(body?.productIds)) {
+              productOrders = body.productIds.map((id: string, index: number) => ({
+                id,
+                displayOrder: index + 1,
+              }));
+            } else if (Array.isArray(body)) {
+              productOrders = body;
+            }
+
+            for (const item of productOrders) {
+              if (!item?.id) continue;
+              const prod = devProducts.find((p) => p.id === item.id);
+              if (prod) {
+                prod.displayOrder = Math.max(0, Number(item.displayOrder) || 0);
+                prod.display_order = prod.displayOrder;
+              }
+            }
+
+            const updatedProducts = devProducts
+              .filter((p) => p.categoryId === catId)
+              .sort((a, b) => {
+                const orderA = Number(a.displayOrder ?? a.display_order) || 0;
+                const orderB = Number(b.displayOrder ?? b.display_order) || 0;
+                if (orderA > 0 && orderB > 0) return orderA - orderB;
+                if (orderA > 0) return -1;
+                if (orderB > 0) return 1;
+                return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+              })
+              .map((p) => sanitizeDevProduct(p, false));
+
+            res.statusCode = 200;
+            return res.end(JSON.stringify({ success: true, count: updatedProducts.length, products: updatedProducts }));
+          });
+        }
+
+        const catProdsMatch = url.pathname.match(/^\/api\/categories\/([^/]+)\/products\/?$/);
+        if (catProdsMatch && method === 'GET') {
+          const catId = decodeURIComponent(catProdsMatch[1]);
+          const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10) || 1);
+          const limit = Math.min(50, Math.max(1, parseInt(url.searchParams.get('limit') || '12', 10) || 12));
+          const offset = (page - 1) * limit;
+
+          const matched = devProducts
+            .filter((p) => (p.categoryId === catId || devCategories.find((c) => c.slug === catId)?.id === p.categoryId) && p.status !== 'inactive' && !p.isDeleted)
+            .sort((a, b) => {
+              const orderA = Number(a.displayOrder ?? a.display_order) || 0;
+              const orderB = Number(b.displayOrder ?? b.display_order) || 0;
+              if (orderA > 0 && orderB > 0) return orderA - orderB;
+              if (orderA > 0) return -1;
+              if (orderB > 0) return 1;
+              return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+            });
+
+          const total = matched.length;
+          const totalPages = Math.ceil(total / limit) || 1;
+          const items = matched.slice(offset, offset + limit).map((p) => sanitizeDevProduct(p, false));
+
+          res.statusCode = 200;
+          return res.end(JSON.stringify({
+            success: true,
+            items,
+            products: items,
+            total,
+            page,
+            limit,
+            totalPages,
+            hasMore: page < totalPages,
+          }));
         }
 
         // 3. SLIDERS

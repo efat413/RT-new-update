@@ -20,6 +20,7 @@ import {
   insertCategory,
   updateCategoryInD1,
   deleteCategoryFromD1,
+  updateCategoryProductsDisplayOrder,
   // Sliders
   getAllSliders,
   getSliderById,
@@ -3232,6 +3233,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           categoryId: p.categoryId,
           category_id: p.categoryId,
           display_order: (p as any).display_order ?? (p as any).displayOrder ?? 0,
+          displayOrder: (p as any).displayOrder ?? (p as any).display_order ?? 0,
           featured: Boolean(p.featured),
           featuredSortOrder: p.featuredSortOrder,
           rating: p.rating,
@@ -3758,6 +3760,40 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       );
     } catch (err: any) {
       console.error('Error fetching paginated category products:', err);
+      return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+    }
+  }
+
+  const categoryProductsOrderMatch = path.match(/^\/api\/categories\/([^/]+)\/products\/(?:order|reorder)\/?$/);
+  if (categoryProductsOrderMatch && (method === 'PUT' || method === 'POST' || method === 'PATCH')) {
+    const catId = decodeURIComponent(categoryProductsOrderMatch[1]);
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const canUpdate = auth!.role === 'super_admin' || hasPermission(auth!, 'product.update') || hasPermission(auth!, 'category.manage');
+    if (!canUpdate) {
+      return jsonResponse({ success: false, error: 'Forbidden: Insufficient permissions to update category product sequence.' }, 403);
+    }
+
+    const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+    if (jsonErr) return jsonErr;
+
+    try {
+      let productOrders: Array<{ id: string; displayOrder: number }> = [];
+      if (Array.isArray(body?.productOrders)) {
+        productOrders = body.productOrders;
+      } else if (Array.isArray(body?.productIds)) {
+        productOrders = body.productIds.map((id: string, index: number) => ({
+          id,
+          displayOrder: index + 1,
+        }));
+      } else if (Array.isArray(body)) {
+        productOrders = body;
+      }
+
+      const updatedProducts = await updateCategoryProductsDisplayOrder(env.DB, catId, productOrders);
+      return jsonResponse({ success: true, count: updatedProducts.length, products: updatedProducts });
+    } catch (err: any) {
+      console.error('Error updating category products sequence:', err);
       return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
     }
   }

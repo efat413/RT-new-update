@@ -798,7 +798,17 @@ const StoreContent: React.FC = () => {
                   const catProducts =
                     homepageCategoryProducts[cat.id] && homepageCategoryProducts[cat.id].length > 0
                       ? homepageCategoryProducts[cat.id]
-                      : products.filter((p) => p.categoryId === cat.id).slice(0, 6);
+                      : [...products]
+                          .filter((p) => p.categoryId === cat.id)
+                          .sort((a, b) => {
+                            const orderA = Number(a.displayOrder ?? a.display_order) || 0;
+                            const orderB = Number(b.displayOrder ?? b.display_order) || 0;
+                            if (orderA > 0 && orderB > 0) return orderA - orderB;
+                            if (orderA > 0) return -1;
+                            if (orderB > 0) return 1;
+                            return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+                          })
+                          .slice(0, 6);
 
                   if (!catProducts || catProducts.length === 0) return null;
 
