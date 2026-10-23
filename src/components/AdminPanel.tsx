@@ -118,9 +118,6 @@ import { STORAGE_KEYS } from '../context/storageKeys';
 const FeaturedProductsManagement = React.lazy(() =>
   import('./Admin/FeaturedProductsManagement').then((m) => ({ default: m.FeaturedProductsManagement }))
 );
-const HomepageCategoriesManagement = React.lazy(() =>
-  import('./Admin/HomepageCategoriesManagement').then((m) => ({ default: m.HomepageCategoriesManagement }))
-);
 const PermissionManagementModal = React.lazy(() =>
   import('./Admin/PermissionManagementModal').then((m) => ({ default: m.PermissionManagementModal }))
 );
@@ -5317,29 +5314,6 @@ const AdminPanelContent: React.FC = () => {
               </div>
             </div>
 
-            {/* Quick banner to Homepage Showcase */}
-            <div className="bg-gradient-to-r from-indigo-50 to-purple-50 border border-indigo-200 p-4 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-2xs">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-xs">
-                  <Layers className="w-5 h-5" />
-                </div>
-                <div>
-                  <h4 className="font-bold text-sm text-indigo-950">Homepage Showcase Product Selection</h4>
-                  <p className="text-xs text-indigo-700 mt-0.5">
-                    Customize which specific products appear on the homepage for each category and arrange their exact display sequence.
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setActiveTab('homepage-categories')}
-                className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-xs transition-colors shrink-0 cursor-pointer"
-              >
-                <span>Configure Homepage Showcase</span>
-                <ArrowUpRight className="w-4 h-4" />
-              </button>
-            </div>
-
             {/* Category Filter Options Bar */}
             <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="flex items-center gap-1.5 flex-wrap">
@@ -5505,27 +5479,6 @@ const AdminPanelContent: React.FC = () => {
             </div>
             )}
           </div>
-          )
-        )}
-
-        {/* ============================================================ */}
-        {/* TAB: HOMEPAGE CATEGORIES SHOWCASE SELECTION & ORDERING       */}
-        {/* ============================================================ */}
-        {activeTab === 'homepage-categories' && (
-          !hasPermission('canManageCategories') ? (
-            renderPermissionRestrictedNotice('canManageCategories', 'Homepage Category Showcase Management')
-          ) : (
-            <ErrorBoundary compact fallbackTitle="Homepage Showcase Unavailable" fallbackMessage="Could not load homepage category showcase manager.">
-              <React.Suspense fallback={<AdminTabFallback />}>
-                <HomepageCategoriesManagement
-                  categories={categories}
-                  products={products}
-                  hasPermission={hasPermission}
-                  isSuperAdmin={isSuperAdmin}
-                  onOpenEditProduct={openEditProductModal}
-                />
-              </React.Suspense>
-            </ErrorBoundary>
           )
         )}
 

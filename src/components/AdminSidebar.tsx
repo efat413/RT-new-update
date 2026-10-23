@@ -18,7 +18,6 @@ import {
   TrendingUp,
   MessageSquare,
   Facebook,
-  Layers,
 } from 'lucide-react';
 
 interface AdminSidebarProps {
@@ -135,14 +134,6 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
       icon: FolderTree,
       badge: categoriesCount,
       color: 'indigo',
-      permission: 'canManageCategories',
-    },
-    {
-      id: 'homepage-categories',
-      label: 'Homepage Showcase',
-      icon: Layers,
-      badge: 'Order',
-      color: 'amber',
       permission: 'canManageCategories',
     },
     {
@@ -401,28 +392,6 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
                     <Plus className="w-3 h-3" />
                     + New Category
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActiveTab('homepage-categories');
-                      setIsMobileNavOpen(false);
-                    }}
-                    className="w-full text-left px-2 py-1 rounded-md text-amber-400 hover:bg-slate-800 font-bold flex items-center gap-1 cursor-pointer"
-                  >
-                    <Layers className="w-3 h-3" />
-                    Homepage Product Order →
-                  </button>
-                </div>
-              )}
-
-              {isActive && item.id === 'homepage-categories' && (
-                <div className="pl-9 pr-2 py-1 space-y-1 text-[11px] animate-in slide-in-from-top-1 duration-150">
-                  <span className="text-amber-400 font-bold">
-                    • Isolated Per-Category
-                  </span>
-                  <p className="text-slate-400 text-[10px] leading-relaxed">
-                    Select and arrange products for each category carousel.
-                  </p>
                 </div>
               )}
 

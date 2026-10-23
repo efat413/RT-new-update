@@ -230,15 +230,6 @@ export interface UserRow {
   updated_at: string;
 }
 
-export interface CategoryHomepageProductRow {
-  id: string;
-  category_id: string;
-  product_id: string;
-  sort_order: number;
-  created_at: string;
-  updated_at: string;
-}
-
 export type {
   Order,
   Product,

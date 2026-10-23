@@ -574,14 +574,4 @@ export interface FacebookMessageTemplate {
   updatedAt: string;
 }
 
-export interface CategoryHomepageProductConfig {
-  id: string;
-  categoryId: string;
-  productId: string;
-  sortOrder: number;
-  createdAt?: string;
-  updatedAt?: string;
-  product?: Product;
-}
-
 
