@@ -26,26 +26,34 @@ import {
 import { Category, Product } from '../../types';
 import { homepageCategoriesApi } from '../../services/storeApi';
 
-interface HomepageCategoriesManagementProps {
-  categories: Category[];
-  products: Product[];
+export interface HomepageCategoriesManagementProps {
+  categories?: Category[];
+  products?: Product[];
   onRefreshHomepage?: () => void;
-  hasPermission: (perm: string) => boolean;
+  hasPermission?: (perm: any) => boolean;
   isSuperAdmin?: boolean;
+  onOpenEditProduct?: (product: Product) => void;
 }
 
 export const HomepageCategoriesManagement: React.FC<HomepageCategoriesManagementProps> = ({
-  categories,
-  products,
+  categories = [],
+  products = [],
   onRefreshHomepage,
-  hasPermission,
+  hasPermission = (_perm?: any) => true,
   isSuperAdmin = false,
+  onOpenEditProduct,
 }) => {
-  const canUpdate = isSuperAdmin || hasPermission('canManageCategories') || hasPermission('product.update') || hasPermission('category.manage');
+  const canUpdate = Boolean(
+    isSuperAdmin ||
+      (typeof hasPermission === 'function' &&
+        (hasPermission('canManageCategories') ||
+          hasPermission('product.update') ||
+          hasPermission('category.manage')))
+  );
 
   // Selected Category
   const [selectedCatId, setSelectedCatId] = useState<string>(() => {
-    return categories[0]?.id || '';
+    return (categories && categories[0]?.id) || '';
   });
 
   // Category configurations loaded from server: Record<categoryId, string[] (productIds)>
@@ -901,3 +909,5 @@ export const HomepageCategoriesManagement: React.FC<HomepageCategoriesManagement
     </div>
   );
 };
+
+export default HomepageCategoriesManagement;

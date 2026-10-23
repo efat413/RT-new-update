@@ -5520,6 +5520,8 @@ const AdminPanelContent: React.FC = () => {
                 <HomepageCategoriesManagement
                   categories={categories}
                   products={products}
+                  hasPermission={hasPermission}
+                  isSuperAdmin={isSuperAdmin}
                   onOpenEditProduct={openEditProductModal}
                 />
               </React.Suspense>
