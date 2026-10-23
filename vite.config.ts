@@ -131,6 +131,7 @@ function localApiDevPlugin(): Plugin {
   let devFacebookRecipients: any[] = [];
   let devFacebookTemplates: any[] = [];
   let devBlockedIps: any[] = [];
+  let devHomepageCategoryProducts: Record<string, string[]> = {};
   const generateInitialDevAuditLogs = (): any[] => {
     const actions = [
       { action: 'SETTINGS_UPDATE', targetType: 'settings', details: 'Store brand settings updated' },
@@ -2765,10 +2766,24 @@ function localApiDevPlugin(): Plugin {
           const collectedMap = new Map<string, any>();
 
           devCategories.forEach((cat: any) => {
-            const catProds = devProducts
-              .filter((p: any) => p.status !== 'inactive' && !p.isDeleted && p.categoryId === cat.id)
-              .slice(0, 5)
-              .map((p: any) => sanitizeDevProduct(p, false));
+            let catProds: any[] = [];
+            const customIds = devHomepageCategoryProducts[cat.id];
+            if (Array.isArray(customIds) && customIds.length > 0) {
+              // Custom configured selection: exact order and filter out deleted/inactive/wrong-category products
+              const prodMap = new Map<string, any>(devProducts.map((p) => [p.id, p]));
+              for (const pid of customIds) {
+                const p = prodMap.get(pid);
+                if (p && p.status !== 'inactive' && !p.isDeleted && p.categoryId === cat.id) {
+                  catProds.push(sanitizeDevProduct(p, false));
+                }
+              }
+            } else {
+              // Default automatic latest products behavior
+              catProds = devProducts
+                .filter((p: any) => p.status !== 'inactive' && !p.isDeleted && p.categoryId === cat.id)
+                .slice(0, 5)
+                .map((p: any) => sanitizeDevProduct(p, false));
+            }
             categoryProducts[cat.id] = catProds;
             catProds.forEach((p: any) => collectedMap.set(p.id, p));
           });
@@ -3286,6 +3301,123 @@ function localApiDevPlugin(): Plugin {
             devCategories = devCategories.filter((c) => c.id !== id && c.slug !== id);
             res.statusCode = 200;
             return res.end(JSON.stringify({ success: true, message: 'Deleted' }));
+          }
+        }
+
+        // HOMEPAGE CATEGORY PRODUCTS DEV ROUTES
+        if (url.pathname === '/api/admin/homepage-categories' && method === 'GET') {
+          const authResult = requireDevAuth(req);
+          if (authResult.error) return sendDevError(res, authResult.error);
+          res.setHeader('Content-Type', 'application/json');
+          res.statusCode = 200;
+          return res.end(JSON.stringify({
+            success: true,
+            configurations: devHomepageCategoryProducts,
+          }));
+        }
+
+        const devHcpMatch = url.pathname.match(/^\/api\/(?:admin\/)?categories\/([^/]+)\/homepage-products\/?$/);
+        if (devHcpMatch) {
+          const catId = decodeURIComponent(devHcpMatch[1]).trim();
+
+          if (method === 'GET') {
+            const customIds = devHomepageCategoryProducts[catId] || [];
+            const isCustom = Array.isArray(devHomepageCategoryProducts[catId]) && devHomepageCategoryProducts[catId].length > 0;
+            const prodMap = new Map<string, any>(devProducts.map((p) => [p.id, p]));
+            const resolvedProds: any[] = [];
+            for (const pid of customIds) {
+              const p = prodMap.get(pid);
+              if (p && p.status !== 'inactive' && !p.isDeleted && p.categoryId === catId) {
+                resolvedProds.push(sanitizeDevProduct(p, false));
+              }
+            }
+
+            res.setHeader('Content-Type', 'application/json');
+            res.statusCode = 200;
+            return res.end(JSON.stringify({
+              success: true,
+              categoryId: catId,
+              isCustom,
+              productIds: customIds,
+              products: resolvedProds,
+            }));
+          }
+
+          if (method === 'PUT' || method === 'POST') {
+            const authResult = requireDevAuth(req);
+            const permErr = requireDevPermission(authResult, 'category.manage');
+            if (permErr) return sendDevError(res, permErr);
+
+            return readBody((body) => {
+              const productIds = Array.isArray(body?.productIds)
+                ? body.productIds
+                : (Array.isArray(body) ? body : []);
+
+              // Deduplicate product IDs while preserving input sequence
+              const uniqueIds: string[] = [];
+              const seen = new Set<string>();
+              for (const pid of productIds) {
+                const clean = String(pid || '').trim();
+                if (clean && !seen.has(clean)) {
+                  seen.add(clean);
+                  uniqueIds.push(clean);
+                }
+              }
+
+              devHomepageCategoryProducts[catId] = uniqueIds;
+
+              devAuditLogs.unshift({
+                id: `audit-${Date.now()}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`,
+                timestamp: new Date().toISOString(),
+                actorId: authResult.auth!.user.id,
+                actorEmail: authResult.auth!.user.email,
+                actorRole: authResult.auth!.role,
+                action: 'HOMEPAGE_CATEGORY_PRODUCTS_UPDATE',
+                targetId: catId,
+                targetType: 'category',
+                details: `Updated custom homepage product selection for category "${catId}" (${uniqueIds.length} products).`,
+                ipAddress: '127.0.0.1',
+              });
+
+              res.setHeader('Content-Type', 'application/json');
+              res.statusCode = 200;
+              return res.end(JSON.stringify({
+                success: true,
+                message: 'Homepage category product selection and ordering saved successfully.',
+                categoryId: catId,
+                count: uniqueIds.length,
+                productIds: uniqueIds,
+              }));
+            });
+          }
+
+          if (method === 'DELETE') {
+            const authResult = requireDevAuth(req);
+            const permErr = requireDevPermission(authResult, 'category.manage');
+            if (permErr) return sendDevError(res, permErr);
+
+            delete devHomepageCategoryProducts[catId];
+
+            devAuditLogs.unshift({
+              id: `audit-${Date.now()}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`,
+              timestamp: new Date().toISOString(),
+              actorId: authResult.auth!.user.id,
+              actorEmail: authResult.auth!.user.email,
+              actorRole: authResult.auth!.role,
+              action: 'HOMEPAGE_CATEGORY_PRODUCTS_RESET',
+              targetId: catId,
+              targetType: 'category',
+              details: `Reset category "${catId}" homepage section to automatic default latest-products behavior.`,
+              ipAddress: '127.0.0.1',
+            });
+
+            res.setHeader('Content-Type', 'application/json');
+            res.statusCode = 200;
+            return res.end(JSON.stringify({
+              success: true,
+              message: 'Category homepage section reset to automatic default latest-products behavior.',
+              categoryId: catId,
+            }));
           }
         }
 

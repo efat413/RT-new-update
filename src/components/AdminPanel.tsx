@@ -148,6 +148,9 @@ const AdminReviewsTab = React.lazy(() =>
 const InvoiceModal = React.lazy(() =>
   import('./InvoiceModal').then((m) => ({ default: m.InvoiceModal }))
 );
+const HomepageCategoryProductsManagement = React.lazy(() =>
+  import('./Admin/HomepageCategoryProductsManagement').then((m) => ({ default: m.HomepageCategoryProductsManagement }))
+);
 
 const AdminTabFallback: React.FC = () => (
   <div className="py-24 flex flex-col items-center justify-center space-y-3 text-slate-400">
@@ -5304,9 +5307,19 @@ const AdminPanelContent: React.FC = () => {
                 </div>
 
                 <button
+                  type="button"
+                  id="admin-categories-homepage-ordering-btn"
+                  onClick={() => setAdminActiveTab('homepage-categories')}
+                  className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-md hover:shadow-lg transition-all whitespace-nowrap cursor-pointer"
+                >
+                  <Layers className="w-4 h-4" />
+                  Homepage Product Ordering
+                </button>
+
+                <button
                   id="admin-add-category-btn"
                   onClick={openNewCategoryModal}
-                  className="px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-black text-white font-bold text-xs flex items-center gap-1.5 shadow-md hover:shadow-lg transition-all whitespace-nowrap"
+                  className="px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-black text-white font-bold text-xs flex items-center gap-1.5 shadow-md hover:shadow-lg transition-all whitespace-nowrap cursor-pointer"
                 >
                   <Plus className="w-4 h-4" />
                   Add New Category
@@ -5479,6 +5492,25 @@ const AdminPanelContent: React.FC = () => {
             </div>
             )}
           </div>
+          )
+        )}
+
+        {/* ============================================================ */}
+        {/* TAB: HOMEPAGE CATEGORY PRODUCTS SELECTION & ORDERING         */}
+        {/* ============================================================ */}
+        {activeTab === 'homepage-categories' && (
+          !hasPermission('canManageCategories') && !hasPermission('product.update') ? (
+            renderPermissionRestrictedNotice('canManageCategories', 'Homepage Category Products')
+          ) : (
+            <ErrorBoundary compact fallbackTitle="Homepage Categories Unavailable" fallbackMessage="Could not load homepage category products manager.">
+              <React.Suspense fallback={<AdminTabFallback />}>
+                <HomepageCategoryProductsManagement
+                  categories={categories}
+                  products={products}
+                  onSuccess={(msg) => showNotification('success', 'Homepage Updated', msg)}
+                />
+              </React.Suspense>
+            </ErrorBoundary>
           )
         )}
 

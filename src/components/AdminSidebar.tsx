@@ -18,6 +18,7 @@ import {
   TrendingUp,
   MessageSquare,
   Facebook,
+  Layers,
 } from 'lucide-react';
 
 interface AdminSidebarProps {
@@ -134,6 +135,14 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
       icon: FolderTree,
       badge: categoriesCount,
       color: 'indigo',
+      permission: 'canManageCategories',
+    },
+    {
+      id: 'homepage-categories',
+      label: 'Homepage Categories',
+      icon: Layers,
+      badge: 'Order',
+      color: 'emerald',
       permission: 'canManageCategories',
     },
     {
@@ -374,6 +383,17 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
                   >
                     • Low Stock ({lowStockProductsCount})
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab('homepage-categories');
+                      setIsMobileNavOpen(false);
+                    }}
+                    className="w-full text-left px-2 py-1 rounded-md text-emerald-400 hover:text-emerald-300 hover:bg-slate-800 transition-colors cursor-pointer flex items-center gap-1 font-semibold"
+                  >
+                    <Layers className="w-3 h-3" />
+                    <span>Homepage Category Order</span>
+                  </button>
                 </div>
               )}
 
@@ -391,6 +411,18 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
                   >
                     <Plus className="w-3 h-3" />
                     + New Category
+                  </button>
+                  <button
+                    type="button"
+                    id="admin-sidebar-homepage-categories-btn"
+                    onClick={() => {
+                      setActiveTab('homepage-categories');
+                      setIsMobileNavOpen(false);
+                    }}
+                    className="w-full text-left px-2 py-1 rounded-md text-emerald-400 hover:bg-slate-800 font-bold flex items-center gap-1 cursor-pointer"
+                  >
+                    <Layers className="w-3 h-3" />
+                    Homepage Product Order
                   </button>
                 </div>
               )}

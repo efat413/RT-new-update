@@ -601,6 +601,75 @@ export const categoriesApi = {
 };
 
 // ==========================================
+// 2B. HOMEPAGE CATEGORY PRODUCTS API
+// ==========================================
+export const homepageCategoriesApi = {
+  async getConfigurations(): Promise<Record<string, string[]>> {
+    const res = await apiRequest<{ success: boolean; configurations: Record<string, string[]> }>(
+      `${API_BASE}/admin/homepage-categories`
+    );
+    return res.data?.configurations || {};
+  },
+
+  async getCategoryConfig(categoryId: string): Promise<{
+    isCustom: boolean;
+    isConfigured: boolean;
+    productIds: string[];
+    products: Product[];
+  }> {
+    const res = await apiRequest<{
+      success: boolean;
+      categoryId: string;
+      isCustom: boolean;
+      isConfigured?: boolean;
+      productIds: string[];
+      products: Product[];
+    }>(`${API_BASE}/admin/categories/${encodeURIComponent(categoryId)}/homepage-products`);
+
+    return {
+      isCustom: Boolean(res.data?.isCustom),
+      isConfigured: Boolean(res.data?.isConfigured ?? res.data?.isCustom),
+      productIds: res.data?.productIds || [],
+      products: res.data?.products || [],
+    };
+  },
+
+  async saveCategoryConfig(
+    categoryId: string,
+    productIds: string[]
+  ): Promise<{ success: boolean; message?: string; count?: number; error?: string }> {
+    const res = await apiRequest<{ success: boolean; message?: string; count?: number }>(
+      `${API_BASE}/admin/categories/${encodeURIComponent(categoryId)}/homepage-products`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ productIds }),
+      }
+    );
+    if (!res.success) {
+      return { success: false, error: res.error || 'Failed to save homepage category products.' };
+    }
+    invalidateStoreCaches();
+    return { success: true, message: res.data?.message, count: res.data?.count };
+  },
+
+  async resetCategoryConfig(
+    categoryId: string
+  ): Promise<{ success: boolean; message?: string; error?: string }> {
+    const res = await apiRequest<{ success: boolean; message?: string }>(
+      `${API_BASE}/admin/categories/${encodeURIComponent(categoryId)}/homepage-products`,
+      {
+        method: 'DELETE',
+      }
+    );
+    if (!res.success) {
+      return { success: false, error: res.error || 'Failed to reset homepage category products.' };
+    }
+    invalidateStoreCaches();
+    return { success: true, message: res.data?.message };
+  },
+};
+
+// ==========================================
 // 3. SLIDERS API
 // ==========================================
 export const slidersApi = {

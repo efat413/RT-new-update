@@ -20,6 +20,11 @@ import {
   insertCategory,
   updateCategoryInD1,
   deleteCategoryFromD1,
+  // Homepage Category Products Custom Ordering
+  getHomepageCategoryProductsConfig,
+  getAllHomepageCategoryProductConfigs,
+  setHomepageCategoryProductsInD1,
+  resetHomepageCategoryProductsInD1,
   // Sliders
   getAllSliders,
   getSliderById,
@@ -3813,6 +3818,154 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         return jsonResponse({ success: true, message: `Category "${catId}" deleted successfully.` });
       } catch (err: any) {
         logServerError({ route: path, method, error: err, action: 'category.delete' });
+        return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+      }
+    }
+  }
+
+  // ==========================================
+  // HOMEPAGE CATEGORY PRODUCTS MANAGEMENT ROUTES
+  // ==========================================
+  if (path === '/api/admin/homepage-categories' && method === 'GET') {
+    const { auth, errorResponse } = await requireAuth(request, env);
+    if (errorResponse) return errorResponse;
+    const canView =
+      auth!.role === 'super_admin' ||
+      hasPermission(auth!, 'category.manage') ||
+      hasPermission(auth!, 'product.view') ||
+      hasPermission(auth!, 'settings.manage');
+    if (!canView) {
+      return jsonResponse({ success: false, error: 'Forbidden: Insufficient permissions to view homepage category configurations.' }, 403);
+    }
+
+    try {
+      const configs = await getAllHomepageCategoryProductConfigs(env.DB);
+      const configsList = Object.entries(configs).map(([catId, pids]) => ({
+        categoryId: catId,
+        isConfigured: pids.length > 0,
+        productCount: pids.length,
+        productIds: pids,
+      }));
+      return jsonResponse({
+        success: true,
+        configurations: configs,
+        configurationsList: configsList,
+      }, 200, {
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+      });
+    } catch (err: any) {
+      console.error('Error fetching homepage category product configs:', err);
+      return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+    }
+  }
+
+  const categoryHomepageProductsMatch = path.match(/^\/api\/(?:admin\/)?categories\/([^/]+)\/homepage-products\/?$/);
+  if (categoryHomepageProductsMatch) {
+    const catId = decodeURIComponent(categoryHomepageProductsMatch[1]).trim();
+
+    if (method === 'GET') {
+      try {
+        const config = await getHomepageCategoryProductsConfig(env.DB, catId);
+        return jsonResponse({
+          success: true,
+          categoryId: catId,
+          isCustom: config.isCustom,
+          isConfigured: config.isConfigured,
+          productIds: config.productIds,
+          products: config.products,
+        }, 200, {
+          'Cache-Control': 'no-store, no-cache, must-revalidate',
+        });
+      } catch (err: any) {
+        console.error('Error fetching category homepage products config:', err);
+        return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+      }
+    }
+
+    if (method === 'PUT' || method === 'POST') {
+      const { auth, errorResponse } = await requireAuth(request, env);
+      if (errorResponse) return errorResponse;
+      const canManage =
+        auth!.role === 'super_admin' ||
+        hasPermission(auth!, 'category.manage') ||
+        hasPermission(auth!, 'product.update') ||
+        hasPermission(auth!, 'settings.manage');
+      if (!canManage) {
+        return jsonResponse({ success: false, error: 'Forbidden: Insufficient permissions to modify homepage category product selection.' }, 403);
+      }
+
+      const { data: body, errorResponse: jsonErr } = await safeParseJson(request);
+      if (jsonErr) return jsonErr;
+
+      try {
+        const productIds = Array.isArray(body?.productIds)
+          ? body.productIds
+          : (Array.isArray(body) ? body : []);
+
+        const saveRes = await setHomepageCategoryProductsInD1(env.DB, catId, productIds);
+
+        // Record audit log
+        try {
+          await insertAuditLogInD1(env.DB, {
+            actorId: auth!.dbUser.id,
+            actorEmail: auth!.dbUser.email,
+            actorRole: auth!.role,
+            action: 'HOMEPAGE_CATEGORY_PRODUCTS_UPDATE',
+            targetId: catId,
+            targetType: 'category',
+            details: `Updated custom homepage product selection for category "${catId}" (${saveRes.count} products).`,
+          });
+        } catch {}
+
+        return jsonResponse({
+          success: true,
+          message: 'Homepage category product selection and ordering saved successfully.',
+          categoryId: catId,
+          count: saveRes.count,
+          productIds,
+        });
+      } catch (err: any) {
+        console.error('Error saving homepage category products:', err);
+        return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
+      }
+    }
+
+    if (method === 'DELETE') {
+      const { auth, errorResponse } = await requireAuth(request, env);
+      if (errorResponse) return errorResponse;
+      const canManage =
+        auth!.role === 'super_admin' ||
+        hasPermission(auth!, 'category.manage') ||
+        hasPermission(auth!, 'product.update') ||
+        hasPermission(auth!, 'settings.manage');
+      if (!canManage) {
+        return jsonResponse({ success: false, error: 'Forbidden: Insufficient permissions to reset homepage category products.' }, 403);
+      }
+
+      try {
+        await resetHomepageCategoryProductsInD1(env.DB, catId);
+
+        // Record audit log
+        try {
+          await insertAuditLogInD1(env.DB, {
+            actorId: auth!.dbUser.id,
+            actorEmail: auth!.dbUser.email,
+            actorRole: auth!.role,
+            action: 'HOMEPAGE_CATEGORY_PRODUCTS_RESET',
+            targetId: catId,
+            targetType: 'category',
+            details: `Reset category "${catId}" homepage section to automatic default latest-products behavior.`,
+          });
+        } catch {}
+
+        return jsonResponse({
+          success: true,
+          isConfigured: false,
+          message: 'Category homepage section reset to automatic default latest-products behavior.',
+          categoryId: catId,
+        });
+      } catch (err: any) {
+        console.error('Error resetting homepage category products:', err);
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
       }
     }

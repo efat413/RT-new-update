@@ -1021,6 +1021,203 @@ export async function getHomepageCategoryProducts(
  * Eliminates loading the entire products table into memory and avoids N+1 database queries.
  * Selects only public storefront fields without exposing internal buying prices.
  */
+// ==============================================================
+// HOMEPAGE CATEGORY PRODUCTS CUSTOM ORDERING HELPERS (D1)
+// ==============================================================
+let isHcpTableEnsured = false;
+
+export async function ensureHomepageCategoryProductsTable(db: D1Database): Promise<void> {
+  if (isHcpTableEnsured) return;
+  try {
+    if (!db || typeof db.prepare !== 'function') return;
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS homepage_category_products (
+        category_id TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (category_id, product_id)
+      )
+    `).run().catch(() => {});
+    await db.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_hcp_category_sort ON homepage_category_products(category_id, sort_order ASC)
+    `).run().catch(() => {});
+    await db.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_hcp_product_id ON homepage_category_products(product_id)
+    `).run().catch(() => {});
+    isHcpTableEnsured = true;
+  } catch (err) {
+    console.warn('[D1 ensureHomepageCategoryProductsTable warning]:', err);
+  }
+}
+
+export async function getConfiguredHomepageCategoryIds(db: D1Database): Promise<Set<string>> {
+  await ensureHomepageCategoryProductsTable(db);
+  try {
+    const res = await db.prepare('SELECT DISTINCT category_id FROM homepage_category_products').all<{ category_id: string }>();
+    const set = new Set<string>();
+    for (const row of res?.results || []) {
+      if (row.category_id) set.add(row.category_id);
+    }
+    return set;
+  } catch {
+    return new Set<string>();
+  }
+}
+
+export async function getAllHomepageCategoryProductConfigs(db: D1Database): Promise<Record<string, string[]>> {
+  await ensureHomepageCategoryProductsTable(db);
+  const configs: Record<string, string[]> = {};
+  try {
+    const res = await db.prepare(
+      'SELECT category_id, product_id FROM homepage_category_products ORDER BY category_id, sort_order ASC'
+    ).all<{ category_id: string; product_id: string }>();
+    for (const row of res?.results || []) {
+      if (!configs[row.category_id]) {
+        configs[row.category_id] = [];
+      }
+      configs[row.category_id].push(row.product_id);
+    }
+  } catch (err) {
+    console.warn('[D1 getAllHomepageCategoryProductConfigs error]:', err);
+  }
+  return configs;
+}
+
+export async function getHomepageCategoryProductsConfig(
+  db: D1Database,
+  categoryId: string
+): Promise<{ isCustom: boolean; isConfigured: boolean; productIds: string[]; products: Product[] }> {
+  await ensureHomepageCategoryProductsTable(db);
+  const cleanCatId = (categoryId || '').trim();
+  if (!cleanCatId) {
+    return { isCustom: false, isConfigured: false, productIds: [], products: [] };
+  }
+
+  try {
+    // 1. Check if category has rows in homepage_category_products
+    const configRows = await db.prepare(
+      'SELECT product_id, sort_order FROM homepage_category_products WHERE category_id = ? ORDER BY sort_order ASC'
+    ).bind(cleanCatId).all<{ product_id: string; sort_order: number }>();
+
+    const rows = configRows?.results || [];
+    if (rows.length === 0) {
+      return { isCustom: false, isConfigured: false, productIds: [], products: [] };
+    }
+
+    const productIds = rows.map((r) => r.product_id);
+
+    // 2. Fetch full product records for these product IDs in exact order,
+    // safe against deleted/unpublished products or products moved to another category
+    const availableColumns = await ensureProductTableSchema(db);
+    const columns = buildSelectProductColumns(availableColumns, false);
+    const placeholders = productIds.map(() => '?').join(', ');
+
+    const prodRows = await db.prepare(`
+      SELECT ${columns} FROM products
+      WHERE id IN (${placeholders})
+        AND category_id = ?
+        AND (status = 'active' OR status = 'published' OR status IS NULL OR status = '')
+    `).bind(...productIds, cleanCatId).all<ProductRow>();
+
+    const foundProds = (prodRows?.results || []).map(rowToProduct);
+    const foundMap = new Map(foundProds.map((p) => [p.id, p]));
+
+    // Preserve exact sort order from productIds
+    const orderedProducts: Product[] = [];
+    for (const pid of productIds) {
+      const p = foundMap.get(pid);
+      if (p) orderedProducts.push(p);
+    }
+
+    return {
+      isCustom: true,
+      isConfigured: true,
+      productIds,
+      products: orderedProducts,
+    };
+  } catch (err) {
+    console.warn('[D1 getHomepageCategoryProductsConfig error]:', err);
+    return { isCustom: false, isConfigured: false, productIds: [], products: [] };
+  }
+}
+
+export async function setHomepageCategoryProductsInD1(
+  db: D1Database,
+  categoryId: string,
+  productIds: string[]
+): Promise<{ success: boolean; count: number }> {
+  await ensureHomepageCategoryProductsTable(db);
+  const cleanCatId = (categoryId || '').trim();
+  if (!cleanCatId) {
+    return { success: false, count: 0 };
+  }
+
+  // Deduplicate product IDs while preserving input sequence
+  const uniqueIds: string[] = [];
+  const seen = new Set<string>();
+  for (const id of productIds) {
+    const cleanId = String(id || '').trim();
+    if (cleanId && !seen.has(cleanId)) {
+      seen.add(cleanId);
+      uniqueIds.push(cleanId);
+    }
+  }
+
+  try {
+    const deleteStmt = db.prepare('DELETE FROM homepage_category_products WHERE category_id = ?').bind(cleanCatId);
+
+    if (uniqueIds.length === 0) {
+      await deleteStmt.run();
+      return { success: true, count: 0 };
+    }
+
+    const insertStmts = uniqueIds.map((pid, idx) =>
+      db.prepare(
+        'INSERT INTO homepage_category_products (category_id, product_id, sort_order, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)'
+      ).bind(cleanCatId, pid, idx)
+    );
+
+    if (typeof db.batch === 'function') {
+      await db.batch([deleteStmt, ...insertStmts]);
+    } else {
+      await deleteStmt.run();
+      for (const stmt of insertStmts) {
+        await stmt.run();
+      }
+    }
+
+    return { success: true, count: uniqueIds.length };
+  } catch (err) {
+    console.error('[D1 setHomepageCategoryProductsInD1 error]:', err);
+    throw err;
+  }
+}
+
+export async function resetHomepageCategoryProductsInD1(
+  db: D1Database,
+  categoryId: string
+): Promise<{ success: boolean }> {
+  await ensureHomepageCategoryProductsTable(db);
+  const cleanCatId = (categoryId || '').trim();
+  if (!cleanCatId) return { success: false };
+
+  try {
+    await db.prepare('DELETE FROM homepage_category_products WHERE category_id = ?').bind(cleanCatId).run();
+    return { success: true };
+  } catch (err) {
+    console.error('[D1 resetHomepageCategoryProductsInD1 error]:', err);
+    throw err;
+  }
+}
+
+/**
+ * Loads strictly the products required for the homepage directly via SQL LIMITs and batching.
+ * Eliminates loading the entire products table into memory and avoids N+1 database queries.
+ * Selects only public storefront fields without exposing internal buying prices.
+ * Respects custom homepage category product selection and ordering when configured,
+ * while automatically falling back to the default latest-products behavior for unconfigured categories.
+ */
 export async function getHomepageProducts(
   db: D1Database,
   categoryIds: string[],
@@ -1105,7 +1302,7 @@ export async function getHomepageProducts(
   const featuredRows = batchResults[0]?.results || [];
   const featuredProducts = featuredRows.map(rowToProduct);
 
-  // Process category products from the window function result
+  // Process default category products from the window function result
   const categoryRows = batchResults[1]?.results || [];
   const categoryProducts: Record<string, Product[]> = {};
   categoryIds.forEach((catId) => {
@@ -1121,6 +1318,55 @@ export async function getHomepageProducts(
     }
     categoryProducts[prod.categoryId].push(prod);
     collectedMap.set(prod.id, prod);
+  }
+
+  // Custom Homepage Category Products Integration:
+  // Inspect homepage_category_products to check if any category has manual selection & ordering configured
+  try {
+    await ensureHomepageCategoryProductsTable(db);
+    const customConfigRes = await db.prepare(`
+      SELECT 
+        ${PUBLIC_PRODUCT_COLUMNS}, 
+        hcp.category_id as hcp_cat_id, 
+        hcp.sort_order as hcp_sort
+      FROM homepage_category_products hcp
+      JOIN products p ON p.id = hcp.product_id
+      WHERE (p.status = 'active' OR p.status = 'published' OR p.status IS NULL OR p.status = '')
+        AND p.category_id = hcp.category_id
+      ORDER BY hcp.category_id, hcp.sort_order ASC
+    `).all<ProductRow & { hcp_cat_id: string; hcp_sort: number }>();
+
+    const configuredCats = await getConfiguredHomepageCategoryIds(db);
+
+    if (configuredCats.size > 0) {
+      const customCatMap: Record<string, Product[]> = {};
+      for (const cId of configuredCats) {
+        customCatMap[cId] = [];
+      }
+
+      for (const row of customConfigRes?.results || []) {
+        const catId = row.hcp_cat_id;
+        if (!customCatMap[catId]) {
+          customCatMap[catId] = [];
+        }
+        const prod = rowToProduct(row);
+        customCatMap[catId].push(prod);
+      }
+
+      // Override each manually configured category with its exact ordered products
+      for (const catId of categoryIds) {
+        if (configuredCats.has(catId)) {
+          const selected = customCatMap[catId] || [];
+          categoryProducts[catId] = selected;
+          // Ensure products from custom selection are in collectedMap
+          for (const sp of selected) {
+            collectedMap.set(sp.id, sp);
+          }
+        }
+      }
+    }
+  } catch (customErr) {
+    console.warn('[D1 getHomepageProducts custom selection warning]:', customErr);
   }
 
   // Also include featured products in uniqueProducts collection so quick view and details work seamlessly
