@@ -8116,6 +8116,7 @@ function localApiDevPlugin(): Plugin {
 
 export default defineConfig(() => {
   return {
+    base: '/',
     plugins: [react(), tailwindcss(), { ...localApiDevPlugin(), apply: 'serve' }],
     resolve: {
       alias: {

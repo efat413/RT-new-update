@@ -114,39 +114,97 @@ import { ImageUploadField } from './ImageUploadField';
 import { AdminSidebar } from './AdminSidebar';
 import { STORAGE_KEYS } from '../context/storageKeys';
 
+// Helper for resilient dynamic chunk loading across browser reloads
+function lazyWithRetry<T extends React.ComponentType<any>>(
+  componentImport: () => Promise<{ default: T }>,
+  chunkName = 'module'
+) {
+  return React.lazy(async () => {
+    const retryKey = `chunk_retry_${chunkName}`;
+    const pageHasBeenForceRefreshed =
+      typeof window !== 'undefined'
+        ? sessionStorage.getItem(retryKey) === 'true'
+        : false;
+
+    try {
+      const component = await componentImport();
+      if (typeof window !== 'undefined') {
+        sessionStorage.removeItem(retryKey);
+      }
+      return component;
+    } catch (firstError) {
+      try {
+        await new Promise((r) => setTimeout(r, 200));
+        const component = await componentImport();
+        if (typeof window !== 'undefined') {
+          sessionStorage.removeItem(retryKey);
+        }
+        return component;
+      } catch (secondError) {
+        try {
+          await new Promise((r) => setTimeout(r, 400));
+          const component = await componentImport();
+          if (typeof window !== 'undefined') {
+            sessionStorage.removeItem(retryKey);
+          }
+          return component;
+        } catch (finalError) {
+          if (typeof window !== 'undefined' && !pageHasBeenForceRefreshed) {
+            sessionStorage.setItem(retryKey, 'true');
+            window.location.reload();
+            return new Promise<{ default: T }>(() => {});
+          }
+          throw finalError;
+        }
+      }
+    }
+  });
+}
+
 // Code-splitting: Lazy-load large admin-only feature tabs and modals
-const FeaturedProductsManagement = React.lazy(() =>
-  import('./Admin/FeaturedProductsManagement').then((m) => ({ default: m.FeaturedProductsManagement }))
+const FeaturedProductsManagement = lazyWithRetry(
+  () => import('./Admin/FeaturedProductsManagement').then((m) => ({ default: m.FeaturedProductsManagement })),
+  'featured_products'
 );
-const PermissionManagementModal = React.lazy(() =>
-  import('./Admin/PermissionManagementModal').then((m) => ({ default: m.PermissionManagementModal }))
+const PermissionManagementModal = lazyWithRetry(
+  () => import('./Admin/PermissionManagementModal').then((m) => ({ default: m.PermissionManagementModal })),
+  'permission_modal'
 );
-const AdminSlidesTab = React.lazy(() =>
-  import('./AdminSlidesTab').then((m) => ({ default: m.AdminSlidesTab }))
+const AdminSlidesTab = lazyWithRetry(
+  () => import('./AdminSlidesTab').then((m) => ({ default: m.AdminSlidesTab })),
+  'slides_tab'
 );
-const AdminCouriersTab = React.lazy(() =>
-  import('./AdminCouriersTab').then((m) => ({ default: m.AdminCouriersTab }))
+const AdminCouriersTab = lazyWithRetry(
+  () => import('./AdminCouriersTab').then((m) => ({ default: m.AdminCouriersTab })),
+  'couriers_tab'
 );
-const AdminMarketingPixelsTab = React.lazy(() =>
-  import('./AdminMarketingPixelsTab').then((m) => ({ default: m.AdminMarketingPixelsTab }))
+const AdminMarketingPixelsTab = lazyWithRetry(
+  () => import('./AdminMarketingPixelsTab').then((m) => ({ default: m.AdminMarketingPixelsTab })),
+  'pixels_tab'
 );
-const AdminFacebookBroadcasterTab = React.lazy(() =>
-  import('./AdminFacebookBroadcasterTab').then((m) => ({ default: m.AdminFacebookBroadcasterTab }))
+const AdminFacebookBroadcasterTab = lazyWithRetry(
+  () => import('./AdminFacebookBroadcasterTab').then((m) => ({ default: m.AdminFacebookBroadcasterTab })),
+  'broadcaster_tab'
 );
-const AdminVouchersTab = React.lazy(() =>
-  import('./AdminVouchersTab').then((m) => ({ default: m.AdminVouchersTab }))
+const AdminVouchersTab = lazyWithRetry(
+  () => import('./AdminVouchersTab').then((m) => ({ default: m.AdminVouchersTab })),
+  'vouchers_tab'
 );
-const AdminDebugTab = React.lazy(() =>
-  import('./AdminDebugTab').then((m) => ({ default: m.AdminDebugTab }))
+const AdminDebugTab = lazyWithRetry(
+  () => import('./AdminDebugTab').then((m) => ({ default: m.AdminDebugTab })),
+  'debug_tab'
 );
-const AdminProfitAnalyticsTab = React.lazy(() =>
-  import('./AdminProfitAnalyticsTab').then((m) => ({ default: m.AdminProfitAnalyticsTab }))
+const AdminProfitAnalyticsTab = lazyWithRetry(
+  () => import('./AdminProfitAnalyticsTab').then((m) => ({ default: m.AdminProfitAnalyticsTab })),
+  'profit_tab'
 );
-const AdminReviewsTab = React.lazy(() =>
-  import('./AdminReviewsTab').then((m) => ({ default: m.AdminReviewsTab }))
+const AdminReviewsTab = lazyWithRetry(
+  () => import('./AdminReviewsTab').then((m) => ({ default: m.AdminReviewsTab })),
+  'reviews_tab'
 );
-const InvoiceModal = React.lazy(() =>
-  import('./InvoiceModal').then((m) => ({ default: m.InvoiceModal }))
+const InvoiceModal = lazyWithRetry(
+  () => import('./InvoiceModal').then((m) => ({ default: m.InvoiceModal })),
+  'invoice_modal'
 );
 
 const AdminTabFallback: React.FC = () => (
@@ -472,7 +530,7 @@ const AdminPanelContent: React.FC = () => {
 
   // Active Tab
   const [activeTab, setActiveTab] = useState<
-    'overview' | 'profit' | 'orders' | 'products' | 'categories' | 'slides' | 'couriers' | 'settings' | 'users' | 'pixels' | 'broadcaster' | 'vouchers' | 'debug'
+    'overview' | 'profit' | 'orders' | 'products' | 'categories' | 'slides' | 'couriers' | 'settings' | 'users' | 'pixels' | 'broadcaster' | 'vouchers' | 'debug' | 'reviews'
   >((adminActiveTab as any) || 'overview');
 
   const handleSelectTab = useCallback((tabId: string) => {

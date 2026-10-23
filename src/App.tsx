@@ -27,19 +27,60 @@ import {
   Gift,
 } from 'lucide-react';
 
+// Helper for resilient dynamic chunk loading across browser reloads
+function lazyWithRetry<T extends React.ComponentType<any>>(
+  componentImport: () => Promise<{ default: T }>,
+  chunkName = 'module'
+) {
+  return React.lazy(async () => {
+    const retryKey = `chunk_retry_${chunkName}`;
+    const pageHasBeenForceRefreshed =
+      typeof window !== 'undefined'
+        ? sessionStorage.getItem(retryKey) === 'true'
+        : false;
+
+    try {
+      const component = await componentImport();
+      if (typeof window !== 'undefined') {
+        sessionStorage.removeItem(retryKey);
+      }
+      return component;
+    } catch (firstError) {
+      // First retry after a short delay
+      try {
+        await new Promise((r) => setTimeout(r, 200));
+        const component = await componentImport();
+        if (typeof window !== 'undefined') {
+          sessionStorage.removeItem(retryKey);
+        }
+        return component;
+      } catch (secondError) {
+        // Second retry after a slightly longer delay
+        try {
+          await new Promise((r) => setTimeout(r, 400));
+          const component = await componentImport();
+          if (typeof window !== 'undefined') {
+            sessionStorage.removeItem(retryKey);
+          }
+          return component;
+        } catch (finalError) {
+          if (typeof window !== 'undefined' && !pageHasBeenForceRefreshed) {
+            sessionStorage.setItem(retryKey, 'true');
+            window.location.reload();
+            return new Promise<{ default: T }>(() => {});
+          }
+          throw finalError;
+        }
+      }
+    }
+  });
+}
+
 // Code-splitting: Lazy-load route pages
 // Storefront visitors do NOT download heavy admin, product detail, or category listing chunks during initial load
-const AdminPanel = React.lazy(() =>
-  import('./components/AdminPanel')
-    .then((m) => ({ default: m.AdminPanel }))
-    .catch((err) => {
-      const retryKey = 'chunk_retry_admin';
-      if (typeof window !== 'undefined' && !sessionStorage.getItem(retryKey)) {
-        sessionStorage.setItem(retryKey, 'true');
-        window.location.reload();
-      }
-      throw err;
-    })
+const AdminPanel = lazyWithRetry(
+  () => import('./components/AdminPanel').then((m) => ({ default: m.AdminPanel })),
+  'admin'
 );
 const ResetPasswordPage = React.lazy(() =>
   import('./components/ResetPasswordPage').then((m) => ({ default: m.ResetPasswordPage }))
@@ -421,6 +462,9 @@ const StoreContent: React.FC = () => {
   if (isAdminRoute) {
     if (!isAuthInitializing && !isAdminLoggedIn) {
       return null;
+    }
+    if (isAuthInitializing) {
+      return <AdminLoadingFallback />;
     }
     return (
       <>

@@ -106,8 +106,10 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     'settings',
     'users',
     'pixels',
+    'broadcaster',
     'vouchers',
     'debug',
+    'reviews',
   ]), []);
 
   const resolveAdminTabFromUrl = useCallback((): string => {
