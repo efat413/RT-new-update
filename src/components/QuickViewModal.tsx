@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import {
   X,
@@ -90,7 +90,6 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
   const [activeTab, setActiveTab] = useState<'overview' | 'reviews'>('overview');
   const [isFullscreenOpen, setIsFullscreenOpen] = useState(false);
   const [isZoomed, setIsZoomed] = useState(false);
-  const prevModalProductIdRef = useRef<string | null>(null);
 
   // Track ProductView / ViewContent event to Meta, TikTok, and GTM
   useEffect(() => {
@@ -148,39 +147,29 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
 
   // Reset selected image, tab, size, color, and quantity when product changes
   useEffect(() => {
-    if (!product?.id) {
-      prevModalProductIdRef.current = null;
-      return;
+    setSelectedImageIdx(0);
+    setQuantity(1);
+    setActiveTab('overview');
+    setReviewSuccessMsg('');
+    setIsFullscreenOpen(false);
+    setIsZoomed(false);
+    if (product?.sizes && product.sizes.length === 1) {
+      setSelectedSize(product.sizes[0]);
+    } else {
+      setSelectedSize(undefined);
     }
-
-    if (prevModalProductIdRef.current !== product.id) {
-      prevModalProductIdRef.current = product.id;
-      setSelectedImageIdx(0);
-      setQuantity(1);
-      setActiveTab('overview');
-      setReviewSuccessMsg('');
-      setIsFullscreenOpen(false);
-      setIsZoomed(false);
-
-      if (product.sizes && product.sizes.length > 0) {
-        setSelectedSize(product.sizes[0]);
-      } else {
-        setSelectedSize(undefined);
-      }
-      if (product.colors && product.colors.length > 0) {
-        setSelectedColor(product.colors[0]);
-      } else {
-        setSelectedColor(undefined);
-      }
-      setValidationError(null);
+    if (product?.colors && product.colors.length === 1) {
+      setSelectedColor(product.colors[0]);
+    } else {
+      setSelectedColor(undefined);
     }
-
+    setValidationError(null);
     if (currentUser?.name) {
       setReviewAuthor(currentUser.name);
     } else {
       setReviewAuthor('');
     }
-  }, [product?.id, product?.sizes, product?.colors, currentUser]);
+  }, [product?.id, currentUser]);
 
   // Lock body scroll and handle Escape key while modal or fullscreen is active
   useEffect(() => {
@@ -241,10 +230,35 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({ product: propPro
   const hasVideo = Boolean(product.videoUrl && product.videoUrl.trim());
 
   const validateVariantSelection = (): { valid: boolean; color?: string; size?: string } => {
+    const hasMultipleColors = Boolean(product?.colors && product.colors.length > 1);
+    const hasMultipleSizes = Boolean(product?.sizes && product.sizes.length > 1);
+
     const resolvedColor =
-      selectedColor || (product?.colors && product.colors.length > 0 ? product.colors[0] : undefined);
+      selectedColor || (product?.colors && product.colors.length === 1 ? product.colors[0] : undefined);
     const resolvedSize =
-      selectedSize || (product?.sizes && product.sizes.length > 0 ? product.sizes[0] : undefined);
+      selectedSize || (product?.sizes && product.sizes.length === 1 ? product.sizes[0] : undefined);
+
+    const isColorMissing = hasMultipleColors && !resolvedColor;
+    const isSizeMissing = hasMultipleSizes && !resolvedSize;
+
+    if (isColorMissing && isSizeMissing) {
+      const msg = 'Please select a color and size.';
+      setValidationError(msg);
+      showNotification('warning', 'Selection Required', msg);
+      return { valid: false };
+    }
+    if (isColorMissing) {
+      const msg = 'Please select a color.';
+      setValidationError(msg);
+      showNotification('warning', 'Color Required', msg);
+      return { valid: false };
+    }
+    if (isSizeMissing) {
+      const msg = 'Please select a size.';
+      setValidationError(msg);
+      showNotification('warning', 'Size Required', msg);
+      return { valid: false };
+    }
 
     setValidationError(null);
     return { valid: true, color: resolvedColor, size: resolvedSize };

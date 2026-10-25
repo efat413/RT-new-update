@@ -98,7 +98,6 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
   const [reviewPhotoError, setReviewPhotoError] = useState<string | null>(null);
   const [reviewSuccessMsg, setReviewSuccessMsg] = useState('');
   const reviewFileInputRef = useRef<HTMLInputElement>(null);
-  const prevProductIdRef = useRef<string | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{
     isOpen: boolean;
     title: string;
@@ -207,40 +206,31 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
     }
   }, [product?.id]);
 
-  // Initialize variant defaults when product loads or changes
+  // Initialize variant defaults when product loads
   useEffect(() => {
-    if (!product?.id) {
-      prevProductIdRef.current = null;
-      return;
+    setSelectedImageIdx(0);
+    setQuantity(1);
+    setActiveTab('overview');
+    setReviewSuccessMsg('');
+    setIsFullscreenOpen(false);
+
+    if (product?.sizes && product.sizes.length === 1) {
+      setSelectedSize(product.sizes[0]);
+    } else {
+      setSelectedSize(undefined);
     }
-
-    if (prevProductIdRef.current !== product.id) {
-      prevProductIdRef.current = product.id;
-      setSelectedImageIdx(0);
-      setQuantity(1);
-      setActiveTab('overview');
-      setReviewSuccessMsg('');
-      setIsFullscreenOpen(false);
-
-      if (product.sizes && product.sizes.length > 0) {
-        setSelectedSize(product.sizes[0]);
-      } else {
-        setSelectedSize(undefined);
-      }
-      if (product.colors && product.colors.length > 0) {
-        setSelectedColor(product.colors[0]);
-      } else {
-        setSelectedColor(undefined);
-      }
-      setValidationError(null);
+    if (product?.colors && product.colors.length === 1) {
+      setSelectedColor(product.colors[0]);
+    } else {
+      setSelectedColor(undefined);
     }
-
+    setValidationError(null);
     if (currentUser?.name) {
       setReviewAuthor(currentUser.name);
     } else {
       setReviewAuthor('');
     }
-  }, [product?.id, product?.sizes, product?.colors, currentUser]);
+  }, [product?.id, currentUser]);
 
   const canDeleteReview = Boolean(
     isAdminLoggedIn ||
@@ -445,10 +435,35 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
   const isOutOfStock = product.stock <= 0;
 
   const validateVariantSelection = (): { valid: boolean; color?: string; size?: string } => {
+    const hasMultipleColors = Boolean(product?.colors && product.colors.length > 1);
+    const hasMultipleSizes = Boolean(product?.sizes && product.sizes.length > 1);
+
     const resolvedColor =
-      selectedColor || (product?.colors && product.colors.length > 0 ? product.colors[0] : undefined);
+      selectedColor || (product?.colors && product.colors.length === 1 ? product.colors[0] : undefined);
     const resolvedSize =
-      selectedSize || (product?.sizes && product.sizes.length > 0 ? product.sizes[0] : undefined);
+      selectedSize || (product?.sizes && product.sizes.length === 1 ? product.sizes[0] : undefined);
+
+    const isColorMissing = hasMultipleColors && !resolvedColor;
+    const isSizeMissing = hasMultipleSizes && !resolvedSize;
+
+    if (isColorMissing && isSizeMissing) {
+      const msg = 'Please select a color and size.';
+      setValidationError(msg);
+      showNotification('warning', 'Selection Required', msg);
+      return { valid: false };
+    }
+    if (isColorMissing) {
+      const msg = 'Please select a color.';
+      setValidationError(msg);
+      showNotification('warning', 'Color Required', msg);
+      return { valid: false };
+    }
+    if (isSizeMissing) {
+      const msg = 'Please select a size.';
+      setValidationError(msg);
+      showNotification('warning', 'Size Required', msg);
+      return { valid: false };
+    }
 
     setValidationError(null);
     return { valid: true, color: resolvedColor, size: resolvedSize };

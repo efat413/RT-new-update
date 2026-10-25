@@ -54,7 +54,7 @@ export interface CustomerInfo {
   fullName: string;
   phone: string;
   district: string;
-  deliveryZone?: DeliveryZone;
+  deliveryZone: DeliveryZone;
   fullAddress: string;
   area?: string;
   alternativePhone?: string;
