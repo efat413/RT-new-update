@@ -1,242 +1,207 @@
 /**
- * Verification script for Product Purchase Flow & Variant Selection
+ * Verification script for Product Purchase Flow & Variant Selection (Updated Behavior)
  * Tests:
- * 1. ProductCard Add to Cart & Buy Now variant requirements
- * 2. Single-option auto-selection convenience
- * 3. QuickView variant initialization (no silent default for multiple options)
- * 4. Validation error messages for missing color, missing size, or both
- * 5. Successful Add to Cart and Buy Now with chosen variants
+ * 1. Color variants: First option auto-selected by default upon load.
+ * 2. Size variants: First option auto-selected by default upon load.
+ * 3. Customer can change color/size at any time and explicit selection is preserved.
+ * 4. Products without color or size do not invent variant values.
+ * 5. Shipping Zone is optional:
+ *    - Order placed without selecting shipping zone uses safe fallback (district-based or default inside_dhaka).
+ *    - Order placed with explicit shipping zone uses selected zone.
+ *    - Consistent delivery fee calculation.
  */
 
-import { Product } from '../src/types';
+import { Product, CustomerInfo, DeliveryZone } from '../src/types';
 
-interface VariantValidationResult {
-  valid: boolean;
-  color?: string;
-  size?: string;
-  error?: string;
+interface VariantInitializationResult {
+  selectedColor?: string;
+  selectedSize?: string;
 }
 
-function checkProductCardAction(product: Product): { requiresQuickView: boolean; defaultSize?: string; defaultColor?: string } {
-  const hasMultipleColors = Boolean(product.colors && product.colors.length > 1);
-  const hasMultipleSizes = Boolean(product.sizes && product.sizes.length > 1);
-  const requiresVariantSelection = hasMultipleColors || hasMultipleSizes;
-
-  if (requiresVariantSelection) {
-    return { requiresQuickView: true };
-  }
-
-  const defaultSize = product.sizes && product.sizes.length === 1 ? product.sizes[0] : undefined;
-  const defaultColor = product.colors && product.colors.length === 1 ? product.colors[0] : undefined;
-  return { requiresQuickView: false, defaultSize, defaultColor };
+function initializeVariantDefaults(product: Product): VariantInitializationResult {
+  const selectedSize = product.sizes && product.sizes.length > 0 ? product.sizes[0] : undefined;
+  const selectedColor = product.colors && product.colors.length > 0 ? product.colors[0] : undefined;
+  return { selectedSize, selectedColor };
 }
 
-function initializeQuickViewVariants(product: Product): { initialSize?: string; initialColor?: string } {
-  const initialSize = product.sizes && product.sizes.length === 1 ? product.sizes[0] : undefined;
-  const initialColor = product.colors && product.colors.length === 1 ? product.colors[0] : undefined;
-  return { initialSize, initialColor };
-}
-
-function validateQuickViewSubmission(
+function resolveVariantSelection(
   product: Product,
-  selectedSize?: string,
-  selectedColor?: string
-): VariantValidationResult {
-  const hasMultipleColors = Boolean(product.colors && product.colors.length > 1);
-  const hasMultipleSizes = Boolean(product.sizes && product.sizes.length > 1);
-
+  currentSize?: string,
+  currentColor?: string
+): { valid: boolean; color?: string; size?: string } {
   const resolvedColor =
-    selectedColor || (product.colors && product.colors.length === 1 ? product.colors[0] : undefined);
+    currentColor || (product.colors && product.colors.length > 0 ? product.colors[0] : undefined);
   const resolvedSize =
-    selectedSize || (product.sizes && product.sizes.length === 1 ? product.sizes[0] : undefined);
-
-  const isColorMissing = hasMultipleColors && !resolvedColor;
-  const isSizeMissing = hasMultipleSizes && !resolvedSize;
-
-  if (isColorMissing && isSizeMissing) {
-    return { valid: false, error: 'Please select a color and size.' };
-  }
-  if (isColorMissing) {
-    return { valid: false, error: 'Please select a color.' };
-  }
-  if (isSizeMissing) {
-    return { valid: false, error: 'Please select a size.' };
-  }
+    currentSize || (product.sizes && product.sizes.length > 0 ? product.sizes[0] : undefined);
 
   return { valid: true, color: resolvedColor, size: resolvedSize };
 }
 
+function calculateEffectiveZoneAndFee(
+  selectedZone: DeliveryZone | undefined,
+  district: string,
+  settings: { insideDhakaFee?: number; outsideDhakaFee?: number }
+): { effectiveZone: DeliveryZone; fee: number } {
+  const effectiveZone: DeliveryZone =
+    selectedZone || (district && !district.toLowerCase().includes('dhaka') ? 'outside_dhaka' : 'inside_dhaka');
+  const fee = effectiveZone === 'outside_dhaka' ? settings.outsideDhakaFee ?? 150 : settings.insideDhakaFee ?? 80;
+  return { effectiveZone, fee };
+}
+
 function runTests() {
-  console.log('--- Starting Variant Purchase Flow Verification ---');
+  console.log('--- Starting Variant & Shipping Zone Selection Verification ---');
 
-  // Test Case 1: Product with Single Color & Single Size (Product A)
+  const settings = { insideDhakaFee: 80, outsideDhakaFee: 150 };
+
+  // Test 1: Product with Multiple Colors & Sizes (Auto-selects first options)
   const productA: Product = {
-    id: 'prod-a',
-    title: 'Product A (Single Option)',
-    price: 1200,
-    originalPrice: 1500,
-    buyingPrice: 800,
-    description: 'Test product A',
-    categoryId: 'cat-fashion',
-    imageUrl: 'https://example.com/a.jpg',
-    stock: 20,
-    rating: 4.8,
-    reviewsCount: 10,
-    featured: false,
-    createdAt: '2026-01-01T00:00:00Z',
-    colors: ['Black'],
-    sizes: ['M'],
-  };
-
-  const actionA = checkProductCardAction(productA);
-  console.log('Test 1 (Product A - Single Options on Card):', actionA);
-  if (actionA.requiresQuickView !== false || actionA.defaultColor !== 'Black' || actionA.defaultSize !== 'M') {
-    throw new Error('Test 1 Failed: Single option product should not require Quick View and should auto-select Black and M');
-  }
-
-  const qvInitA = initializeQuickViewVariants(productA);
-  console.log('Test 1b (Product A - Quick View Initialization):', qvInitA);
-  if (qvInitA.initialColor !== 'Black' || qvInitA.initialSize !== 'M') {
-    throw new Error('Test 1b Failed: Quick View should auto-select the only option');
-  }
-
-  const validationA = validateQuickViewSubmission(productA, qvInitA.initialSize, qvInitA.initialColor);
-  if (!validationA.valid || validationA.color !== 'Black' || validationA.size !== 'M') {
-    throw new Error('Test 1c Failed: Validation should pass with single auto-selected option');
-  }
-  console.log('✅ Test 1 Passed: Single option convenience preserved.');
-
-  // Test Case 2: Product with Multiple Colors & Multiple Sizes (Product B)
-  const productB: Product = {
-    id: 'prod-b',
-    title: 'Product B (Multiple Options)',
-    price: 2500,
-    originalPrice: 3000,
-    buyingPrice: 1800,
-    description: 'Test product B',
-    categoryId: 'cat-clothing',
-    imageUrl: 'https://example.com/b.jpg',
+    id: 'prod-multi',
+    title: 'Multi-Variant Shirt',
+    price: 1500,
+    buyingPrice: 900,
+    description: 'Cotton shirt with sizes and colors',
+    categoryId: 'cat-apparel',
+    imageUrl: 'https://example.com/shirt.jpg',
     stock: 50,
-    rating: 4.9,
-    reviewsCount: 25,
+    rating: 5,
+    reviewsCount: 12,
     featured: true,
     createdAt: '2026-01-01T00:00:00Z',
-    colors: ['Black', 'White', 'Blue'],
+    colors: ['Navy Blue', 'Crimson Red', 'Olive Green'],
     sizes: ['M', 'L', 'XL'],
   };
 
-  const actionB = checkProductCardAction(productB);
-  console.log('Test 2 (Product B - Card Action):', actionB);
-  if (actionB.requiresQuickView !== true) {
-    throw new Error('Test 2 Failed: Multi-variant product MUST open Quick View from Card');
+  const initA = initializeVariantDefaults(productA);
+  console.log('Test 1 (Initial variant auto-selection):', initA);
+  if (initA.selectedColor !== 'Navy Blue' || initA.selectedSize !== 'M') {
+    throw new Error('Test 1 Failed: First color and size must be selected by default upon load');
   }
+  console.log('✅ Test 1 Passed: First available color and size auto-selected by default.');
 
-  const qvInitB = initializeQuickViewVariants(productB);
-  console.log('Test 2b (Product B - Quick View Init):', qvInitB);
-  if (qvInitB.initialColor !== undefined || qvInitB.initialSize !== undefined) {
-    throw new Error('Test 2b Failed: Multi-variant product must NOT silently select first variant');
+  // Test 2: Customer changes color to 'Crimson Red' and size to 'XL'
+  let userSelectedColor: string | undefined = initA.selectedColor;
+  let userSelectedSize: string | undefined = initA.selectedSize;
+
+  userSelectedColor = 'Crimson Red';
+  userSelectedSize = 'XL';
+
+  const resolvedChanged = resolveVariantSelection(productA, userSelectedSize, userSelectedColor);
+  if (resolvedChanged.color !== 'Crimson Red' || resolvedChanged.size !== 'XL') {
+    throw new Error('Test 2 Failed: Explicit customer changes must be preserved');
   }
+  console.log('✅ Test 2 Passed: Customer color/size change is preserved.');
 
-  // Test 3: Validation when neither is selected
-  const valBothMissing = validateQuickViewSubmission(productB, undefined, undefined);
-  console.log('Test 3 (Both missing):', valBothMissing);
-  if (valBothMissing.valid || valBothMissing.error !== 'Please select a color and size.') {
-    throw new Error('Test 3 Failed: Should return "Please select a color and size."');
-  }
-
-  // Test 4: Validation when only size is selected
-  const valColorMissing = validateQuickViewSubmission(productB, 'L', undefined);
-  console.log('Test 4 (Color missing):', valColorMissing);
-  if (valColorMissing.valid || valColorMissing.error !== 'Please select a color.') {
-    throw new Error('Test 4 Failed: Should return "Please select a color."');
-  }
-
-  // Test 5: Validation when only color is selected
-  const valSizeMissing = validateQuickViewSubmission(productB, undefined, 'Blue');
-  console.log('Test 5 (Size missing):', valSizeMissing);
-  if (valSizeMissing.valid || valSizeMissing.error !== 'Please select a size.') {
-    throw new Error('Test 5 Failed: Should return "Please select a size."');
-  }
-
-  // Test 6: Validation when both are properly selected
-  const valValid = validateQuickViewSubmission(productB, 'XL', 'Blue');
-  console.log('Test 6 (Both selected):', valValid);
-  if (!valValid.valid || valValid.color !== 'Blue' || valValid.size !== 'XL') {
-    throw new Error('Test 6 Failed: Submission should be valid and preserve chosen variant');
-  }
-  console.log('✅ Test 2-6 Passed: Multi-variant flow & validations verified.');
-
-  // Test Case 7: Product with multiple colors but NO sizes (e.g. Leather Wallet)
+  // Test 3: Product with Color only (no sizes)
   const productWallet: Product = {
     id: 'prod-wallet',
-    title: 'Executive Leather Wallet',
-    price: 950,
-    originalPrice: 1200,
-    buyingPrice: 600,
+    title: 'Leather Wallet',
+    price: 800,
+    buyingPrice: 400,
     description: 'Leather wallet',
     categoryId: 'cat-acc',
     imageUrl: 'https://example.com/wallet.jpg',
-    stock: 15,
-    rating: 4.7,
-    reviewsCount: 8,
+    stock: 20,
+    rating: 4.8,
+    reviewsCount: 5,
     featured: false,
     createdAt: '2026-01-01T00:00:00Z',
-    colors: ['Brown', 'Black', 'Tan'],
+    colors: ['Black', 'Brown'],
     sizes: [],
   };
 
-  const actionWallet = checkProductCardAction(productWallet);
-  if (!actionWallet.requiresQuickView) {
-    throw new Error('Test 7 Failed: Multi-color wallet should require Quick View');
+  const initWallet = initializeVariantDefaults(productWallet);
+  console.log('Test 3 (Color only product):', initWallet);
+  if (initWallet.selectedColor !== 'Black' || initWallet.selectedSize !== undefined) {
+    throw new Error('Test 3 Failed: Should auto-select first color and leave size as undefined');
   }
-  const valWalletNoColor = validateQuickViewSubmission(productWallet, undefined, undefined);
-  if (valWalletNoColor.valid || valWalletNoColor.error !== 'Please select a color.') {
-    throw new Error('Test 7b Failed: Wallet with no size should only prompt "Please select a color."');
+  const resolvedWallet = resolveVariantSelection(productWallet, initWallet.selectedSize, initWallet.selectedColor);
+  if (resolvedWallet.color !== 'Black' || resolvedWallet.size !== undefined) {
+    throw new Error('Test 3b Failed: Must not invent size when none exist');
   }
-  const valWalletWithColor = validateQuickViewSubmission(productWallet, undefined, 'Tan');
-  if (!valWalletWithColor.valid || valWalletWithColor.color !== 'Tan') {
-    throw new Error('Test 7c Failed: Wallet with color should be valid');
-  }
-  console.log('✅ Test 7 Passed: Product with only multiple colors functions properly.');
+  console.log('✅ Test 3 Passed: Color-only product selects first color, does not invent size.');
 
-  // Test Case 8: Product with multiple sizes but 1 color (e.g. T-Shirt with single color black)
-  const productShirt: Product = {
-    id: 'prod-shirt',
-    title: 'Solid Black Tee',
-    price: 650,
-    originalPrice: 800,
-    buyingPrice: 350,
-    description: 'Black t-shirt',
-    categoryId: 'cat-apparel',
-    imageUrl: 'https://example.com/tee.jpg',
-    stock: 30,
+  // Test 4: Product with Size only (no colors)
+  const productShoe: Product = {
+    id: 'prod-shoe',
+    title: 'Running Shoes',
+    price: 3200,
+    buyingPrice: 2000,
+    description: 'Shoes',
+    categoryId: 'cat-shoes',
+    imageUrl: 'https://example.com/shoes.jpg',
+    stock: 15,
     rating: 4.9,
-    reviewsCount: 15,
+    reviewsCount: 8,
     featured: false,
     createdAt: '2026-01-01T00:00:00Z',
-    colors: ['Black'],
-    sizes: ['S', 'M', 'L', 'XL'],
+    colors: [],
+    sizes: ['41', '42', '43'],
   };
 
-  const actionShirt = checkProductCardAction(productShirt);
-  if (!actionShirt.requiresQuickView) {
-    throw new Error('Test 8 Failed: Shirt with multiple sizes should require Quick View');
+  const initShoe = initializeVariantDefaults(productShoe);
+  if (initShoe.selectedSize !== '41' || initShoe.selectedColor !== undefined) {
+    throw new Error('Test 4 Failed: Should auto-select first size and leave color as undefined');
   }
-  const qvInitShirt = initializeQuickViewVariants(productShirt);
-  if (qvInitShirt.initialColor !== 'Black' || qvInitShirt.initialSize !== undefined) {
-    throw new Error('Test 8b Failed: Single color should be auto-selected while sizes remain unselected');
+  const resolvedShoe = resolveVariantSelection(productShoe, initShoe.selectedSize, initShoe.selectedColor);
+  if (resolvedShoe.size !== '41' || resolvedShoe.color !== undefined) {
+    throw new Error('Test 4b Failed: Must not invent color when none exist');
   }
-  const valShirtNoSize = validateQuickViewSubmission(productShirt, undefined, qvInitShirt.initialColor);
-  if (valShirtNoSize.valid || valShirtNoSize.error !== 'Please select a size.') {
-    throw new Error('Test 8c Failed: Shirt should prompt "Please select a size."');
-  }
-  const valShirtWithSize = validateQuickViewSubmission(productShirt, 'L', qvInitShirt.initialColor);
-  if (!valShirtWithSize.valid || valShirtWithSize.size !== 'L' || valShirtWithSize.color !== 'Black') {
-    throw new Error('Test 8d Failed: Shirt with size selected should be valid with Black color');
-  }
-  console.log('✅ Test 8 Passed: Product with single color and multiple sizes functions properly.');
+  console.log('✅ Test 4 Passed: Size-only product selects first size, does not invent color.');
 
-  console.log('🎉 ALL 8 TESTS PASSED SUCCESSFULLY!');
+  // Test 5: Product with Neither color nor size
+  const productBook: Product = {
+    id: 'prod-book',
+    title: 'Programming Book',
+    price: 500,
+    buyingPrice: 250,
+    description: 'Book',
+    categoryId: 'cat-books',
+    imageUrl: 'https://example.com/book.jpg',
+    stock: 30,
+    rating: 5,
+    reviewsCount: 3,
+    featured: false,
+    createdAt: '2026-01-01T00:00:00Z',
+  };
+
+  const initBook = initializeVariantDefaults(productBook);
+  if (initBook.selectedColor !== undefined || initBook.selectedSize !== undefined) {
+    throw new Error('Test 5 Failed: Product with no variants should have undefined color and size');
+  }
+  const resolvedBook = resolveVariantSelection(productBook, undefined, undefined);
+  if (resolvedBook.color !== undefined || resolvedBook.size !== undefined) {
+    throw new Error('Test 5b Failed: Must not invent variants for non-variant products');
+  }
+  console.log('✅ Test 5 Passed: Product with no variants leaves options undefined.');
+
+  // Test 6: Shipping Zone Optional - Default / Unselected with Dhaka district
+  const shippingUnselectedDhaka = calculateEffectiveZoneAndFee(undefined, 'Dhaka', settings);
+  console.log('Test 6 (Shipping Zone unselected, Dhaka):', shippingUnselectedDhaka);
+  if (shippingUnselectedDhaka.effectiveZone !== 'inside_dhaka' || shippingUnselectedDhaka.fee !== 80) {
+    throw new Error('Test 6 Failed: Default Dhaka fallback failed');
+  }
+  console.log('✅ Test 6 Passed: Unselected shipping zone with Dhaka district resolves to inside_dhaka.');
+
+  // Test 7: Shipping Zone Optional - Default / Unselected with Chittagong district
+  const shippingUnselectedCtg = calculateEffectiveZoneAndFee(undefined, 'Chittagong', settings);
+  console.log('Test 7 (Shipping Zone unselected, Chittagong):', shippingUnselectedCtg);
+  if (shippingUnselectedCtg.effectiveZone !== 'outside_dhaka' || shippingUnselectedCtg.fee !== 150) {
+    throw new Error('Test 7 Failed: Default Outside Dhaka fallback failed');
+  }
+  console.log('✅ Test 7 Passed: Unselected shipping zone with non-Dhaka district resolves to outside_dhaka.');
+
+  // Test 8: Shipping Zone Explicitly Selected
+  const shippingExplicitOutside = calculateEffectiveZoneAndFee('outside_dhaka', 'Dhaka', settings);
+  if (shippingExplicitOutside.effectiveZone !== 'outside_dhaka' || shippingExplicitOutside.fee !== 150) {
+    throw new Error('Test 8 Failed: Explicit outside_dhaka selection must be respected');
+  }
+  const shippingExplicitInside = calculateEffectiveZoneAndFee('inside_dhaka', 'Chittagong', settings);
+  if (shippingExplicitInside.effectiveZone !== 'inside_dhaka' || shippingExplicitInside.fee !== 80) {
+    throw new Error('Test 8b Failed: Explicit inside_dhaka selection must be respected');
+  }
+  console.log('✅ Test 8 Passed: Explicit shipping zone selection is respected.');
+
+  console.log('🎉 ALL VARIANT & SHIPPING ZONE VERIFICATION TESTS PASSED SUCCESSFULLY!');
 }
 
 runTests();

@@ -49,7 +49,7 @@ export const CheckoutSection: React.FC = () => {
   const [phone, setPhone] = useState(currentUser?.phone || '');
   const [address, setAddress] = useState('');
   const [district, setDistrict] = useState(currentUser?.district || '');
-  const [deliveryZone, setDeliveryZone] = useState<DeliveryZone>('inside_dhaka');
+  const [deliveryZone, setDeliveryZone] = useState<DeliveryZone | undefined>(undefined);
   const [altPhone, setAltPhone] = useState('');
   const [notes, setNotes] = useState('');
 
@@ -84,28 +84,29 @@ export const CheckoutSection: React.FC = () => {
       if (!phone && currentUser.phone) setPhone(currentUser.phone);
       if (currentUser.district && !district) {
         setDistrict(currentUser.district);
-        setDeliveryZone(currentUser.district.toLowerCase().includes('dhaka') ? 'inside_dhaka' : 'outside_dhaka');
+        if (currentUser.deliveryZone) {
+          setDeliveryZone(currentUser.deliveryZone);
+        }
       }
     }
   }, [currentUser]);
 
-  // Adjust delivery zone automatically when district changes
+  // Adjust delivery zone automatically when district changes (fallback when not manually selected)
   const handleDistrictChange = (selectedDistrict: string) => {
     setDistrict(selectedDistrict);
-    if (selectedDistrict.toLowerCase().includes('dhaka')) {
-      setDeliveryZone('inside_dhaka');
-    } else if (selectedDistrict.trim()) {
-      setDeliveryZone('outside_dhaka');
-    }
     if (validationErrors.district) {
       setValidationErrors((prev) => ({ ...prev, district: undefined }));
     }
   };
 
+  const effectiveZone: DeliveryZone =
+    deliveryZone ||
+    (district && !district.toLowerCase().includes('dhaka') ? 'outside_dhaka' : 'inside_dhaka');
+
   const deliveryFee =
-    deliveryZone === 'inside_dhaka'
-      ? Number(settings.insideDhakaFee) || 80
-      : Number(settings.outsideDhakaFee) || 150;
+    effectiveZone === 'outside_dhaka'
+      ? Number(settings.outsideDhakaFee) || 150
+      : Number(settings.insideDhakaFee) || 80;
   const effectiveDiscount = appliedCoupon?.discountType === 'free_shipping' ? deliveryFee : discountAmount;
   const grandTotal = Math.max(0, cartSubtotal + deliveryFee - effectiveDiscount);
 
@@ -259,7 +260,7 @@ export const CheckoutSection: React.FC = () => {
           phone: cleanPhone,
           alternativePhone: altPhone.trim() ? normalizeAndValidatePhone(altPhone).normalized : undefined,
           district: district.trim(),
-          deliveryZone,
+          deliveryZone: deliveryZone || effectiveZone,
           fullAddress: address.trim(),
           notes: notes.trim() || undefined,
           email: currentUser?.email,
@@ -448,12 +449,12 @@ export const CheckoutSection: React.FC = () => {
 
           <div>
             <label className="block text-xs font-medium text-slate-700 mb-1">
-              Delivery Zone
+              Shipping Zone
             </label>
             <div className="grid grid-cols-2 gap-1.5">
               <button
                 type="button"
-                onClick={() => setDeliveryZone('inside_dhaka')}
+                onClick={() => setDeliveryZone(deliveryZone === 'inside_dhaka' ? undefined : 'inside_dhaka')}
                 className={`py-1.5 px-2 rounded-xl border text-center transition-all cursor-pointer ${
                   deliveryZone === 'inside_dhaka'
                     ? 'border-rose-500 bg-rose-50/80 text-rose-700 font-bold ring-1 ring-rose-500'
@@ -465,7 +466,7 @@ export const CheckoutSection: React.FC = () => {
               </button>
               <button
                 type="button"
-                onClick={() => setDeliveryZone('outside_dhaka')}
+                onClick={() => setDeliveryZone(deliveryZone === 'outside_dhaka' ? undefined : 'outside_dhaka')}
                 className={`py-1.5 px-2 rounded-xl border text-center transition-all cursor-pointer ${
                   deliveryZone === 'outside_dhaka'
                     ? 'border-rose-500 bg-rose-50/80 text-rose-700 font-bold ring-1 ring-rose-500'
@@ -895,7 +896,7 @@ export const CheckoutSection: React.FC = () => {
             </span>
           </div>
           <div className="flex justify-between">
-            <span>Delivery Charge ({deliveryZone === 'inside_dhaka' ? 'Inside Dhaka' : 'Outside Dhaka'}):</span>
+            <span>Delivery Charge ({effectiveZone === 'inside_dhaka' ? 'Inside Dhaka' : 'Outside Dhaka'}):</span>
             <span className="font-semibold text-slate-800 font-mono">
               ৳ {deliveryFee.toLocaleString()}
             </span>

@@ -9816,7 +9816,7 @@ const AdminPanelContent: React.FC = () => {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                      Shipping Zone *
+                      Shipping Zone
                     </label>
                     <select
                       value={editCustomerZone}

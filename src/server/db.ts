@@ -4594,7 +4594,11 @@ export async function insertOrder(
   const totalGrossProfit = authoritativeSubtotal - totalOrderCost;
 
   // 5. Authoritative delivery fee from D1 store settings
-  const deliveryZone = order.customer.deliveryZone === 'outside_dhaka' ? 'outside_dhaka' : 'inside_dhaka';
+  const deliveryZone = order.customer.deliveryZone === 'outside_dhaka'
+    ? 'outside_dhaka'
+    : order.customer.deliveryZone === 'inside_dhaka'
+    ? 'inside_dhaka'
+    : (order.customer.district && !order.customer.district.toLowerCase().includes('dhaka') ? 'outside_dhaka' : 'inside_dhaka');
   const authoritativeDeliveryFee = deliveryZone === 'outside_dhaka'
     ? Number(storeSettings.outsideDhakaFee) || 150
     : Number(storeSettings.insideDhakaFee) || 80;
