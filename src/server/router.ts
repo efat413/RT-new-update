@@ -7576,16 +7576,39 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
       );
       const provider = normalizeCourierProvider(rawProvider);
 
-      const parcelOverrides = body.parcelOverrides || {
-        weight: body.parcelData?.weight,
-        notes: body.parcelData?.note || body.parcelData?.notes,
-        deliveryType: body.parcelData?.delivery_type != null ? String(body.parcelData.delivery_type) : undefined,
+      const parcelOverrides = {
+        weight: body.parcelOverrides?.weight ?? body.parcelData?.weight,
+        notes: (body.parcelOverrides?.notes || body.parcelData?.note || body.parcelData?.notes || '').trim() || undefined,
+        deliveryType: body.parcelOverrides?.deliveryType != null
+          ? String(body.parcelOverrides.deliveryType)
+          : body.parcelData?.delivery_type != null
+          ? String(body.parcelData.delivery_type)
+          : undefined,
+        district: (body.parcelOverrides?.district || body.parcelData?.district || '').trim() || undefined,
+        address: (body.parcelOverrides?.address || body.parcelData?.recipient_address || '').trim() || undefined,
+        recipient_name: (body.parcelOverrides?.recipient_name || body.parcelData?.recipient_name || '').trim() || undefined,
+        recipient_phone: (body.parcelOverrides?.recipient_phone || body.parcelData?.recipient_phone || '').trim() || undefined,
       };
 
       // 2. Authoritative D1 fetch: Query orderId directly from Cloudflare D1
       const order = await getOrderById(env.DB, orderId);
       if (!order) {
         return jsonResponse({ success: false, error: `Order "${orderId}" not found in database.` }, 404);
+      }
+
+      if (parcelOverrides.district && (!order.customer?.district || order.customer.district !== parcelOverrides.district)) {
+        try {
+          if (env.DB) {
+            await env.DB.prepare('UPDATE orders SET customer_district = ? WHERE id = ?')
+              .bind(parcelOverrides.district.trim(), order.id)
+              .run();
+          }
+          if (order.customer) {
+            order.customer.district = parcelOverrides.district.trim();
+          }
+        } catch (dbErr) {
+          console.warn('[Courier Dispatch] Failed to persist updated district to D1 order record:', dbErr);
+        }
       }
 
       // 3. Duplicate Dispatch Locking & Idempotency:

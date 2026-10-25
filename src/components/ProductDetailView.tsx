@@ -34,7 +34,7 @@ import { useStore } from '../context/StoreContext';
 import { FormattedDescription } from './FormattedDescription';
 import { ConfirmModal } from './ConfirmModal';
 import { ProductCard } from './ProductCard';
-import { parseColorOption } from '../utils/productVariants';
+import { parseColorOption, getFirstAvailableVariantOption } from '../utils/productVariants';
 import { getYouTubeThumbnailUrl } from '../utils/youtube';
 import { getResponsiveImageProps, getResponsiveImageUrl } from '../utils/responsiveImage';
 import { formatWhatsAppLink } from '../utils/phone';
@@ -214,16 +214,23 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
     setReviewSuccessMsg('');
     setIsFullscreenOpen(false);
 
-    if (product?.sizes && product.sizes.length === 1) {
-      setSelectedSize(product.sizes[0]);
-    } else {
-      setSelectedSize(undefined);
-    }
-    if (product?.colors && product.colors.length === 1) {
-      setSelectedColor(product.colors[0]);
-    } else {
-      setSelectedColor(undefined);
-    }
+    const firstColor = getFirstAvailableVariantOption(product?.colors, product?.stock);
+    const firstSize = getFirstAvailableVariantOption(product?.sizes, product?.stock);
+
+    setSelectedColor((current) => {
+      if (current && product?.colors && product.colors.includes(current)) {
+        return current;
+      }
+      return firstColor;
+    });
+
+    setSelectedSize((current) => {
+      if (current && product?.sizes && product.sizes.includes(current)) {
+        return current;
+      }
+      return firstSize;
+    });
+
     setValidationError(null);
     if (currentUser?.name) {
       setReviewAuthor(currentUser.name);
@@ -435,16 +442,17 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
   const isOutOfStock = product.stock <= 0;
 
   const validateVariantSelection = (): { valid: boolean; color?: string; size?: string } => {
-    const hasMultipleColors = Boolean(product?.colors && product.colors.length > 1);
-    const hasMultipleSizes = Boolean(product?.sizes && product.sizes.length > 1);
+    const firstColor = getFirstAvailableVariantOption(product?.colors, product?.stock);
+    const firstSize = getFirstAvailableVariantOption(product?.sizes, product?.stock);
 
-    const resolvedColor =
-      selectedColor || (product?.colors && product.colors.length === 1 ? product.colors[0] : undefined);
-    const resolvedSize =
-      selectedSize || (product?.sizes && product.sizes.length === 1 ? product.sizes[0] : undefined);
+    const resolvedColor = selectedColor || firstColor;
+    const resolvedSize = selectedSize || firstSize;
 
-    const isColorMissing = hasMultipleColors && !resolvedColor;
-    const isSizeMissing = hasMultipleSizes && !resolvedSize;
+    const hasColors = Boolean(product?.colors && product.colors.length > 0 && product.stock > 0);
+    const hasSizes = Boolean(product?.sizes && product.sizes.length > 0 && product.stock > 0);
+
+    const isColorMissing = hasColors && !resolvedColor;
+    const isSizeMissing = hasSizes && !resolvedSize;
 
     if (isColorMissing && isSizeMissing) {
       const msg = 'Please select a color and size.';

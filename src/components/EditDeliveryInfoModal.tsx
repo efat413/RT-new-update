@@ -53,7 +53,7 @@ export const EditDeliveryInfoModal: React.FC<EditDeliveryInfoModalProps> = ({
       return;
     }
 
-    if (!fullName.trim() || !phone.trim() || !fullAddress.trim() || !district.trim()) {
+    if (!fullName.trim() || !phone.trim() || !fullAddress.trim()) {
       setErrorMsg('Please fill in all required delivery fields.');
       return;
     }
@@ -188,14 +188,14 @@ export const EditDeliveryInfoModal: React.FC<EditDeliveryInfoModalProps> = ({
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
-                  District / City *
+                  District / City <span className="text-slate-400 font-normal">(Optional)</span>
                 </label>
                 <input
                   type="text"
                   value={district}
                   onChange={(e) => setDistrict(e.target.value)}
                   disabled={!isPending}
-                  required
+                  placeholder="e.g. Dhaka (Optional)"
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500 disabled:opacity-60 disabled:cursor-not-allowed"
                 />
               </div>

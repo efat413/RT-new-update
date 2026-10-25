@@ -267,3 +267,29 @@ export const NUMERICAL_SIZE_PRESETS = {
     values: ['50ml', '100ml', '200ml', '250ml', '500ml'],
   },
 };
+
+/**
+ * Resolves the first available option for a variant array (colors or sizes).
+ * - Returns undefined if options is empty, undefined, or if product is out of stock (stock <= 0).
+ * - Filters out empty strings and options explicitly annotated as out-of-stock or unavailable.
+ * - Does not invent phantom options when variants do not exist.
+ */
+export function getFirstAvailableVariantOption(
+  options?: string[] | null,
+  stock = 1
+): string | undefined {
+  if (!options || !Array.isArray(options) || options.length === 0 || stock <= 0) {
+    return undefined;
+  }
+  return options.find((opt) => {
+    if (!opt || typeof opt !== 'string' || !opt.trim()) return false;
+    const lower = opt.toLowerCase();
+    return (
+      !lower.includes('out of stock') &&
+      !lower.includes('unavailable') &&
+      !lower.includes('sold out') &&
+      !lower.includes('stock out')
+    );
+  });
+}
+

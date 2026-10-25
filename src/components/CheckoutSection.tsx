@@ -205,10 +205,6 @@ export const CheckoutSection: React.FC = () => {
       }
     }
 
-    if (!district.trim()) {
-      errors.district = 'Please select your District / City.';
-    }
-
     if (!address.trim()) {
       errors.address = 'Detailed address (House, Road, Area) is required for delivery.';
     } else if (address.trim().length < 5) {
@@ -429,14 +425,14 @@ export const CheckoutSection: React.FC = () => {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
             <label className="block text-xs font-medium text-slate-700 mb-1">
-              District / City <span className="text-rose-500">*</span>
+              District / City <span className="text-slate-400 font-normal">(Optional)</span>
             </label>
             <SearchableDistrictSelect
               id="customer-district-select"
               value={district}
               onChange={(val) => handleDistrictChange(val)}
               hasError={!!validationErrors.district}
-              placeholder="Select City"
+              placeholder="Select City (Optional)"
             />
             {validationErrors.district && (
               <p className="text-[11px] text-rose-600 font-medium mt-1 flex items-center gap-1">

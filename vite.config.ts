@@ -6240,9 +6240,9 @@ function localApiDevPlugin(): Plugin {
             }
 
             const parcelData = body?.parcelData || {};
-            const rawAddress = (parcelData.recipient_address || order.customer?.fullAddress || '').trim();
+            const rawAddress = (parcelData.recipient_address || body?.parcelOverrides?.address || order.customer?.fullAddress || '').trim();
             const rawArea = (parcelData.area || '').trim();
-            const rawDistrict = (parcelData.district || order.customer?.district || '').trim();
+            const rawDistrict = (parcelData.district || body?.parcelOverrides?.district || order.customer?.district || '').trim();
             const addressParts: string[] = [rawAddress];
             if (rawArea && !rawAddress.toLowerCase().includes(rawArea.toLowerCase())) {
               addressParts.push(rawArea);
@@ -6263,6 +6263,9 @@ function localApiDevPlugin(): Plugin {
 
             // Authoritative Server-Side Calculation of Final Order Total and Customer Due
             const targetOrder = devOrders.find((o) => o.id === order.id || o.orderNumber === order.orderNumber) || order;
+            if (rawDistrict && targetOrder.customer) {
+              targetOrder.customer.district = rawDistrict;
+            }
             const items = Array.isArray(targetOrder.items) ? targetOrder.items : [];
             let authoritativeSubtotal = 0;
             if (items.length > 0) {
