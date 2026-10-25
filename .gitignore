@@ -12,6 +12,8 @@ coverage/
 .dev.vars.*
 !.dev.vars.example
 .dev-settings.json
+.dev-password-reset-tokens.json
+.dev-password-reset-tokens*.json
 cloudflare-deployment/
 cloudflare-deployment.zip
 public/cloudflare-deployment.zip
