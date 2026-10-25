@@ -59,7 +59,7 @@ export const HeroCarousel: React.FC = () => {
                 alt={settings.siteName || 'Rongdhonu Trade'}
                 className={`w-full h-full ${fitMode === 'cover' ? 'object-cover' : 'object-contain'} object-center`}
                 onError={(e) => {
-                  (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1524805444758-089113d48a6d?auto=format&fit=crop&w=1400&q=80';
+                  (e.target as HTMLImageElement).src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1200' height='480' viewBox='0 0 1200 480'%3E%3Crect width='1200' height='480' fill='%230f172a'/%3E%3C/svg%3E";
                 }}
               />
             </div>
@@ -190,7 +190,7 @@ export const HeroCarousel: React.FC = () => {
             alt={slide.headline || slide.title || 'Promotional Banner'}
             className={`w-full h-full ${fitMode === 'cover' ? 'object-cover' : 'object-contain'} object-center transition-opacity duration-300`}
             onError={(e) => {
-              (e.target as HTMLImageElement).src = slide.imageUrl || 'https://images.unsplash.com/photo-1524805444758-089113d48a6d?auto=format&fit=crop&w=1400&q=80';
+              (e.target as HTMLImageElement).src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1200' height='480' viewBox='0 0 1200 480'%3E%3Crect width='1200' height='480' fill='%230f172a'/%3E%3C/svg%3E";
             }}
           />
         </div>

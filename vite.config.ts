@@ -51,6 +51,7 @@ import {
   getSafeMediaHeaders,
   sanitizeReviewImageReference,
   MAX_IMAGE_SIZE_BYTES,
+  isExternalImageUrl,
 } from './src/server/imageSecurity';
 import {
   getFacebookConfigStatus,
@@ -2989,6 +2990,29 @@ function localApiDevPlugin(): Plugin {
                 finalSlug = `${initialSlug}-${slugCounter}`;
               }
 
+              const primaryImg = product.imageUrl || (Array.isArray(product.images) ? product.images[0] : '') || '';
+              if (isExternalImageUrl(primaryImg)) {
+                return sendDevError(res, {
+                  status: 400,
+                  body: {
+                    success: false,
+                    error: 'External image URLs are not supported. Please upload product images directly from your device.',
+                  },
+                });
+              }
+              const galleryImgs = Array.isArray(product.images) ? product.images : [primaryImg].filter(Boolean);
+              for (const img of galleryImgs) {
+                if (typeof img === 'string' && isExternalImageUrl(img)) {
+                  return sendDevError(res, {
+                    status: 400,
+                    body: {
+                      success: false,
+                      error: 'External image URLs are not supported in product gallery. Please upload photos directly from your device.',
+                    },
+                  });
+                }
+              }
+
               const newProd = {
                 id: product.id || `prod-${Date.now()}`,
                 slug: finalSlug,
@@ -2998,8 +3022,8 @@ function localApiDevPlugin(): Plugin {
                 buyingPrice,
                 categoryId: product.categoryId || product.category || 'cat-mens-accessories',
                 description: product.description || '',
-                imageUrl: product.imageUrl || (Array.isArray(product.images) ? product.images[0] : '') || '',
-                images: Array.isArray(product.images) ? product.images : [product.imageUrl].filter(Boolean),
+                imageUrl: primaryImg,
+                images: galleryImgs,
                 stock: Number(product.stock) || 0,
                 featured: Boolean(product.featured),
                 rating: 5.0,
@@ -3180,6 +3204,29 @@ function localApiDevPlugin(): Plugin {
                   const bVal = updates.buyingPrice !== undefined ? updates.buyingPrice : updates.buying_price;
                   if (bVal !== null && bVal !== '' && !isNaN(Number(bVal))) {
                     updates.buyingPrice = Math.max(0, Number(bVal));
+                  }
+                }
+                const existing = devProducts[idx];
+                if (updates.imageUrl !== undefined && updates.imageUrl !== existing.imageUrl && isExternalImageUrl(updates.imageUrl)) {
+                  return sendDevError(res, {
+                    status: 400,
+                    body: {
+                      success: false,
+                      error: 'External image URLs are not supported. Please upload product images directly from your device.',
+                    },
+                  });
+                }
+                if (updates.images !== undefined && Array.isArray(updates.images)) {
+                  for (const img of updates.images) {
+                    if (typeof img === 'string' && isExternalImageUrl(img) && !existing.images?.includes(img)) {
+                      return sendDevError(res, {
+                        status: 400,
+                        body: {
+                          success: false,
+                          error: 'External image URLs are not supported in product gallery. Please upload photos directly from your device.',
+                        },
+                      });
+                    }
                   }
                 }
                 if ('videoUrl' in updates) {
@@ -3456,6 +3503,15 @@ function localApiDevPlugin(): Plugin {
 
             return readBody((body) => {
               const sl = body.slide || body;
+              if (isExternalImageUrl(sl.imageUrl)) {
+                return sendDevError(res, {
+                  status: 400,
+                  body: {
+                    success: false,
+                    error: 'External image URLs are not supported for slides. Please upload banner images directly from your device.',
+                  },
+                });
+              }
               const nextOrder = devSliders.length > 0
                 ? Math.max(...devSliders.map((s) => Number(s.sort_order ?? s.sortOrder ?? 0))) + 1
                 : 1;
@@ -3486,6 +3542,15 @@ function localApiDevPlugin(): Plugin {
               const updates = body.updates || body.slide || body;
               const idx = devSliders.findIndex((s) => s.id === id);
               if (idx >= 0) {
+                if (updates.imageUrl !== undefined && updates.imageUrl !== devSliders[idx].imageUrl && isExternalImageUrl(updates.imageUrl)) {
+                  return sendDevError(res, {
+                    status: 400,
+                    body: {
+                      success: false,
+                      error: 'External image URLs are not supported for slides. Please upload banner images directly from your device.',
+                    },
+                  });
+                }
                 devSliders[idx] = {
                   ...devSliders[idx],
                   ...updates,
@@ -3556,6 +3621,46 @@ function localApiDevPlugin(): Plugin {
               if (permErr) return sendDevError(res, permErr);
 
               if (updates && typeof updates === 'object') {
+                if (updates.logoUrl !== undefined && updates.logoUrl !== devSettings.logoUrl && isExternalImageUrl(updates.logoUrl)) {
+                  return sendDevError(res, {
+                    status: 400,
+                    body: {
+                      success: false,
+                      error: 'External image URLs are not supported for website logo. Please upload logo directly from your device.',
+                    },
+                  });
+                }
+                if (updates.faviconUrl !== undefined && updates.faviconUrl !== devSettings.faviconUrl && isExternalImageUrl(updates.faviconUrl)) {
+                  return sendDevError(res, {
+                    status: 400,
+                    body: {
+                      success: false,
+                      error: 'External image URLs are not supported for website favicon. Please upload icon directly from your device.',
+                    },
+                  });
+                }
+                if (updates.bannerUrl !== undefined && updates.bannerUrl !== devSettings.bannerUrl && isExternalImageUrl(updates.bannerUrl)) {
+                  return sendDevError(res, {
+                    status: 400,
+                    body: {
+                      success: false,
+                      error: 'External image URLs are not supported for promotional banner. Please upload banner directly from your device.',
+                    },
+                  });
+                }
+                if (
+                  updates.dbblBank?.qrCodeUrl !== undefined &&
+                  updates.dbblBank?.qrCodeUrl !== devSettings.dbblBank?.qrCodeUrl &&
+                  isExternalImageUrl(updates.dbblBank?.qrCodeUrl)
+                ) {
+                  return sendDevError(res, {
+                    status: 400,
+                    body: {
+                      success: false,
+                      error: 'External image URLs are not supported for payment QR code. Please upload QR code directly from your device.',
+                    },
+                  });
+                }
                 const updatedAnnouncement = updates.topBarAnnouncementText !== undefined
                   ? updates.topBarAnnouncementText
                   : (updates.announcementText !== undefined ? updates.announcementText : undefined);
