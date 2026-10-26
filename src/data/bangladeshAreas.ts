@@ -263,20 +263,33 @@ export const BANGLADESH_DISTRICT_UPAZILA_MAP: Record<string, string[]> = {
   ],
 };
 
-// Flattened list of all locations: "District - Upazila/Thana"
+// Flattened list of all locations: "District (Main City)" and "District - City/Upazila/Thana"
 export const ALL_BANGLADESH_LOCATIONS: BangladeshLocation[] = Object.entries(
   BANGLADESH_DISTRICT_UPAZILA_MAP
-).flatMap(([district, upazilas]) =>
-  upazilas.map((upazila) => ({
+).flatMap(([district, upazilas]) => [
+  {
+    district,
+    upazila: 'Main City',
+    displayName: district,
+    zone: district.toLowerCase() === 'dhaka' ? ('inside_dhaka' as const) : ('outside_dhaka' as const),
+  },
+  ...upazilas.map((upazila) => ({
     district,
     upazila,
     displayName: `${district} - ${upazila}`,
     zone: district.toLowerCase() === 'dhaka' ? ('inside_dhaka' as const) : ('outside_dhaka' as const),
-  }))
-);
+  })),
+]);
 
-// Sort alphabetically by displayName
-ALL_BANGLADESH_LOCATIONS.sort((a, b) => a.displayName.localeCompare(b.displayName));
+// Sort alphabetically by district then upazila
+ALL_BANGLADESH_LOCATIONS.sort((a, b) => {
+  if (a.district !== b.district) {
+    return a.district.localeCompare(b.district);
+  }
+  if (a.upazila === 'Main City') return -1;
+  if (b.upazila === 'Main City') return 1;
+  return a.upazila.localeCompare(b.upazila);
+});
 
 export interface BangladeshDivision {
   name: string;
