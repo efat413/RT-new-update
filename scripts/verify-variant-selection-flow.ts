@@ -32,8 +32,8 @@ function checkProductCardAction(product: Product): { requiresQuickView: boolean;
 }
 
 function initializeQuickViewVariants(product: Product): { initialSize?: string; initialColor?: string } {
-  const initialSize = product.sizes && product.sizes.length === 1 ? product.sizes[0] : undefined;
-  const initialColor = product.colors && product.colors.length === 1 ? product.colors[0] : undefined;
+  const initialSize = product.sizes && product.sizes.length > 0 ? product.sizes[0] : undefined;
+  const initialColor = product.colors && product.colors.length > 0 ? product.colors[0] : undefined;
   return { initialSize, initialColor };
 }
 
@@ -133,8 +133,8 @@ function runTests() {
 
   const qvInitB = initializeQuickViewVariants(productB);
   console.log('Test 2b (Product B - Quick View Init):', qvInitB);
-  if (qvInitB.initialColor !== undefined || qvInitB.initialSize !== undefined) {
-    throw new Error('Test 2b Failed: Multi-variant product must NOT silently select first variant');
+  if (qvInitB.initialColor !== 'Black' || qvInitB.initialSize !== 'M') {
+    throw new Error('Test 2b Failed: Multi-variant product should pre-select first color and size');
   }
 
   // Test 3: Validation when neither is selected
@@ -223,8 +223,8 @@ function runTests() {
     throw new Error('Test 8 Failed: Shirt with multiple sizes should require Quick View');
   }
   const qvInitShirt = initializeQuickViewVariants(productShirt);
-  if (qvInitShirt.initialColor !== 'Black' || qvInitShirt.initialSize !== undefined) {
-    throw new Error('Test 8b Failed: Single color should be auto-selected while sizes remain unselected');
+  if (qvInitShirt.initialColor !== 'Black' || qvInitShirt.initialSize !== 'S') {
+    throw new Error('Test 8b Failed: Single color and first size S should be pre-selected');
   }
   const valShirtNoSize = validateQuickViewSubmission(productShirt, undefined, qvInitShirt.initialColor);
   if (valShirtNoSize.valid || valShirtNoSize.error !== 'Please select a size.') {

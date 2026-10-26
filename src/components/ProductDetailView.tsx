@@ -214,12 +214,12 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
     setReviewSuccessMsg('');
     setIsFullscreenOpen(false);
 
-    if (product?.sizes && product.sizes.length === 1) {
+    if (product?.sizes && product.sizes.length > 0) {
       setSelectedSize(product.sizes[0]);
     } else {
       setSelectedSize(undefined);
     }
-    if (product?.colors && product.colors.length === 1) {
+    if (product?.colors && product.colors.length > 0) {
       setSelectedColor(product.colors[0]);
     } else {
       setSelectedColor(undefined);
@@ -435,13 +435,13 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
   const isOutOfStock = product.stock <= 0;
 
   const validateVariantSelection = (): { valid: boolean; color?: string; size?: string } => {
-    const hasMultipleColors = Boolean(product?.colors && product.colors.length > 1);
-    const hasMultipleSizes = Boolean(product?.sizes && product.sizes.length > 1);
+    const hasMultipleColors = Boolean(product?.colors && product.colors.length > 0);
+    const hasMultipleSizes = Boolean(product?.sizes && product.sizes.length > 0);
 
     const resolvedColor =
-      selectedColor || (product?.colors && product.colors.length === 1 ? product.colors[0] : undefined);
+      selectedColor || (product?.colors && product.colors.length > 0 ? product.colors[0] : undefined);
     const resolvedSize =
-      selectedSize || (product?.sizes && product.sizes.length === 1 ? product.sizes[0] : undefined);
+      selectedSize || (product?.sizes && product.sizes.length > 0 ? product.sizes[0] : undefined);
 
     const isColorMissing = hasMultipleColors && !resolvedColor;
     const isSizeMissing = hasMultipleSizes && !resolvedSize;
@@ -917,7 +917,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
               {product.colors && product.colors.length > 0 && (
                 <div
                   className={`rounded-xl transition-all ${
-                    validationError && product.colors.length > 1 && !selectedColor
+                    validationError && product.colors.length > 0 && !selectedColor
                       ? 'p-2.5 ring-2 ring-rose-400 bg-rose-50/50'
                       : 'space-y-2'
                   }`}
@@ -965,7 +965,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({ productId 
               {product.sizes && product.sizes.length > 0 && (
                 <div
                   className={`rounded-xl transition-all ${
-                    validationError && product.sizes.length > 1 && !selectedSize
+                    validationError && product.sizes.length > 0 && !selectedSize
                       ? 'p-2.5 ring-2 ring-rose-400 bg-rose-50/50'
                       : 'space-y-2'
                   }`}

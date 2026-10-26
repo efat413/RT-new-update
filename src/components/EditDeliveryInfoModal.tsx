@@ -53,7 +53,7 @@ export const EditDeliveryInfoModal: React.FC<EditDeliveryInfoModalProps> = ({
       return;
     }
 
-    if (!fullName.trim() || !phone.trim() || !fullAddress.trim() || !district.trim()) {
+    if (!fullName.trim() || !phone.trim() || !fullAddress.trim()) {
       setErrorMsg('Please fill in all required delivery fields.');
       return;
     }
@@ -170,37 +170,6 @@ export const EditDeliveryInfoModal: React.FC<EditDeliveryInfoModalProps> = ({
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Shipping Delivery Zone *
-                </label>
-                <select
-                  value={deliveryZone}
-                  onChange={(e) => setDeliveryZone(e.target.value as any)}
-                  disabled={!isPending}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500 disabled:opacity-60 disabled:cursor-not-allowed"
-                >
-                  <option value="inside_dhaka">Inside Dhaka (৳{insideFee})</option>
-                  <option value="outside_dhaka">Outside Dhaka (৳{outsideFee})</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  District / City *
-                </label>
-                <input
-                  type="text"
-                  value={district}
-                  onChange={(e) => setDistrict(e.target.value)}
-                  disabled={!isPending}
-                  required
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500 disabled:opacity-60 disabled:cursor-not-allowed"
-                />
-              </div>
-            </div>
-
             <div>
               <label className="block text-xs font-bold text-slate-700 mb-1">
                 Full Street / Area Address *
@@ -213,6 +182,21 @@ export const EditDeliveryInfoModal: React.FC<EditDeliveryInfoModalProps> = ({
                 required
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500 disabled:opacity-60 disabled:cursor-not-allowed"
               />
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">
+                Shipping Delivery Zone *
+              </label>
+              <select
+                value={deliveryZone}
+                onChange={(e) => setDeliveryZone(e.target.value as any)}
+                disabled={!isPending}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500 disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                <option value="inside_dhaka">Inside Dhaka (৳{insideFee})</option>
+                <option value="outside_dhaka">Outside Dhaka (৳{outsideFee})</option>
+              </select>
             </div>
 
             {/* Dynamic Recalculation Summary Box */}

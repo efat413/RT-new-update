@@ -76,8 +76,8 @@ const ProductCardComponent: React.FC<ProductCardProps> = ({ product, priority = 
       setQuickViewProduct(product);
       return;
     }
-    const defaultSize = product.sizes && product.sizes.length === 1 ? product.sizes[0] : undefined;
-    const defaultColor = product.colors && product.colors.length === 1 ? product.colors[0] : undefined;
+    const defaultSize = product.sizes && product.sizes.length > 0 ? product.sizes[0] : undefined;
+    const defaultColor = product.colors && product.colors.length > 0 ? product.colors[0] : undefined;
     addToCart(product, 1, defaultSize, defaultColor, false);
     setIsAdded(true);
     setTimeout(() => setIsAdded(false), 1200);
@@ -89,8 +89,8 @@ const ProductCardComponent: React.FC<ProductCardProps> = ({ product, priority = 
       setQuickViewProduct(product);
       return;
     }
-    const defaultSize = product.sizes && product.sizes.length === 1 ? product.sizes[0] : undefined;
-    const defaultColor = product.colors && product.colors.length === 1 ? product.colors[0] : undefined;
+    const defaultSize = product.sizes && product.sizes.length > 0 ? product.sizes[0] : undefined;
+    const defaultColor = product.colors && product.colors.length > 0 ? product.colors[0] : undefined;
     quickBuy(product, defaultSize, defaultColor);
   };
 

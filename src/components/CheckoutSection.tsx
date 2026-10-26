@@ -16,7 +16,6 @@ import {
 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { DeliveryZone, PaymentMethod, Coupon } from '../types';
-import { SearchableDistrictSelect } from './SearchableDistrictSelect';
 import { uploadImage } from '../services/storeApi';
 import { normalizeAndValidatePhone } from '../utils/phone';
 
@@ -205,10 +204,6 @@ export const CheckoutSection: React.FC = () => {
       }
     }
 
-    if (!district.trim()) {
-      errors.district = 'Please select your District / City.';
-    }
-
     if (!address.trim()) {
       errors.address = 'Detailed address (House, Road, Area) is required for delivery.';
     } else if (address.trim().length < 5) {
@@ -258,7 +253,7 @@ export const CheckoutSection: React.FC = () => {
           fullName: fullName.trim(),
           phone: cleanPhone,
           alternativePhone: altPhone.trim() ? normalizeAndValidatePhone(altPhone).normalized : undefined,
-          district: district.trim(),
+          district: district.trim() || undefined,
           deliveryZone,
           fullAddress: address.trim(),
           notes: notes.trim() || undefined,
@@ -425,60 +420,6 @@ export const CheckoutSection: React.FC = () => {
           )}
         </div>
 
-        {/* DISTRICT & DELIVERY ZONE */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div>
-            <label className="block text-xs font-medium text-slate-700 mb-1">
-              District / City <span className="text-rose-500">*</span>
-            </label>
-            <SearchableDistrictSelect
-              id="customer-district-select"
-              value={district}
-              onChange={(val) => handleDistrictChange(val)}
-              hasError={!!validationErrors.district}
-              placeholder="Select City"
-            />
-            {validationErrors.district && (
-              <p className="text-[11px] text-rose-600 font-medium mt-1 flex items-center gap-1">
-                <AlertCircle className="w-3 h-3 shrink-0" />
-                {validationErrors.district}
-              </p>
-            )}
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-slate-700 mb-1">
-              Delivery Zone
-            </label>
-            <div className="grid grid-cols-2 gap-1.5">
-              <button
-                type="button"
-                onClick={() => setDeliveryZone('inside_dhaka')}
-                className={`py-1.5 px-2 rounded-xl border text-center transition-all cursor-pointer ${
-                  deliveryZone === 'inside_dhaka'
-                    ? 'border-rose-500 bg-rose-50/80 text-rose-700 font-bold ring-1 ring-rose-500'
-                    : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 text-[11px]'
-                }`}
-              >
-                <span className="block text-[11px] leading-tight font-semibold">Inside Dhaka</span>
-                <span className="text-[10px] text-slate-500">৳{settings.insideDhakaFee || 80}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setDeliveryZone('outside_dhaka')}
-                className={`py-1.5 px-2 rounded-xl border text-center transition-all cursor-pointer ${
-                  deliveryZone === 'outside_dhaka'
-                    ? 'border-rose-500 bg-rose-50/80 text-rose-700 font-bold ring-1 ring-rose-500'
-                    : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 text-[11px]'
-                }`}
-              >
-                <span className="block text-[11px] leading-tight font-semibold">Outside Dhaka</span>
-                <span className="text-[10px] text-slate-500">৳{settings.outsideDhakaFee || 150}</span>
-              </button>
-            </div>
-          </div>
-        </div>
-
         {/* ADDRESS */}
         <div>
           <label className="block text-xs font-medium text-slate-700 mb-1">
@@ -507,6 +448,39 @@ export const CheckoutSection: React.FC = () => {
               {validationErrors.address}
             </p>
           )}
+        </div>
+
+        {/* DELIVERY ZONE */}
+        <div>
+          <label className="block text-xs font-medium text-slate-700 mb-1">
+            Delivery Zone
+          </label>
+          <div className="grid grid-cols-2 gap-1.5">
+            <button
+              type="button"
+              onClick={() => setDeliveryZone('inside_dhaka')}
+              className={`py-1.5 px-2 rounded-xl border text-center transition-all cursor-pointer ${
+                deliveryZone === 'inside_dhaka'
+                  ? 'border-rose-500 bg-rose-50/80 text-rose-700 font-bold ring-1 ring-rose-500'
+                  : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 text-[11px]'
+              }`}
+            >
+              <span className="block text-[11px] leading-tight font-semibold">Inside Dhaka</span>
+              <span className="text-[10px] text-slate-500">৳{settings.insideDhakaFee || 80}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setDeliveryZone('outside_dhaka')}
+              className={`py-1.5 px-2 rounded-xl border text-center transition-all cursor-pointer ${
+                deliveryZone === 'outside_dhaka'
+                  ? 'border-rose-500 bg-rose-50/80 text-rose-700 font-bold ring-1 ring-rose-500'
+                  : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 text-[11px]'
+              }`}
+            >
+              <span className="block text-[11px] leading-tight font-semibold">Outside Dhaka</span>
+              <span className="text-[10px] text-slate-500">৳{settings.outsideDhakaFee || 150}</span>
+            </button>
+          </div>
         </div>
 
         {/* OPTIONAL FIELD: ALTERNATIVE PHONE */}
