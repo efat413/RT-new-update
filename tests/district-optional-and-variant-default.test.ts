@@ -254,3 +254,33 @@ describe('2. Color and Size — Select First Available Option by Default', () =>
     expect(persisted).not.toBe(firstDefault);
   });
 });
+
+describe('3. Customer Checkout UI vs Admin Panel District UI Separation', () => {
+  it('ensures customer checkout form hides the District / City dropdown and label', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+    const checkoutContent = fs.readFileSync(path.resolve(__dirname, '../src/components/CheckoutSection.tsx'), 'utf-8');
+
+    // Customer-facing form must not render the customer-district-select ID
+    expect(checkoutContent).not.toContain('id="customer-district-select"');
+    // Customer-facing form must not render the District / City (Optional) label in JSX
+    expect(checkoutContent).not.toMatch(/District\s*\/\s*City\s*<span/);
+
+    // Delivery zone options must remain intact and functional
+    expect(checkoutContent).toContain("setDeliveryZone('inside_dhaka')");
+    expect(checkoutContent).toContain("setDeliveryZone('outside_dhaka')");
+    expect(checkoutContent).toContain('Inside Dhaka');
+    expect(checkoutContent).toContain('Outside Dhaka');
+  });
+
+  it('ensures admin panel edit delivery info modal retains District / City editing', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+    const adminEditContent = fs.readFileSync(path.resolve(__dirname, '../src/components/EditDeliveryInfoModal.tsx'), 'utf-8');
+
+    // Admin address editing modal must retain the District / City field
+    expect(adminEditContent).toContain('District / City');
+    expect(adminEditContent).toContain('setDistrict');
+    expect(adminEditContent).toContain('district: district.trim()');
+  });
+});
