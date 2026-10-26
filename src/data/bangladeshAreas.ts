@@ -277,3 +277,120 @@ export const ALL_BANGLADESH_LOCATIONS: BangladeshLocation[] = Object.entries(
 
 // Sort alphabetically by displayName
 ALL_BANGLADESH_LOCATIONS.sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+export interface BangladeshDivision {
+  name: string;
+  districts: string[];
+}
+
+export const BANGLADESH_DIVISIONS: BangladeshDivision[] = [
+  {
+    name: 'Dhaka Division',
+    districts: [
+      'Dhaka',
+      'Faridpur',
+      'Gazipur',
+      'Gopalganj',
+      'Kishoreganj',
+      'Madaripur',
+      'Manikganj',
+      'Munshiganj',
+      'Narayanganj',
+      'Narsingdi',
+      'Rajbari',
+      'Shariatpur',
+      'Tangail',
+    ],
+  },
+  {
+    name: 'Chattogram Division',
+    districts: [
+      'Bandarban',
+      'Brahmanbaria',
+      'Chandpur',
+      'Chattogram',
+      "Cox's Bazar",
+      'Cumilla',
+      'Feni',
+      'Khagrachhari',
+      'Lakshmipur',
+      'Noakhali',
+      'Rangamati',
+    ],
+  },
+  {
+    name: 'Rajshahi Division',
+    districts: [
+      'Bogura',
+      'Chapainawabganj',
+      'Joypurhat',
+      'Naogaon',
+      'Natore',
+      'Pabna',
+      'Rajshahi',
+      'Sirajganj',
+    ],
+  },
+  {
+    name: 'Khulna Division',
+    districts: [
+      'Bagerhat',
+      'Chuadanga',
+      'Jashore',
+      'Jhenaidah',
+      'Khulna',
+      'Kushtia',
+      'Magura',
+      'Meherpur',
+      'Narail',
+      'Satkhira',
+    ],
+  },
+  {
+    name: 'Barishal Division',
+    districts: [
+      'Barguna',
+      'Barishal',
+      'Bhola',
+      'Jhalokati',
+      'Patuakhali',
+      'Pirojpur',
+    ],
+  },
+  {
+    name: 'Sylhet Division',
+    districts: [
+      'Habiganj',
+      'Moulvibazar',
+      'Sunamganj',
+      'Sylhet',
+    ],
+  },
+  {
+    name: 'Rangpur Division',
+    districts: [
+      'Dinajpur',
+      'Gaibandha',
+      'Kurigram',
+      'Lalmonirhat',
+      'Nilphamari',
+      'Panchagarh',
+      'Rangpur',
+      'Thakurgaon',
+    ],
+  },
+  {
+    name: 'Mymensingh Division',
+    districts: [
+      'Jamalpur',
+      'Mymensingh',
+      'Netrokona',
+      'Sherpur',
+    ],
+  },
+];
+
+export const ALL_BANGLADESH_DISTRICT_NAMES: string[] = BANGLADESH_DIVISIONS.flatMap(
+  (div) => div.districts
+);
+
