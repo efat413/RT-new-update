@@ -421,6 +421,36 @@ export const CheckoutSection: React.FC = () => {
           )}
         </div>
 
+        {/* ADDRESS */}
+        <div>
+          <label className="block text-xs font-medium text-slate-700 mb-1">
+            Address <span className="text-rose-500">*</span>
+          </label>
+          <textarea
+            id="customer-address-input"
+            rows={2}
+            value={address}
+            onChange={(e) => {
+              setAddress(e.target.value);
+              if (validationErrors.address) {
+                setValidationErrors((prev) => ({ ...prev, address: undefined }));
+              }
+            }}
+            placeholder="House/Road/Area"
+            className={`w-full px-3 py-2 bg-slate-50 border rounded-xl text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 ${
+              validationErrors.address
+                ? 'border-rose-400 focus:ring-rose-400 bg-rose-50/20'
+                : 'border-slate-300 focus:ring-rose-500'
+            }`}
+          />
+          {validationErrors.address && (
+            <p className="text-[11px] text-rose-600 font-medium mt-1 flex items-center gap-1">
+              <AlertCircle className="w-3 h-3 shrink-0" />
+              {validationErrors.address}
+            </p>
+          )}
+        </div>
+
         {/* DELIVERY ZONE */}
         <div>
           <label className="block text-xs font-medium text-slate-700 mb-1">
@@ -452,36 +482,6 @@ export const CheckoutSection: React.FC = () => {
               <span className="text-[10px] sm:text-[11px] text-slate-500">৳{settings.outsideDhakaFee || 150}</span>
             </button>
           </div>
-        </div>
-
-        {/* ADDRESS */}
-        <div>
-          <label className="block text-xs font-medium text-slate-700 mb-1">
-            Address <span className="text-rose-500">*</span>
-          </label>
-          <textarea
-            id="customer-address-input"
-            rows={2}
-            value={address}
-            onChange={(e) => {
-              setAddress(e.target.value);
-              if (validationErrors.address) {
-                setValidationErrors((prev) => ({ ...prev, address: undefined }));
-              }
-            }}
-            placeholder="House/Road/Area"
-            className={`w-full px-3 py-2 bg-slate-50 border rounded-xl text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 ${
-              validationErrors.address
-                ? 'border-rose-400 focus:ring-rose-400 bg-rose-50/20'
-                : 'border-slate-300 focus:ring-rose-500'
-            }`}
-          />
-          {validationErrors.address && (
-            <p className="text-[11px] text-rose-600 font-medium mt-1 flex items-center gap-1">
-              <AlertCircle className="w-3 h-3 shrink-0" />
-              {validationErrors.address}
-            </p>
-          )}
         </div>
 
         {/* OPTIONAL FIELD: ALTERNATIVE PHONE */}

@@ -283,4 +283,22 @@ describe('3. Customer Checkout UI vs Admin Panel District UI Separation', () => 
     expect(adminEditContent).toContain('setDistrict');
     expect(adminEditContent).toContain('district: district.trim()');
   });
+
+  it('ensures Address appears immediately above Delivery Zone in customer checkout form', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+    const checkoutContent = fs.readFileSync(path.resolve(__dirname, '../src/components/CheckoutSection.tsx'), 'utf-8');
+
+    const addressPos = checkoutContent.indexOf('customer-address-input');
+    const deliveryZonePos = checkoutContent.indexOf('{/* DELIVERY ZONE */}');
+    const altPhonePos = checkoutContent.indexOf('Alternative Phone');
+
+    expect(addressPos).toBeGreaterThan(0);
+    expect(deliveryZonePos).toBeGreaterThan(0);
+    expect(altPhonePos).toBeGreaterThan(0);
+
+    // Address must appear immediately before Delivery Zone, which appears before Alternative Phone
+    expect(addressPos).toBeLessThan(deliveryZonePos);
+    expect(deliveryZonePos).toBeLessThan(altPhonePos);
+  });
 });
