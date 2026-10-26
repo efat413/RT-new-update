@@ -1067,11 +1067,6 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       effectiveCourierCode.includes('pathao') ? 'pathao' :
       effectiveCourierCode.includes('redx') ? 'redx' : 'steadfast';
 
-    const resolvedDistrict = (parcelData?.district || order.customer?.district || '').trim() || undefined;
-    const resolvedAddress = (parcelData?.recipient_address || order.customer?.fullAddress || '').trim() || undefined;
-    const resolvedRecipientName = (parcelData?.recipient_name || order.customer?.fullName || '').trim() || undefined;
-    const resolvedRecipientPhone = (parcelData?.recipient_phone || order.customer?.phone || '').trim() || undefined;
-
     const dispatchDto = {
       orderId: order.id,
       courierProvider,
@@ -1079,10 +1074,6 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         weight: parcelData?.weight != null ? Number(parcelData.weight) : undefined,
         notes: (parcelData?.note || parcelData?.notes || '').trim() || undefined,
         deliveryType: parcelData?.delivery_type != null ? String(parcelData.delivery_type) : undefined,
-        district: resolvedDistrict,
-        address: resolvedAddress,
-        recipient_name: resolvedRecipientName,
-        recipient_phone: resolvedRecipientPhone,
       },
     };
 
@@ -1115,10 +1106,6 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         courierWaybill: trackingCode,
         consignmentId,
         courierStatus: 'In Transit',
-        customer: resolvedDistrict && resolvedDistrict !== order.customer?.district ? {
-          ...order.customer,
-          district: resolvedDistrict,
-        } : undefined,
       });
 
       if (res.success && res.order) {

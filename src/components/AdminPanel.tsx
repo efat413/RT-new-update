@@ -1863,7 +1863,7 @@ const AdminPanelContent: React.FC = () => {
     setCourierRecipientEmail(order.customer.email || order.userEmail || '');
     setCourierRecipientAddress(order.customer.fullAddress || '');
     setCourierRecipientArea('');
-    setCourierRecipientDistrict(order.customer.district || '');
+    setCourierRecipientDistrict(order.customer.district || 'Dhaka');
 
     // Parcel Information: Cash on Delivery amount (Courier COD = Customer Due)
     const effectiveDue = order.customerDue != null && !isNaN(Number(order.customerDue))
@@ -1934,7 +1934,7 @@ const AdminPanelContent: React.FC = () => {
     }
 
     if (!courierRecipientDistrict.trim()) {
-      setCourierBookingError('District / City is required for courier delivery. Please enter or select a District before booking.');
+      setCourierBookingError('District is required for courier delivery route.');
       return;
     }
 
@@ -7917,23 +7917,10 @@ const AdminPanelContent: React.FC = () => {
                     type="text"
                     required
                     value={courierRecipientDistrict}
-                    onChange={(e) => {
-                      setCourierRecipientDistrict(e.target.value);
-                      if (courierBookingError && courierBookingError.toLowerCase().includes('district')) {
-                        setCourierBookingError(null);
-                      }
-                    }}
+                    onChange={(e) => setCourierRecipientDistrict(e.target.value)}
                     placeholder="Dhaka, Gazipur, Chattogram, Sylhet, etc."
-                    className={`w-full px-3 py-2 bg-white border rounded-xl text-xs font-medium text-slate-800 focus:ring-2 focus:ring-emerald-500 ${
-                      !courierRecipientDistrict.trim() ? 'border-amber-400 bg-amber-50/20' : 'border-slate-300'
-                    }`}
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-medium text-slate-800 focus:ring-2 focus:ring-emerald-500"
                   />
-                  {!courierRecipientDistrict.trim() && (
-                    <p className="text-[11px] text-amber-700 font-medium mt-1 flex items-center gap-1">
-                      <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                      <span>District / City is required by the courier. Please specify District / City before booking.</span>
-                    </p>
-                  )}
                 </div>
               </div>
 

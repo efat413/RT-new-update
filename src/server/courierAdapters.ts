@@ -15,10 +15,6 @@ export interface ParcelOverrides {
   weight?: number;
   notes?: string;
   deliveryType?: string;
-  district?: string;
-  address?: string;
-  recipient_name?: string;
-  recipient_phone?: string;
 }
 
 export interface CourierAdapterResult {
@@ -57,11 +53,11 @@ export function formatRecipientPhone(phone?: string): string {
 }
 
 /**
- * Derives combined recipient address string from authoritative order data and optional overrides
+ * Derives combined recipient address string from authoritative order data
  */
-export function deriveRecipientAddress(customer: Order['customer'], overrides?: ParcelOverrides): string {
-  const rawAddress = (overrides?.address || customer?.fullAddress || customer?.district || overrides?.district || '').trim();
-  const rawDistrict = (overrides?.district || customer?.district || '').trim();
+export function deriveRecipientAddress(customer: Order['customer']): string {
+  const rawAddress = (customer?.fullAddress || customer?.district || '').trim();
+  const rawDistrict = (customer?.district || '').trim();
   const parts: string[] = [rawAddress];
   if (rawDistrict && !rawAddress.toLowerCase().includes(rawDistrict.toLowerCase())) {
     parts.push(rawDistrict);
@@ -110,9 +106,8 @@ export async function dispatchSteadfastAdapter(
     };
   }
 
-  const phone = formatRecipientPhone(overrides?.recipient_phone || order.customer.phone);
-  const address = deriveRecipientAddress(order.customer, overrides);
-  const recipientName = String(overrides?.recipient_name || order.customer.fullName || 'Customer').trim();
+  const phone = formatRecipientPhone(order.customer.phone);
+  const address = deriveRecipientAddress(order.customer);
   const { itemDescription, totalLot } = deriveOrderItemsSummary(order.items);
 
   let deliveryType = 0;
@@ -122,7 +117,7 @@ export async function dispatchSteadfastAdapter(
 
   const payload: Record<string, any> = {
     invoice: String(order.orderNumber),
-    recipient_name: recipientName,
+    recipient_name: String(order.customer.fullName || 'Customer').trim(),
     recipient_phone: phone,
     recipient_address: address,
     cod_amount: codAmount,
@@ -233,9 +228,8 @@ export async function dispatchPathaoAdapter(
   const cleanBase = val.normalizedUrl!.replace(/\/+$/, '');
   const endpoint = cleanBase.endsWith('/orders') ? cleanBase : `${cleanBase}/orders`;
 
-  const phone = formatRecipientPhone(overrides?.recipient_phone || order.customer.phone);
-  const address = deriveRecipientAddress(order.customer, overrides);
-  const recipientName = String(overrides?.recipient_name || order.customer.fullName || 'Customer').trim();
+  const phone = formatRecipientPhone(order.customer.phone);
+  const address = deriveRecipientAddress(order.customer);
   const { itemDescription, totalLot } = deriveOrderItemsSummary(order.items);
 
   let deliveryType = 48; // standard delivery
@@ -245,7 +239,7 @@ export async function dispatchPathaoAdapter(
 
   const payload: Record<string, any> = {
     merchant_order_id: String(order.orderNumber),
-    recipient_name: recipientName,
+    recipient_name: String(order.customer.fullName || 'Customer').trim(),
     recipient_phone: phone,
     recipient_address: address,
     delivery_type: deliveryType,
@@ -376,16 +370,14 @@ export async function dispatchRedxAdapter(
   const cleanBase = val.normalizedUrl!.replace(/\/+$/, '');
   const endpoint = cleanBase.endsWith('/parcels') ? cleanBase : `${cleanBase}/parcels`;
 
-  const phone = formatRecipientPhone(overrides?.recipient_phone || order.customer.phone);
-  const address = deriveRecipientAddress(order.customer, overrides);
-  const recipientName = String(overrides?.recipient_name || order.customer.fullName || 'Customer').trim();
-  const deliveryArea = String(overrides?.district || order.customer.district || 'Dhaka').trim();
+  const phone = formatRecipientPhone(order.customer.phone);
+  const address = deriveRecipientAddress(order.customer);
   const weightInGrams = Math.max(500, Math.round((Number(overrides?.weight) || 0.5) * 1000));
 
   const payload: Record<string, any> = {
-    customer_name: recipientName,
+    customer_name: String(order.customer.fullName || 'Customer').trim(),
     customer_phone: phone,
-    delivery_area: deliveryArea,
+    delivery_area: String(order.customer.district || 'Dhaka').trim(),
     customer_address: address,
     merchant_invoice_id: String(order.orderNumber),
     cash_collection_amount: codAmount,

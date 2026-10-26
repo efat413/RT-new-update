@@ -53,7 +53,7 @@ export type DeliveryZone = 'inside_dhaka' | 'outside_dhaka';
 export interface CustomerInfo {
   fullName: string;
   phone: string;
-  district?: string;
+  district: string;
   deliveryZone: DeliveryZone;
   fullAddress: string;
   area?: string;
