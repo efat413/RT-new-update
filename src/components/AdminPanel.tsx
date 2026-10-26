@@ -581,9 +581,6 @@ const AdminPanelContent: React.FC = () => {
   const [prodImage, setProdImage] = useState('');
   const [prodImageMode, setProdImageMode] = useState<'single' | 'multiple'>('single');
   const [prodGalleryImages, setProdGalleryImages] = useState<string[]>([]);
-  const [newGalleryInput, setNewGalleryInput] = useState('');
-  const [bulkGalleryInput, setBulkGalleryInput] = useState('');
-  const [isBulkInputOpen, setIsBulkInputOpen] = useState(false);
   const [prodImageSource, setProdImageSource] = useState<'upload' | 'url'>('upload');
   const [isDraggingPrimary, setIsDraggingPrimary] = useState(false);
   const [isDraggingGallery, setIsDraggingGallery] = useState(false);
@@ -1475,9 +1472,6 @@ const AdminPanelContent: React.FC = () => {
     setIsDraggingGallery(false);
     setProdGalleryImages([]);
     setProdImageMode('single');
-    setNewGalleryInput('');
-    setBulkGalleryInput('');
-    setIsBulkInputOpen(false);
     setProdStock(15);
     setProdFeatured(false);
     setProdVideoUrl('');
@@ -1538,7 +1532,7 @@ const AdminPanelContent: React.FC = () => {
     setProdDescription(product.description);
     setShowDescPreview(false);
     setProdImage(product.imageUrl);
-    setProdImageSource(product.imageUrl.startsWith('data:') ? 'upload' : 'url');
+    setProdImageSource('upload');
     setIsDraggingPrimary(false);
     setIsDraggingGallery(false);
 
@@ -1548,9 +1542,6 @@ const AdminPanelContent: React.FC = () => {
       : [];
     setProdGalleryImages(extraImages);
     setProdImageMode(extraImages.length > 0 ? 'multiple' : 'single');
-    setNewGalleryInput('');
-    setBulkGalleryInput('');
-    setIsBulkInputOpen(false);
 
     setProdStock(product.stock);
     setProdFeatured(product.featured);
@@ -5755,39 +5746,37 @@ const AdminPanelContent: React.FC = () => {
                     />
                   </div>
 
-                  {/* Website Brand Logo Upload/Link Field */}
+                  {/* Website Brand Logo Upload Field */}
                   <ImageUploadField
                     label="Website Logo"
-                    sublabel="Upload brand logo directly from your device (PNG, JPG, WEBP, SVG) or paste an image link."
+                    sublabel="Upload brand logo directly from your device (PNG, JPG, WEBP, SVG)."
                     value={settingsForm.logoUrl}
                     onChange={(val) => updateSetting('logoUrl', val)}
                     recommendedSize="500 × 500 px"
                     aspectRatioLabel="Square / Transparent PNG"
                     maxDimension={800}
                     idPrefix="store-brand-logo"
-                    placeholder="https://i.pinimg.com/... or upload image"
                     previewHeightClass="h-20"
                   />
 
-                  {/* Website Favicon / Browser Tab Icon Upload/Link Field */}
+                  {/* Website Favicon / Browser Tab Icon Upload Field */}
                   <ImageUploadField
                     label="Website Icon / Favicon"
-                    sublabel="Upload browser tab icon directly from your device (.ico, .png, .svg) or paste an icon link."
+                    sublabel="Upload browser tab icon directly from your device (.ico, .png, .svg)."
                     value={settingsForm.faviconUrl || ''}
                     onChange={(val) => updateSetting('faviconUrl', val)}
                     recommendedSize="64 × 64 px"
                     aspectRatioLabel="1:1 App Icon"
                     maxDimension={256}
                     idPrefix="store-tab-icon"
-                    placeholder="https://example.com/favicon.png or upload icon"
                     previewHeightClass="h-16"
                     isIcon={true}
                   />
 
-                  {/* Storefront Promotional Banner Upload/Link Field */}
+                  {/* Storefront Promotional Banner Upload Field */}
                   <ImageUploadField
                     label="Storefront Promotional Banner"
-                    sublabel="Upload promotional banner directly from your device or paste a wide banner link."
+                    sublabel="Upload promotional banner directly from your device."
                     value={settingsForm.bannerUrl || ''}
                     onChange={(val) => updateSetting('bannerUrl', val)}
                     recommendedSize="1200 × 480 px (or 1400 × 560 px)"
@@ -5796,7 +5785,6 @@ const AdminPanelContent: React.FC = () => {
                     aspectRatioTolerance={0.35}
                     maxDimension={1600}
                     idPrefix="store-promo-banner"
-                    placeholder="https://images.unsplash.com/... or upload banner"
                     previewHeightClass="h-28"
                   />
 
@@ -6054,42 +6042,30 @@ const AdminPanelContent: React.FC = () => {
 
                   <div>
                     <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
-                      NexusPay / Bangla QR Code (Image URL or Upload)
+                      NexusPay / Bangla QR Code (Upload Image)
                     </label>
-                    <div className="flex flex-col sm:flex-row gap-2">
-                      <div className="relative flex-1">
-                        <QrCode className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <div className="flex items-center gap-2">
+                      <label className="flex items-center justify-center gap-1.5 px-4 py-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-xl text-xs font-bold cursor-pointer transition-colors shadow-2xs">
+                        <Upload className="w-3.5 h-3.5 text-blue-600" />
+                        <span>Upload QR Image from Device</span>
                         <input
-                          type="text"
-                          value={settingsForm.dbblBank?.qrCodeUrl || ''}
-                          onChange={(e) => updateDbblSetting('qrCodeUrl', e.target.value)}
-                          placeholder="https://... or upload image"
-                          className="w-full pl-9 pr-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-medium text-slate-800 focus:ring-2 focus:ring-rose-500"
+                          type="file"
+                          accept="image/*"
+                          onChange={handleQrUpload}
+                          className="hidden"
                         />
-                      </div>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <label className="flex items-center justify-center gap-1.5 px-3 py-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-xl text-xs font-bold cursor-pointer transition-colors">
-                          <Upload className="w-3.5 h-3.5 text-blue-600" />
-                          <span>Upload QR</span>
-                          <input
-                            type="file"
-                            accept="image/*"
-                            onChange={handleQrUpload}
-                            className="hidden"
-                          />
-                        </label>
-                        {settingsForm.dbblBank?.qrCodeUrl && (
-                          <button
-                            type="button"
-                            onClick={() => updateDbblSetting('qrCodeUrl', '')}
-                            className="px-3 py-2 bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-600 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1"
-                            title="Remove QR code image"
-                          >
-                            <X className="w-3.5 h-3.5" />
-                            <span>Remove</span>
-                          </button>
-                        )}
-                      </div>
+                      </label>
+                      {settingsForm.dbblBank?.qrCodeUrl && (
+                        <button
+                          type="button"
+                          onClick={() => updateDbblSetting('qrCodeUrl', '')}
+                          className="px-3 py-2 bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-600 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1"
+                          title="Remove QR code image"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                          <span>Remove</span>
+                        </button>
+                      )}
                     </div>
                     {settingsForm.dbblBank?.qrCodeUrl && (
                       <div className="mt-2 flex items-center gap-3 bg-white p-2 rounded-lg border border-slate-200 w-fit">
@@ -8595,7 +8571,7 @@ const AdminPanelContent: React.FC = () => {
                     <div className="text-[11px] leading-relaxed">
                       {prodImageMode === 'single' ? (
                         <>
-                          <strong>Single Image Mode:</strong> Enter 1 primary image URL below. If you want to showcase additional angles, color variants, or close-ups, click the <strong>Multiple Images</strong> tab above anytime!
+                          <strong>Single Image Mode:</strong> Upload 1 primary image below. If you want to showcase additional angles, color variants, or close-ups, click the <strong>Multiple Images</strong> tab above anytime!
                         </>
                       ) : (
                         <>
@@ -8605,7 +8581,7 @@ const AdminPanelContent: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Primary / Cover Image Selection (Upload from Device vs Image URL) */}
+                  {/* Primary / Cover Image Selection (Upload from Device) */}
                   <div className="space-y-2.5 pt-1">
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                       <label className="block text-xs font-bold text-slate-800 flex items-center gap-1">
@@ -8615,36 +8591,6 @@ const AdminPanelContent: React.FC = () => {
                           (Shown in catalogs & cards)
                         </span>
                       </label>
-
-                      {/* Source Selector: Upload from Device vs Image URL */}
-                      <div className="inline-flex p-0.5 bg-slate-200/80 rounded-lg border border-slate-300/70 text-[11px] font-bold self-start sm:self-auto">
-                        <button
-                          type="button"
-                          id="btn-img-source-upload"
-                          onClick={() => setProdImageSource('upload')}
-                          className={`px-2.5 py-1 rounded-md transition-all flex items-center gap-1.5 cursor-pointer ${
-                            prodImageSource === 'upload'
-                              ? 'bg-white text-slate-900 shadow-2xs font-extrabold'
-                              : 'text-slate-600 hover:text-slate-900 font-medium'
-                          }`}
-                        >
-                          <Upload className="w-3 h-3 text-rose-600" />
-                          Upload from Device
-                        </button>
-                        <button
-                          type="button"
-                          id="btn-img-source-url"
-                          onClick={() => setProdImageSource('url')}
-                          className={`px-2.5 py-1 rounded-md transition-all flex items-center gap-1.5 cursor-pointer ${
-                            prodImageSource === 'url'
-                              ? 'bg-white text-slate-900 shadow-2xs font-extrabold'
-                              : 'text-slate-600 hover:text-slate-900 font-medium'
-                          }`}
-                        >
-                          <Globe className="w-3 h-3 text-blue-600" />
-                          Image URL
-                        </button>
-                      </div>
                     </div>
 
                     {/* Hidden input for primary file upload */}
@@ -8657,163 +8603,100 @@ const AdminPanelContent: React.FC = () => {
                       id="primary-product-image-file-input"
                     />
 
-                    {/* Option 1: Upload from Device */}
-                    {prodImageSource === 'upload' && (
-                      <div className="space-y-2">
-                        {/* Drag and drop upload zone */}
-                        <div
-                          id="primary-image-dropzone"
-                          onClick={() => primaryFileInputRef.current?.click()}
-                          onDragOver={(e) => {
-                            e.preventDefault();
-                            setIsDraggingPrimary(true);
-                          }}
-                          onDragLeave={(e) => {
-                            e.preventDefault();
-                            setIsDraggingPrimary(false);
-                          }}
-                          onDrop={(e) => {
-                            e.preventDefault();
-                            setIsDraggingPrimary(false);
-                            handlePrimaryFileSelect(e.dataTransfer.files);
-                          }}
-                          className={`relative border-2 border-dashed rounded-2xl p-4 text-center cursor-pointer transition-all flex flex-col items-center justify-center gap-2 ${
-                            isDraggingPrimary
-                              ? 'border-rose-500 bg-rose-50/80 ring-2 ring-rose-200'
-                              : 'border-slate-300 hover:border-slate-400 bg-white hover:bg-slate-50/60'
-                          }`}
-                        >
-                          <div className="w-10 h-10 rounded-full bg-rose-50 border border-rose-100 flex items-center justify-center text-rose-600 shadow-2xs">
-                            <UploadCloud className="w-5 h-5" />
-                          </div>
-                          <div>
-                            <p className="text-xs font-bold text-slate-800">
-                              <span className="text-rose-600 underline">Click to choose a photo</span> or drag and drop here
-                            </p>
-                            <p className="text-[11px] text-slate-500 mt-0.5">
-                              Supports JPG, PNG, WebP, GIF, SVG (up to 15MB)
-                            </p>
-                          </div>
-                          {isProcessingImage && (
-                            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-full">
-                              <RefreshCw className="w-3 h-3 animate-spin" />
-                              Optimizing & loading photo...
-                            </span>
-                          )}
+                    {/* Upload from Device Dropzone */}
+                    <div className="space-y-2">
+                      <div
+                        id="primary-image-dropzone"
+                        onClick={() => primaryFileInputRef.current?.click()}
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          setIsDraggingPrimary(true);
+                        }}
+                        onDragLeave={(e) => {
+                          e.preventDefault();
+                          setIsDraggingPrimary(false);
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          setIsDraggingPrimary(false);
+                          handlePrimaryFileSelect(e.dataTransfer.files);
+                        }}
+                        className={`relative border-2 border-dashed rounded-2xl p-4 text-center cursor-pointer transition-all flex flex-col items-center justify-center gap-2 ${
+                          isDraggingPrimary
+                            ? 'border-rose-500 bg-rose-50/80 ring-2 ring-rose-200'
+                            : 'border-slate-300 hover:border-slate-400 bg-white hover:bg-slate-50/60'
+                        }`}
+                      >
+                        <div className="w-10 h-10 rounded-full bg-rose-50 border border-rose-100 flex items-center justify-center text-rose-600 shadow-2xs">
+                          <UploadCloud className="w-5 h-5" />
                         </div>
-
-                        {/* Current Cover Preview Card if image is set */}
-                        {prodImage && (
-                          <div className="flex items-center justify-between p-2.5 bg-white border border-slate-200 rounded-xl shadow-2xs">
-                            <div className="flex items-center gap-3 min-w-0">
-                              <div className="w-12 h-12 rounded-lg border border-slate-200 overflow-hidden shrink-0 bg-slate-100 shadow-2xs">
-                                <img
-                                  src={prodImage}
-                                  alt="Cover preview"
-                                  className="w-full h-full object-cover"
-                                  onError={(e) => {
-                                    (e.currentTarget as HTMLImageElement).src =
-                                      'https://images.unsplash.com/photo-1523275335684-37898b6baf30?auto=format&fit=crop&w=200&q=80';
-                                  }}
-                                />
-                              </div>
-                              <div className="min-w-0">
-                                <div className="flex items-center gap-1.5">
-                                  <span className="text-xs font-bold text-slate-800 truncate">
-                                    Current Cover Photo
-                                  </span>
-                                  <span
-                                    className={`text-[10px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1 ${
-                                      prodImage.startsWith('data:')
-                                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                        : 'bg-blue-50 text-blue-700 border border-blue-200'
-                                    }`}
-                                  >
-                                    <Check className="w-2.5 h-2.5" />
-                                    {prodImage.startsWith('data:') ? 'Device Upload' : 'Web URL'}
-                                  </span>
-                                </div>
-                                <p className="text-[10px] text-slate-400 truncate max-w-[240px] sm:max-w-xs mt-0.5">
-                                  {prodImage.startsWith('data:') ? 'Photo loaded from device' : prodImage}
-                                </p>
-                              </div>
-                            </div>
-
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              <button
-                                type="button"
-                                onClick={() => primaryFileInputRef.current?.click()}
-                                className="px-2.5 py-1 text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors cursor-pointer"
-                              >
-                                Replace
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setProdImage('')}
-                                className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
-                                title="Remove photo"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </div>
+                        <div>
+                          <p className="text-xs font-bold text-slate-800">
+                            <span className="text-rose-600 underline">Click to choose a photo</span> or drag and drop here
+                          </p>
+                          <p className="text-[11px] text-slate-500 mt-0.5">
+                            Supports JPG, PNG, WebP, GIF, SVG (up to 15MB)
+                          </p>
+                        </div>
+                        {isProcessingImage && (
+                          <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-full">
+                            <RefreshCw className="w-3 h-3 animate-spin" />
+                            Optimizing & loading photo...
+                          </span>
                         )}
                       </div>
-                    )}
 
-                    {/* Option 2: Image URL */}
-                    {prodImageSource === 'url' && (
-                      <div className="space-y-2">
-                        <div className="flex gap-2 items-center">
-                          <input
-                            type="text"
-                            value={prodImage}
-                            onChange={(e) => setProdImage(e.target.value)}
-                            placeholder="Paste image link: https://images.unsplash.com/..."
-                            className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-medium text-slate-800 focus:ring-2 focus:ring-rose-500"
-                          />
-                          {prodImage && (
+                      {/* Current Cover Preview Card if image is set */}
+                      {prodImage && (
+                        <div className="flex items-center justify-between p-2.5 bg-white border border-slate-200 rounded-xl shadow-2xs">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-12 h-12 rounded-lg border border-slate-200 overflow-hidden shrink-0 bg-slate-100 shadow-2xs">
+                              <img
+                                src={prodImage}
+                                alt="Cover preview"
+                                className="w-full h-full object-cover"
+                                onError={(e) => {
+                                  (e.currentTarget as HTMLImageElement).src =
+                                    'https://images.unsplash.com/photo-1523275335684-37898b6baf30?auto=format&fit=crop&w=200&q=80';
+                                }}
+                              />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-xs font-bold text-slate-800 truncate">
+                                  Current Cover Photo
+                                </span>
+                                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1 bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                  <Check className="w-2.5 h-2.5" />
+                                  Ready
+                                </span>
+                              </div>
+                              <p className="text-[10px] text-slate-400 truncate max-w-[240px] sm:max-w-xs mt-0.5">
+                                {prodImage.startsWith('data:') ? 'Photo loaded from device' : prodImage}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => primaryFileInputRef.current?.click()}
+                              className="px-2.5 py-1 text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors cursor-pointer"
+                            >
+                              Replace
+                            </button>
                             <button
                               type="button"
                               onClick={() => setProdImage('')}
-                              className="p-2 rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 border border-slate-200 transition-colors shrink-0 cursor-pointer"
-                              title="Clear URL"
+                              className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                              title="Remove photo"
                             >
-                              <X className="w-4 h-4" />
+                              <Trash2 className="w-4 h-4" />
                             </button>
-                          )}
-                        </div>
-
-                        {prodImage && (
-                          <div className="flex items-center justify-between p-2.5 bg-white border border-slate-200 rounded-xl shadow-2xs">
-                            <div className="flex items-center gap-3 min-w-0">
-                              <div className="w-12 h-12 rounded-lg border border-slate-200 overflow-hidden shrink-0 bg-slate-100 shadow-2xs">
-                                <img
-                                  src={prodImage}
-                                  alt="Cover preview"
-                                  className="w-full h-full object-cover"
-                                  onError={(e) => {
-                                    (e.currentTarget as HTMLImageElement).src =
-                                      'https://images.unsplash.com/photo-1523275335684-37898b6baf30?auto=format&fit=crop&w=200&q=80';
-                                  }}
-                                />
-                              </div>
-                              <div className="min-w-0">
-                                <span className="text-xs font-bold text-slate-800 block truncate">
-                                  Live URL Preview
-                                </span>
-                                <span className="text-[10px] text-slate-400 truncate max-w-[240px] sm:max-w-xs block mt-0.5">
-                                  {prodImage}
-                                </span>
-                              </div>
-                            </div>
-                            <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-1 rounded-md border border-emerald-200 shrink-0">
-                              Active Cover
-                            </span>
                           </div>
-                        )}
-                      </div>
-                    )}
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   {/* Multiple Images Options & List */}
@@ -8832,14 +8715,6 @@ const AdminPanelContent: React.FC = () => {
                           >
                             <Upload className="w-3 h-3" />
                             Upload from Device
-                          </button>
-                          <span className="text-slate-300">|</span>
-                          <button
-                            type="button"
-                            onClick={() => setIsBulkInputOpen(!isBulkInputOpen)}
-                            className="text-[11px] text-slate-600 hover:text-slate-800 font-bold underline transition-colors cursor-pointer"
-                          >
-                            {isBulkInputOpen ? 'Hide Bulk Paste' : '+ Bulk Paste URLs'}
                           </button>
                         </div>
                       </div>
@@ -8884,86 +8759,6 @@ const AdminPanelContent: React.FC = () => {
                         </span>
                       </div>
 
-                      {/* Bulk Paste URLs Box */}
-                      {isBulkInputOpen && (
-                        <div className="p-3 bg-white border border-slate-200 rounded-xl space-y-2">
-                          <span className="text-[11px] font-bold text-slate-700 block">
-                            Paste Multiple Image URLs (one per line or comma-separated):
-                          </span>
-                          <textarea
-                            rows={3}
-                            value={bulkGalleryInput}
-                            onChange={(e) => setBulkGalleryInput(e.target.value)}
-                            placeholder="https://images.unsplash.com/photo-1...&#10;https://images.unsplash.com/photo-2...&#10;https://images.unsplash.com/photo-3..."
-                            className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono font-medium text-slate-800 focus:ring-2 focus:ring-rose-500"
-                          />
-                          <div className="flex justify-end gap-2">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setBulkGalleryInput('');
-                                setIsBulkInputOpen(false);
-                              }}
-                              className="px-2.5 py-1 text-xs text-slate-500 hover:text-slate-700 font-medium"
-                            >
-                              Cancel
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const urls = bulkGalleryInput
-                                  .split(/[\n,]+/)
-                                  .map((u) => u.trim())
-                                  .filter((u) => u.startsWith('http') || u.startsWith('data:'));
-                                if (urls.length > 0) {
-                                  setProdGalleryImages((prev) =>
-                                    Array.from(new Set([...prev, ...urls]))
-                                  );
-                                  setBulkGalleryInput('');
-                                  setIsBulkInputOpen(false);
-                                }
-                              }}
-                              className="px-3 py-1 bg-slate-900 hover:bg-black text-white rounded-lg text-xs font-bold transition-colors cursor-pointer"
-                            >
-                              Add All URLs
-                            </button>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Single URL quick addition field */}
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
-                          value={newGalleryInput}
-                          onChange={(e) => setNewGalleryInput(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault();
-                              if (newGalleryInput.trim()) {
-                                setProdGalleryImages((prev) => [...prev, newGalleryInput.trim()]);
-                                setNewGalleryInput('');
-                              }
-                            }
-                          }}
-                          placeholder="Or paste an image URL & click Add..."
-                          className="flex-1 px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-medium text-slate-800 focus:ring-2 focus:ring-rose-500"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (newGalleryInput.trim()) {
-                              setProdGalleryImages((prev) => [...prev, newGalleryInput.trim()]);
-                              setNewGalleryInput('');
-                            }
-                          }}
-                          className="px-3.5 py-2 bg-slate-900 hover:bg-black text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs transition-colors cursor-pointer shrink-0"
-                        >
-                          <Plus className="w-3.5 h-3.5" />
-                          Add URL
-                        </button>
-                      </div>
-
                       {/* Gallery Thumbnails List */}
                       {prodGalleryImages.length > 0 ? (
                         <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
@@ -8989,13 +8784,9 @@ const AdminPanelContent: React.FC = () => {
                                     Gallery Photo #{idx + 2}
                                   </span>
                                   <span
-                                    className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
-                                      imgUrl.startsWith('data:')
-                                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                        : 'bg-slate-100 text-slate-600'
-                                    }`}
+                                    className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200"
                                   >
-                                    {imgUrl.startsWith('data:') ? 'Device' : 'URL'}
+                                    Device Upload
                                   </span>
                                   <span className="text-[10px] text-slate-400 truncate max-w-[160px]">
                                     {imgUrl.startsWith('data:') ? 'Local file' : imgUrl}
@@ -9036,7 +8827,7 @@ const AdminPanelContent: React.FC = () => {
                         </div>
                       ) : (
                         <p className="text-[11px] text-slate-500 italic bg-white p-2.5 rounded-xl border border-dashed border-slate-200 text-center">
-                          No additional gallery images added yet. You can upload photos from your device or paste image URLs above.
+                          No additional gallery images added yet. You can upload photos from your device above.
                         </p>
                       )}
                     </div>

@@ -676,10 +676,10 @@ export const AdminSlidesTab: React.FC<AdminSlidesTabProps> = ({
                 </button>
               </div>
 
-              {/* Image with upload from device or link */}
+              {/* Image upload from device */}
               <ImageUploadField
                 label="Banner Image (Hero Carousel) *"
-                sublabel="Upload a high-resolution banner photo directly from your device or paste an external image link."
+                sublabel="Upload a high-resolution banner photo directly from your device."
                 value={imageUrl}
                 onChange={(val) => setImageUrl(val)}
                 recommendedSize="1200 × 480 px (or 1400 × 560 px)"
@@ -688,7 +688,6 @@ export const AdminSlidesTab: React.FC<AdminSlidesTabProps> = ({
                 aspectRatioTolerance={0.35}
                 maxDimension={1600}
                 idPrefix="slide-banner"
-                placeholder="https://images.unsplash.com/..."
                 previewHeightClass="h-28"
               />
 
