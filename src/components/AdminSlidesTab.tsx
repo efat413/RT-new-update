@@ -215,7 +215,7 @@ export const AdminSlidesTab: React.FC<AdminSlidesTabProps> = ({
     setDiscountBadge('SPECIAL OFFER');
     setButtonText('Shop Collection');
     setCategoryId(categories[0]?.id || '');
-    setImageUrl('');
+    setImageUrl('https://images.unsplash.com/photo-1524805444758-089113d48a6d?auto=format&fit=crop&w=1400&q=80');
     setAccentGradient(GRADIENT_PRESETS[0].value);
     setIsActive(true);
     setIsModalOpen(true);
@@ -640,7 +640,7 @@ export const AdminSlidesTab: React.FC<AdminSlidesTabProps> = ({
                     {editingSlide ? 'Edit Carousel Slide' : 'Create New Banner Slide'}
                   </h3>
                   <p className="text-xs text-slate-500">
-                    Modify the banner image, promotional texts, active status, and target categories.
+                    Modify the banner image URL, promotional texts, active status, and target categories.
                   </p>
                 </div>
               </div>
@@ -676,10 +676,10 @@ export const AdminSlidesTab: React.FC<AdminSlidesTabProps> = ({
                 </button>
               </div>
 
-              {/* Image with upload from device */}
+              {/* Image with upload from device or link */}
               <ImageUploadField
                 label="Banner Image (Hero Carousel) *"
-                sublabel="Upload a high-resolution banner photo directly from your device."
+                sublabel="Upload a high-resolution banner photo directly from your device or paste an external image link."
                 value={imageUrl}
                 onChange={(val) => setImageUrl(val)}
                 recommendedSize="1200 × 480 px (or 1400 × 560 px)"
@@ -688,6 +688,7 @@ export const AdminSlidesTab: React.FC<AdminSlidesTabProps> = ({
                 aspectRatioTolerance={0.35}
                 maxDimension={1600}
                 idPrefix="slide-banner"
+                placeholder="https://images.unsplash.com/..."
                 previewHeightClass="h-28"
               />
 

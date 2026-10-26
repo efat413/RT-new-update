@@ -42,7 +42,7 @@ import {
   resolveUserPermissions,
   generateLegacyPermissionFlags,
 } from './permissions';
-import { sanitizeReviewImageReference, isExternalImageUrl } from './imageSecurity';
+import { sanitizeReviewImageReference } from './imageSecurity';
 import { sendMetaMessengerMessage } from './facebookMessenger';
 import { validateIncomingMessage24HourWindow, isRecipientEligibleFor24HourFilter } from '../utils/facebookPolicy';
 
@@ -1573,17 +1573,9 @@ export async function insertProduct(db: D1Database, input: any): Promise<Product
   const imageUrl = (typeof input.imageUrl === 'string' && input.imageUrl.trim())
     || (Array.isArray(input.images) && typeof input.images[0] === 'string' && input.images[0].trim())
     || '';
-  if (isExternalImageUrl(imageUrl)) {
-    throw new Error('External image URLs are not supported. Please upload product images directly from your device.');
-  }
   const images = Array.isArray(input.images) && input.images.length > 0
     ? input.images.filter((img: any) => typeof img === 'string' && img.trim().length > 0)
     : (imageUrl ? [imageUrl] : []);
-  for (const img of images) {
-    if (typeof img === 'string' && isExternalImageUrl(img)) {
-      throw new Error('External image URLs are not supported in product gallery. Please upload photos directly from your device.');
-    }
-  }
   const stock = Math.max(0, Math.floor(Number(input.stock) || 0));
   const featured = input.featured ? 1 : 0;
   const featuredSortOrder = input.featuredSortOrder != null && !isNaN(Number(input.featuredSortOrder))
@@ -1684,17 +1676,7 @@ export async function updateProductInD1(
     : (existing.buyingPrice ?? (existing as any).buying_price ?? 0);
   const categoryId = updates.categoryId !== undefined ? updates.categoryId : existing.categoryId;
   const description = updates.description !== undefined ? updates.description : existing.description;
-  if (updates.imageUrl !== undefined && updates.imageUrl !== existing.imageUrl && isExternalImageUrl(updates.imageUrl)) {
-    throw new Error('External image URLs are not supported. Please upload product images directly from your device.');
-  }
   const imageUrl = updates.imageUrl !== undefined ? updates.imageUrl : existing.imageUrl;
-  if (updates.images !== undefined && Array.isArray(updates.images)) {
-    for (const img of updates.images) {
-      if (typeof img === 'string' && isExternalImageUrl(img) && !existing.images?.includes(img)) {
-        throw new Error('External image URLs are not supported in product gallery. Please upload photos directly from your device.');
-      }
-    }
-  }
   const images = updates.images !== undefined ? updates.images : existing.images;
   const stock = updates.stock !== undefined ? Math.max(0, Math.floor(Number(updates.stock))) : existing.stock;
   const featured = updates.featured !== undefined ? (updates.featured ? 1 : 0) : (existing.featured ? 1 : 0);
@@ -2095,9 +2077,6 @@ export async function insertSlider(db: D1Database, input: any): Promise<Carousel
   const discountBadge = input.discountBadge || '';
   const categoryId = input.categoryId || '';
   const imageUrl = input.imageUrl || '';
-  if (isExternalImageUrl(imageUrl)) {
-    throw new Error('External image URLs are not supported for slides. Please upload banner images directly from your device.');
-  }
   const accentGradient = input.accentGradient || '';
   const buttonText = input.buttonText || 'Shop Now';
   const isActive = input.isActive !== undefined ? (input.isActive ? 1 : 0) : (input.is_active !== undefined ? (Number(input.is_active) ? 1 : 0) : 1);
@@ -2166,9 +2145,6 @@ export async function updateSliderInD1(db: D1Database, id: string, updates: Part
   const tag = updates.tag ?? existing.tag;
   const discountBadge = updates.discountBadge ?? existing.discountBadge;
   const categoryId = updates.categoryId ?? existing.categoryId;
-  if (updates.imageUrl !== undefined && updates.imageUrl !== existing.imageUrl && isExternalImageUrl(updates.imageUrl)) {
-    throw new Error('External image URLs are not supported for slides. Please upload banner images directly from your device.');
-  }
   const imageUrl = updates.imageUrl ?? existing.imageUrl;
   const accentGradient = updates.accentGradient ?? existing.accentGradient;
   const buttonText = updates.buttonText ?? existing.buttonText;
@@ -2722,23 +2698,6 @@ export async function updateStoreSettingsInD1(db: D1Database, updates: Partial<S
 
   // 1. Read existing canonical settings from D1
   const current = await getStoreSettings(db);
-
-  if (safeUpdates.logoUrl !== undefined && safeUpdates.logoUrl !== current.logoUrl && isExternalImageUrl(safeUpdates.logoUrl)) {
-    throw new Error('External image URLs are not supported for website logo. Please upload logo directly from your device.');
-  }
-  if (safeUpdates.faviconUrl !== undefined && safeUpdates.faviconUrl !== current.faviconUrl && isExternalImageUrl(safeUpdates.faviconUrl)) {
-    throw new Error('External image URLs are not supported for website favicon. Please upload icon directly from your device.');
-  }
-  if (safeUpdates.bannerUrl !== undefined && safeUpdates.bannerUrl !== current.bannerUrl && isExternalImageUrl(safeUpdates.bannerUrl)) {
-    throw new Error('External image URLs are not supported for promotional banner. Please upload banner directly from your device.');
-  }
-  if (
-    safeUpdates.dbblBank?.qrCodeUrl !== undefined &&
-    safeUpdates.dbblBank?.qrCodeUrl !== current.dbblBank?.qrCodeUrl &&
-    isExternalImageUrl(safeUpdates.dbblBank?.qrCodeUrl)
-  ) {
-    throw new Error('External image URLs are not supported for payment QR code. Please upload QR code directly from your device.');
-  }
 
   // 2. Controlled deep merge
   const merged = controlledMergeSettings(current, safeUpdates);

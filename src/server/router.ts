@@ -187,7 +187,6 @@ import {
   D1_SAFE_BLOB_CHUNK_BYTES,
   MAX_IMAGE_DIMENSION,
   MAX_REVIEW_IMAGE_DIMENSION,
-  isExternalImageUrl,
 } from './imageSecurity';
 import {
   getFacebookConfigStatus,
@@ -3476,25 +3475,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           }, 403);
         }
 
-        // Server-side validation: Reject newly submitted external image URLs
-        const primaryImg = productData.imageUrl || productData.image_url;
-        if (isExternalImageUrl(primaryImg)) {
-          return jsonResponse({
-            success: false,
-            error: 'External image URLs are not supported. Please upload product images directly from your device.',
-          }, 400);
-        }
-        if (Array.isArray(productData.images)) {
-          for (const img of productData.images) {
-            if (typeof img === 'string' && isExternalImageUrl(img)) {
-              return jsonResponse({
-                success: false,
-                error: 'External image URLs are not supported in product gallery. Please upload photos directly from your device.',
-              }, 400);
-            }
-          }
-        }
-
         const created = await insertProduct(env.DB, productData);
         const isSuperAdmin = auth!.role === 'super_admin';
         const canViewBuyingPrice = isSuperAdmin || hasPermission(auth!, 'product.view_buying_price') || hasPermission(auth!, 'product.buying_price');
@@ -3505,9 +3485,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           201
         );
       } catch (err: any) {
-        if (err?.message?.includes('External image URLs are not supported')) {
-          return jsonResponse({ success: false, error: err.message }, 400);
-        }
         logServerError({
           route: '/api/products',
           method: 'POST',
@@ -3684,9 +3661,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         console.error('Error updating product:', err);
         if (err?.message?.includes('not found')) {
           return jsonResponse({ success: false, error: 'Product not found' }, 404);
-        }
-        if (err?.message?.includes('External image URLs are not supported')) {
-          return jsonResponse({ success: false, error: err.message }, 400);
         }
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
       }
@@ -3911,9 +3885,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         const created = await insertSlider(env.DB, slideData);
         return jsonResponse({ success: true, slider: created }, 201);
       } catch (err: any) {
-        if (err?.message?.includes('External image URLs are not supported')) {
-          return jsonResponse({ success: false, error: err.message }, 400);
-        }
         logServerError({ route: path, method, error: err, action: 'slider.create' });
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
       }
@@ -3991,9 +3962,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
         console.error('Error updating slider:', err);
         if (err?.message?.includes('not found')) {
           return jsonResponse({ success: false, error: 'Slider not found' }, 404);
-        }
-        if (err?.message?.includes('External image URLs are not supported')) {
-          return jsonResponse({ success: false, error: err.message }, 400);
         }
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
       }
@@ -4102,9 +4070,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx?: any): P
           settings: maskSettings(canonical, true, canViewCourier, env),
         });
       } catch (err: any) {
-        if (err?.message?.includes('External image URLs are not supported')) {
-          return jsonResponse({ success: false, error: err.message }, 400);
-        }
         logServerError({ route: path, method, error: err, action: 'settings.update' });
         return jsonResponse({ success: false, error: 'Internal server error.' }, 500);
       }

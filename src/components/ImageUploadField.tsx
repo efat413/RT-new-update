@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Image as ImageIcon, CheckCircle2, AlertCircle, AlertTriangle, X, RefreshCw } from 'lucide-react';
+import { Upload, Link as LinkIcon, Image as ImageIcon, CheckCircle2, AlertCircle, AlertTriangle, X, RefreshCw } from 'lucide-react';
 import { processImageFile } from '../utils/imageUpload';
 import { uploadApi } from '../services/storeApi';
 import { getResponsiveImageUrl } from '../utils/responsiveImage';
@@ -31,11 +31,12 @@ export const ImageUploadField: React.FC<ImageUploadFieldProps> = ({
   aspectRatioTolerance = 0.35,
   maxDimension = 1400,
   idPrefix = 'image-upload',
-  placeholder = '',
+  placeholder = 'https://example.com/image.jpg',
   previewHeightClass = 'h-36',
   isIcon = false,
 }) => {
   const isDataUrl = value && value.startsWith('data:image/');
+  const [sourceMode, setSourceMode] = useState<'upload' | 'url'>(isDataUrl ? 'upload' : 'upload');
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -98,15 +99,18 @@ export const ImageUploadField: React.FC<ImageUploadFieldProps> = ({
       const uploadRes = await uploadApi.upload(file);
       if (uploadRes.success && uploadRes.url) {
         onChange(uploadRes.url);
+        setSourceMode('upload');
       } else {
         // Safe fallback: compress image with safe dimensions
         const safeDataUrl = await processImageFile(file, Math.min(maxDimension, 600));
         onChange(safeDataUrl);
+        setSourceMode('upload');
       }
     } catch (err: any) {
       try {
         const safeDataUrl = await processImageFile(file, Math.min(maxDimension, 600));
         onChange(safeDataUrl);
+        setSourceMode('upload');
       } catch (fallbackErr: any) {
         setErrorMessage(fallbackErr?.message || 'Could not process selected image.');
       }
@@ -165,45 +169,100 @@ export const ImageUploadField: React.FC<ImageUploadFieldProps> = ({
         )}
       </div>
 
-      {/* Upload from Device Input */}
-      <div
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-        onClick={() => fileInputRef.current?.click()}
-        className={`border-2 border-dashed rounded-xl p-4 text-center cursor-pointer transition-all ${
-          isDragging
-            ? 'border-indigo-500 bg-indigo-50/50 scale-[1.01]'
-            : 'border-slate-300 hover:border-slate-400 bg-white hover:bg-slate-50/80'
-        }`}
-      >
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/png,image/jpeg,image/webp,image/svg+xml,image/x-icon,.ico"
-          className="hidden"
-          onChange={(e) => handleFileChange(e.target.files)}
-        />
-
-        {isProcessing ? (
-          <div className="flex flex-col items-center justify-center py-2 space-y-2">
-            <RefreshCw className="w-6 h-6 text-indigo-600 animate-spin" />
-            <p className="text-xs font-semibold text-slate-600">Processing & optimizing image...</p>
-          </div>
-        ) : (
-          <div className="flex flex-col items-center justify-center py-1 space-y-1.5">
-            <div className="w-9 h-9 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center">
-              <Upload className="w-4 h-4" />
-            </div>
-            <p className="text-xs font-bold text-slate-700">
-              Click to browse device or drag & drop image here
-            </p>
-            <p className="text-[11px] text-slate-400">
-              Supports PNG, JPG, WEBP, SVG, ICO up to 10MB
-            </p>
-          </div>
-        )}
+      {/* Mode Selector Buttons */}
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          id={`${idPrefix}-mode-device`}
+          onClick={() => setSourceMode('upload')}
+          className={`flex-1 py-1.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+            sourceMode === 'upload'
+              ? 'bg-slate-900 text-white shadow-xs'
+              : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <Upload className="w-3.5 h-3.5" />
+          <span>Upload from Device</span>
+        </button>
+        <button
+          type="button"
+          id={`${idPrefix}-mode-url`}
+          onClick={() => setSourceMode('url')}
+          className={`flex-1 py-1.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+            sourceMode === 'url'
+              ? 'bg-slate-900 text-white shadow-xs'
+              : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <LinkIcon className="w-3.5 h-3.5" />
+          <span>Paste Image Link</span>
+        </button>
       </div>
+
+      {/* Upload from Device Input */}
+      {sourceMode === 'upload' && (
+        <div
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          onClick={() => fileInputRef.current?.click()}
+          className={`border-2 border-dashed rounded-xl p-4 text-center cursor-pointer transition-all ${
+            isDragging
+              ? 'border-indigo-500 bg-indigo-50/50 scale-[1.01]'
+              : 'border-slate-300 hover:border-slate-400 bg-white hover:bg-slate-50/80'
+          }`}
+        >
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/svg+xml,image/x-icon,.ico"
+            className="hidden"
+            onChange={(e) => handleFileChange(e.target.files)}
+          />
+
+          {isProcessing ? (
+            <div className="flex flex-col items-center justify-center py-2 space-y-2">
+              <RefreshCw className="w-6 h-6 text-indigo-600 animate-spin" />
+              <p className="text-xs font-semibold text-slate-600">Processing & optimizing image...</p>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center py-1 space-y-1.5">
+              <div className="w-9 h-9 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center">
+                <Upload className="w-4 h-4" />
+              </div>
+              <p className="text-xs font-bold text-slate-700">
+                Click to browse device or drag & drop image here
+              </p>
+              <p className="text-[11px] text-slate-400">
+                Supports PNG, JPG, WEBP, SVG, ICO up to 10MB
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Paste Image Link Input */}
+      {sourceMode === 'url' && (
+        <div className="space-y-1.5">
+          <div className="relative">
+            <input
+              type="url"
+              id={`${idPrefix}-url-input`}
+              value={value}
+              onChange={(e) => {
+                setImageLoadError(false);
+                onChange(e.target.value);
+              }}
+              placeholder={placeholder}
+              className="w-full pl-8 pr-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-medium text-slate-800 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+            />
+            <LinkIcon className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+          </div>
+          <p className="text-[11px] text-slate-500">
+            Paste any direct image link from Unsplash, Imgur, Pinterest, Cloudinary, etc.
+          </p>
+        </div>
+      )}
 
       {/* Error Message */}
       {errorMessage && (
@@ -243,7 +302,7 @@ export const ImageUploadField: React.FC<ImageUploadFieldProps> = ({
             <div className="flex items-center gap-1.5">
               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
               <span className="text-xs font-bold text-slate-800 truncate">
-                {isDataUrl ? 'Device Image Ready' : 'Uploaded Image Ready'}
+                {isDataUrl ? 'Device Image Ready' : 'Linked Image Ready'}
               </span>
             </div>
             <p className="text-[10px] text-slate-500 font-mono mt-0.5 truncate max-w-xs sm:max-w-sm">
@@ -252,7 +311,14 @@ export const ImageUploadField: React.FC<ImageUploadFieldProps> = ({
             <div className="flex items-center gap-2 mt-2">
               <button
                 type="button"
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => {
+                  if (sourceMode === 'upload') {
+                    fileInputRef.current?.click();
+                  } else {
+                    const el = document.getElementById(`${idPrefix}-url-input`);
+                    if (el) el.focus();
+                  }
+                }}
                 className="text-[11px] font-bold text-indigo-600 hover:text-indigo-700 cursor-pointer"
               >
                 Change Image
