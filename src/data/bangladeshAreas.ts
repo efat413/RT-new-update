@@ -263,7 +263,7 @@ export const BANGLADESH_DISTRICT_UPAZILA_MAP: Record<string, string[]> = {
   ],
 };
 
-// Flattened list of all locations: "District (Main City)" and "District - City/Upazila/Thana"
+// Flattened list of all locations: "District (Main City)" and "City/Upazila/Thana - District"
 export const ALL_BANGLADESH_LOCATIONS: BangladeshLocation[] = Object.entries(
   BANGLADESH_DISTRICT_UPAZILA_MAP
 ).flatMap(([district, upazilas]) => [
@@ -276,10 +276,29 @@ export const ALL_BANGLADESH_LOCATIONS: BangladeshLocation[] = Object.entries(
   ...upazilas.map((upazila) => ({
     district,
     upazila,
-    displayName: `${district} - ${upazila}`,
+    displayName: `${upazila} - ${district}`,
     zone: district.toLowerCase() === 'dhaka' ? ('inside_dhaka' as const) : ('outside_dhaka' as const),
   })),
 ]);
+
+/**
+ * Normalizes a district/city string so that the district name appears after the city name.
+ * e.g. "Dhaka - Uttara" -> "Uttara - Dhaka"
+ */
+export function formatCityDistrict(val?: string | null): string {
+  if (!val) return '';
+  const trimmed = val.trim();
+  const parts = trimmed.split('-').map((s) => s.trim());
+  if (parts.length === 2) {
+    const [first, second] = parts;
+    const upazilas = BANGLADESH_DISTRICT_UPAZILA_MAP[first];
+    if (upazilas && upazilas.some((u) => u.toLowerCase() === second.toLowerCase())) {
+      const matchedUpazila = upazilas.find((u) => u.toLowerCase() === second.toLowerCase()) || second;
+      return `${matchedUpazila} - ${first}`;
+    }
+  }
+  return trimmed;
+}
 
 // Sort alphabetically by district then upazila
 ALL_BANGLADESH_LOCATIONS.sort((a, b) => {

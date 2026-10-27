@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Search, ChevronDown, Check, X, MapPin, Folder, CornerDownRight } from 'lucide-react';
-import { ALL_BANGLADESH_LOCATIONS, BangladeshLocation } from '../data/bangladeshAreas';
+import { ALL_BANGLADESH_LOCATIONS, BangladeshLocation, formatCityDistrict } from '../data/bangladeshAreas';
 
 interface SearchableDistrictSelectProps {
   id?: string;
@@ -24,6 +24,9 @@ export const SearchableDistrictSelect: React.FC<SearchableDistrictSelectProps> =
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  // Normalize displayed value so the district name appears after the city name (e.g. "Uttara - Dhaka")
+  const formattedDisplayValue = useMemo(() => formatCityDistrict(value), [value]);
 
   // Group locations by district for the tree structure view
   const treeGroups = useMemo(() => {
@@ -143,8 +146,8 @@ export const SearchableDistrictSelect: React.FC<SearchableDistrictSelectProps> =
       >
         <span className="flex items-center gap-1.5 truncate">
           <MapPin className="w-3.5 h-3.5 text-rose-500 shrink-0" />
-          {value ? (
-            <span className="truncate text-slate-800 font-semibold">{value}</span>
+          {formattedDisplayValue ? (
+            <span className="truncate text-slate-800 font-semibold">{formattedDisplayValue}</span>
           ) : (
             <span className="text-slate-400 font-normal">{placeholder}</span>
           )}
@@ -211,7 +214,12 @@ export const SearchableDistrictSelect: React.FC<SearchableDistrictSelectProps> =
             {searchQuery ? (
               filteredLocations.length > 0 ? (
                 filteredLocations.map((loc, idx) => {
-                  const isSelected = value === loc.displayName || value === loc.district;
+                  const isSelected =
+                    value === loc.displayName ||
+                    value === loc.district ||
+                    formattedDisplayValue === loc.displayName ||
+                    (loc.upazila !== 'Main City' &&
+                      (value === `${loc.district} - ${loc.upazila}` || value === `${loc.upazila} - ${loc.district}`));
                   const isHighlighted = idx === highlightedIndex;
 
                   return (
@@ -232,14 +240,17 @@ export const SearchableDistrictSelect: React.FC<SearchableDistrictSelectProps> =
                       <div className="flex items-center gap-2 truncate">
                         <MapPin className="w-3.5 h-3.5 text-rose-500 shrink-0" />
                         <span className="truncate">
-                          <strong className="text-slate-900">{loc.district}</strong>
                           {loc.upazila !== 'Main City' ? (
                             <>
+                              <strong className="text-slate-900">{loc.upazila}</strong>
                               <span className="text-slate-400 mx-1">-</span>
-                              <span className="text-slate-700 font-medium">{loc.upazila}</span>
+                              <span className="text-slate-700 font-medium">{loc.district}</span>
                             </>
                           ) : (
-                            <span className="text-rose-600 font-medium ml-1.5 text-[11px]">(Main City)</span>
+                            <>
+                              <strong className="text-slate-900">{loc.district}</strong>
+                              <span className="text-rose-600 font-medium ml-1.5 text-[11px]">(Main City)</span>
+                            </>
                           )}
                         </span>
                       </div>
@@ -268,7 +279,12 @@ export const SearchableDistrictSelect: React.FC<SearchableDistrictSelectProps> =
                   </div>
                   <div className="pl-3 py-0.5 space-y-0.5">
                     {group.locations.map((loc) => {
-                      const isSelected = value === loc.displayName || value === loc.district;
+                      const isSelected =
+                        value === loc.displayName ||
+                        value === loc.district ||
+                        formattedDisplayValue === loc.displayName ||
+                        (loc.upazila !== 'Main City' &&
+                          (value === `${loc.district} - ${loc.upazila}` || value === `${loc.upazila} - ${loc.district}`));
                       return (
                         <div
                           key={loc.displayName}
@@ -284,14 +300,17 @@ export const SearchableDistrictSelect: React.FC<SearchableDistrictSelectProps> =
                           <div className="flex items-center gap-2 truncate">
                             <CornerDownRight className="w-3 h-3 text-slate-400 shrink-0" />
                             <span className="truncate">
-                              <strong className="text-slate-900">{loc.district}</strong>
                               {loc.upazila !== 'Main City' ? (
                                 <>
+                                  <strong className="text-slate-900">{loc.upazila}</strong>
                                   <span className="text-slate-400 mx-1">-</span>
-                                  <span className="text-slate-700">{loc.upazila}</span>
+                                  <span className="text-slate-700">{loc.district}</span>
                                 </>
                               ) : (
-                                <span className="text-rose-600 font-medium ml-1.5 text-[11px]">(Main City)</span>
+                                <>
+                                  <strong className="text-slate-900">{loc.district}</strong>
+                                  <span className="text-rose-600 font-medium ml-1.5 text-[11px]">(Main City)</span>
+                                </>
                               )}
                             </span>
                           </div>

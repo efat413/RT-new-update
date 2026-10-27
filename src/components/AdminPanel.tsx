@@ -114,7 +114,7 @@ import { FormattedDescription } from './FormattedDescription';
 import { ImageUploadField } from './ImageUploadField';
 import { AdminSidebar } from './AdminSidebar';
 import { STORAGE_KEYS } from '../context/storageKeys';
-import { BANGLADESH_DIVISIONS, ALL_BANGLADESH_DISTRICT_NAMES } from '../data/bangladeshAreas';
+import { BANGLADESH_DIVISIONS, ALL_BANGLADESH_DISTRICT_NAMES, formatCityDistrict } from '../data/bangladeshAreas';
 import { SearchableDistrictSelect } from './SearchableDistrictSelect';
 
 // Helper for resilient dynamic chunk loading across browser reloads
@@ -1867,7 +1867,7 @@ const AdminPanelContent: React.FC = () => {
     setCourierRecipientEmail(order.customer.email || order.userEmail || '');
     setCourierRecipientAddress(order.customer.fullAddress || '');
     setCourierRecipientArea('');
-    setCourierRecipientDistrict(order.customer.district || 'Dhaka');
+    setCourierRecipientDistrict(order.customer.district ? formatCityDistrict(order.customer.district) : 'Dhaka');
 
     // Parcel Information: Cash on Delivery amount (Courier COD = Customer Due)
     const effectiveDue = order.customerDue != null && !isNaN(Number(order.customerDue))
@@ -2172,7 +2172,7 @@ const AdminPanelContent: React.FC = () => {
     setSelectedAddProductId('');
     setEditCustomerName(order.customer.fullName);
     setEditCustomerPhone(order.customer.phone);
-    setEditCustomerDistrict(order.customer.district);
+    setEditCustomerDistrict(order.customer.district ? formatCityDistrict(order.customer.district) : '');
     setEditCustomerAddress(order.customer.fullAddress);
     setEditCustomerNotes(order.customer.notes || '');
     const zone = order.customer.deliveryZone || 'inside_dhaka';
@@ -3669,7 +3669,7 @@ const AdminPanelContent: React.FC = () => {
                         </span>
                       </div>
                       <p className="text-slate-600">
-                        <strong>{ord.customer.fullName}</strong> ({ord.customer.phone}) • {ord.customer.fullAddress}, {ord.customer.district}
+                        <strong>{ord.customer.fullName}</strong> ({ord.customer.phone}) • {ord.customer.fullAddress}, {formatCityDistrict(ord.customer.district)}
                       </p>
                       <p className="text-slate-400 text-[11px]">
                         Items: {ord.items.map((i) => `${i.product.title} (x${i.quantity})`).join(', ')}
@@ -4100,7 +4100,7 @@ const AdminPanelContent: React.FC = () => {
                                 })()}
                               </div>
                               <p className="text-slate-600 text-[11px] mt-1 max-w-[220px]">
-                                {ord.customer.fullAddress}, <span className="font-medium text-slate-800">{ord.customer.district}</span>
+                                {ord.customer.fullAddress}, <span className="font-medium text-slate-800">{formatCityDistrict(ord.customer.district)}</span>
                               </p>
                               {ord.customer.notes && (
                                 <p className="text-[10px] text-slate-500 italic mt-1 bg-slate-50 p-1 rounded border border-slate-100 max-w-[220px]">
